@@ -39,6 +39,13 @@ export interface LoginResponse {
   readonly user_id?: string;
   readonly requires_setup?: boolean;
   readonly message?: string;
+  /**
+   * Seconds until a lockout expires. Mirrors the `retry-after` header so a
+   * browser client can render a live countdown: a header alone is invisible to
+   * the login form, which left the operator staring at "temporarily blocked"
+   * with no idea whether the wait was five seconds or fifteen minutes.
+   */
+  readonly retry_after_seconds?: number;
 }
 
 /**
@@ -233,6 +240,7 @@ export function createConsoleAuthRoutes(
         return {
           status: "failed",
           message: "This login is temporarily blocked due to repeated authentication failures.",
+          retry_after_seconds: remainingLock,
         } satisfies LoginResponse;
       }
 
@@ -252,11 +260,13 @@ export function createConsoleAuthRoutes(
       if (!user || !user.isActive) {
         const isBanned = await lockoutService.recordFailure(lockoutKey, "unknown_user");
         if (isBanned) {
+          const seconds = await lockoutService.remainingLockSeconds(lockoutKey);
           set.status = 429;
-          set.headers["retry-after"] = String(await lockoutService.remainingLockSeconds(lockoutKey));
+          set.headers["retry-after"] = String(seconds);
           return {
             status: "failed",
             message: "This login has been blocked due to repeated failed authentication attempts.",
+            retry_after_seconds: seconds,
           } satisfies LoginResponse;
         }
         set.status = 401;
@@ -281,11 +291,13 @@ export function createConsoleAuthRoutes(
       if (!valid) {
         const isBanned = await lockoutService.recordFailure(lockoutKey, "invalid_password");
         if (isBanned) {
+          const seconds = await lockoutService.remainingLockSeconds(lockoutKey);
           set.status = 429;
-          set.headers["retry-after"] = String(await lockoutService.remainingLockSeconds(lockoutKey));
+          set.headers["retry-after"] = String(seconds);
           return {
             status: "failed",
             message: "This login has been blocked due to repeated failed authentication attempts.",
+            retry_after_seconds: seconds,
           } satisfies LoginResponse;
         }
         set.status = 401;

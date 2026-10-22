@@ -6,6 +6,15 @@ export interface ApiErrorShape {
   readonly code?: string;
   readonly origin?: "gateway" | "upstream" | "network";
   readonly details?: Readonly<Record<string, unknown>>;
+  /**
+   * Seconds until a rate limit or lockout expires, when the server states one.
+   *
+   * Read from the body first (`retry_after_seconds`) and the `retry-after`
+   * header second: the header alone is invisible to a form that only sees a
+   * thrown error, and a login lockout without a number gives the operator no
+   * way to know how long the wait is.
+   */
+  readonly retryAfterSeconds?: number;
 }
 
 /** Request options accepted by the same-origin console client. */
@@ -83,16 +92,37 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function throwApiError(payload: unknown, status: number): never {
+function responseRetryAfterSeconds(
+  payload: unknown,
+  header: string | null,
+): number | undefined {
+  if (isRecord(payload)) {
+    const direct = payload.retry_after_seconds ?? payload.retryAfterSeconds;
+    if (typeof direct === "number" && Number.isFinite(direct) && direct > 0) {
+      return Math.ceil(direct);
+    }
+    const details = responseDetails(payload);
+    const nested = details?.retry_after_seconds ?? details?.retryAfterSeconds;
+    if (typeof nested === "number" && Number.isFinite(nested) && nested > 0) {
+      return Math.ceil(nested);
+    }
+  }
+  const parsed = header === null ? Number.NaN : Number(header);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.ceil(parsed) : undefined;
+}
+
+function throwApiError(payload: unknown, status: number, retryAfterHeader: string | null): never {
   const code = responseCode(payload);
   const origin = responseOrigin(payload);
   const details = responseDetails(payload);
+  const retryAfterSeconds = responseRetryAfterSeconds(payload, retryAfterHeader);
   const error: ApiErrorShape = {
     status,
     message: responseMessage(payload, status),
     ...(code ? { code } : {}),
     ...(origin ? { origin } : {}),
     ...(details ? { details } : {}),
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
   };
   throw error;
 }
@@ -215,7 +245,7 @@ export async function consoleRequest<TResponse>(
   const payload: unknown = await readJson(response);
   if (!response.ok) {
     maybeSignalSessionTransition(path, response.status, payload);
-    throwApiError(payload, response.status);
+    throwApiError(payload, response.status, response.headers.get("retry-after"));
   }
   return payload as TResponse;
 }

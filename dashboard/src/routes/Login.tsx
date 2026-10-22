@@ -12,6 +12,22 @@ interface LoginResult {
   readonly status: "success" | "failed";
   readonly message?: string;
   readonly requires_setup?: boolean;
+  /** Seconds until a lockout expires; drives the live countdown. */
+  readonly retry_after_seconds?: number;
+}
+
+/**
+ * `m:ss` for a wait, or a plain seconds count under a minute.
+ *
+ * A lockout is a fixed window measured in minutes, so a raw second count reads
+ * as noise ("842 seconds"); one unit above a minute is what an operator
+ * actually plans around.
+ */
+function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 }
 
 function safeReturnPath(value: string | null): string {
@@ -33,6 +49,33 @@ export default function Login(): ReactNode {
   // True only while the instance still uses the password it shipped with, so
   // the hint disappears the moment the operator changes it.
   const [showDefaultHint, setShowDefaultHint] = useState(false);
+  // Remaining lockout, counted down locally from the server's `retry-after`.
+  // The server stays authoritative: the countdown only decides when to retry,
+  // and a still-locked request simply returns a fresh value.
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
+
+  useEffect(() => {
+    if (lockedUntil === null) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining === 0) {
+        setLockedUntil(null);
+        setError(null);
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [lockedUntil]);
+
+  const applyLockout = (seconds: number | undefined): boolean => {
+    if (seconds === undefined || seconds <= 0) return false;
+    setLockedUntil(Date.now() + seconds * 1000);
+    setSecondsLeft(seconds);
+    return true;
+  };
 
   useEffect(() => {
     let active = true;
@@ -75,7 +118,9 @@ export default function Login(): ReactNode {
           navigate("/setup", { replace: true });
           return;
         }
-        setError(result.message ?? "Authentication failed. Please check your credentials.");
+        if (!applyLockout(result.retry_after_seconds)) {
+          setError(result.message ?? "Authentication failed. Please check your credentials.");
+        }
         return;
       }
       // Drop any cached session state (including a stale unauthenticated
@@ -86,6 +131,14 @@ export default function Login(): ReactNode {
         replace: true,
       });
     } catch (reason: unknown) {
+      // A 429 throws rather than returning a body, so the wait comes from the
+      // response headers (`retry-after`) or the error details, whichever the
+      // transport preserved.
+      const fromError =
+        reason && typeof reason === "object" && "retryAfterSeconds" in reason
+          ? (reason as { retryAfterSeconds?: number }).retryAfterSeconds
+          : undefined;
+      if (applyLockout(fromError)) return;
       if (reason && typeof reason === "object" && "message" in reason) {
         const msg = (reason as { message: unknown }).message;
         if (typeof msg === "string") {
@@ -191,7 +244,15 @@ export default function Login(): ReactNode {
               </div>
             </div>
 
-            {error ? (
+            {lockedUntil !== null ? (
+              // The wait is the whole point of the message: without a number
+              // the operator cannot tell a five-second pause from a fifteen
+              // minute lock, and retrying blindly only extends it.
+              <p className="auth-error" role="alert" aria-live="polite">
+                This login is temporarily blocked due to repeated authentication failures.
+                {" "}Try again in <strong>{formatWait(secondsLeft)}</strong>.
+              </p>
+            ) : error ? (
               <p className="auth-error" role="alert">
                 {error}
               </p>
@@ -200,11 +261,17 @@ export default function Login(): ReactNode {
             <Button
               variant="primary"
               type="submit"
-              disabled={pending}
+              disabled={pending || lockedUntil !== null}
               className="auth-submit"
               icon={<ArrowRight size={15} />}
             >
-              {pending ? "Signing in…" : passwordOnly ? "Unlock console" : "Sign in"}
+              {pending
+                ? "Signing in…"
+                : lockedUntil !== null
+                  ? `Locked — ${formatWait(secondsLeft)}`
+                  : passwordOnly
+                    ? "Unlock console"
+                    : "Sign in"}
             </Button>
           </form>
 
@@ -212,8 +279,10 @@ export default function Login(): ReactNode {
             <p className="auth-default-hint">
               <Info size={13} aria-hidden="true" />
               <span>
-                Default password: <code>local-console-2026</code> — change it with
-                <code> LIANROUTER_CONSOLE_PASSWORD</code>.
+                Default password: <code>local-console-2026</code> — change it in
+                Settings → Security Controls, or with
+                <code> LIANROUTER_CONSOLE_PASSWORD</code>. A password changed in the
+                console stays in effect after a restart.
               </span>
             </p>
           ) : null}
