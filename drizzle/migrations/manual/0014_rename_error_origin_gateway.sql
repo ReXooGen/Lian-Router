@@ -1,0 +1,14 @@
+-- Renames the gateway-origin marker in `telemetry_events.error_origin` from
+-- `lianrouter` to `gateway`.
+--
+-- Why: the value is rendered by the Usage drawer (as the label "Gateway") and
+-- shipped in public error envelopes, so it carried the old product name into
+-- operator-facing surfaces. The value names the layer that failed, not the
+-- product, and `gateway` says that directly.
+--
+-- The column is plain `text` with no CHECK constraint, so no DDL is needed —
+-- only the historical rows. `upstream` and `network` are unaffected, and NULL
+-- (pre-0006 rows) stays NULL: "unknown" remains the honest answer for those.
+--
+-- Idempotent: safe to run more than once.
+UPDATE telemetry_events SET error_origin = 'gateway' WHERE error_origin = 'lianrouter';

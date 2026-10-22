@@ -1,0 +1,62 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.codegraph/
+*.tsbuildinfo
+
+# Bun's cross-compilation runtime cache. `bun build --compile --target
+# bun-linux-x64` downloads a ~76 MB platform runtime here on first use; it is a
+# build artifact, not project code, and committing it bloats every clone.
+.bun-cache/
+
+# Local runtime scratch (e.g. generated proxy process configs).
+.cache/
+
+# Throwaway probe/debug scripts written during an investigation. Never
+# committed: they are one-off reproduction helpers, not project code.
+.tmp-*
+
+# Saved terminal transcripts (e.g. a session log written to the repo root by
+# mistake). Never project code.
+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Vendored multi-protocol proxy binaries for local development. Fetch them with
+# `bun run fetch:binaries` (Docker builds its own copies in the image). Never
+# committed: they are large, platform-specific, and version-pinned.
+bin/
+.kanbots/
+
+# Test coverage output
+coverage/
+
+# Migrations staged for a local `bun run start`: the compiled binary resolves
+# them from `<cwd>/migrations` (that is where the image copies them), while the
+# source of truth stays `drizzle/migrations`. Generated on every start, so it is
+# never project code.
+/migrations/
+
+# Local runtime scratch: captured telemetry payload frames. Written constantly
+# by the running gateway and pruned by retention, so tracking them churns the
+# repo with megabytes of transient request bodies.
+data/
+
+# Agent working state: per-session worktrees under `.claude/worktrees/` are full
+# repository checkouts created by tooling, plus local settings that differ per
+# machine. Never project code, and `git add -A` would otherwise stage entire
+# duplicate trees.
+.claude/
+
+# Backup export dumps written to the repo root during an investigation. A
+# backup carries every provider credential and API-key hash in the clear, so a
+# file left here is a secret leak waiting for `git add -A`. Keep them out of the
+# repo entirely; a real backup belongs wherever the operator stores it.
+backup-probe.json
+lianrouter-backup-*.json
+
+# Operator-local proxy inventories pasted into the console. Personal data, not
+# project code: committing one publishes a private egress list.
+proxy-pool-paste.txt
+AGENTS.md.bak*

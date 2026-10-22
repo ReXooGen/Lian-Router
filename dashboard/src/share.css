@@ -1,0 +1,902 @@
+@import "tailwindcss";
+
+/* Public share-key enrollment — the landing's glass language, black canvas.
+   Two primitives carry the page, copied from `apps/landing/landing.css`: a
+   floating glass nav pill, and one glass panel (brighter top border, inset
+   hairline highlight, deep drop shadow). No gradients, no background image —
+   depth comes from blur, hairlines, and translucency.
+   The accent is one fixed grey, the same `--lr-accent` the landing uses. The
+   page is deliberately not visitor-themeable: a public enrollment surface
+   should look the same for everyone it is handed to. */
+
+:root {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-display: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  color-scheme: dark;
+}
+
+.share-page {
+  --share-accent: #c2cad6;
+  --share-accent-hot: #37e6c2;
+  --share-ink: #f4f7ff;
+  --share-muted: rgba(226, 234, 250, .62);
+  --share-faint: rgba(226, 234, 250, .4);
+  --share-line: rgba(255, 255, 255, .1);
+  --share-line-soft: rgba(255, 255, 255, .06);
+  --share-glass: rgba(255, 255, 255, .04);
+  --share-glass-strong: rgba(255, 255, 255, .07);
+  --share-surface: rgba(11, 11, 15, .6);
+  --share-canvas: #000;
+  --share-on-ink: #05070f;
+  position: relative;
+  min-height: 100svh;
+  overflow-x: clip;
+  background: var(--share-canvas);
+  color: var(--share-ink);
+  font-family: var(--font-sans);
+  letter-spacing: -.011em;
+  isolation: isolate;
+}
+
+/* ── Floating glass pill navigation ───────────────────────────────────────── */
+.share-navwrap {
+  position: sticky;
+  /* `top` alone would push the pill down by 1.35rem while its flow position
+     stayed at y=0 — sticky offsets paint, not layout — so the following
+     margin would lose exactly that much. Matching the flow offset here keeps
+     the gap between pill and content equal to `.share-main`'s margin. */
+  top: 1.35rem;
+  margin-top: 1.35rem;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  padding-inline: 1rem;
+  pointer-events: none;
+}
+.share-nav-pill {
+  display: flex;
+  width: min(100%, 940px);
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .55rem .6rem .55rem 1.1rem;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-top-color: rgba(255, 255, 255, .16);
+  border-radius: 999px;
+  background: rgba(11, 11, 15, .6);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .1),
+    0 18px 50px -10px rgba(0, 0, 0, .85);
+  pointer-events: auto;
+}
+.share-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  color: var(--share-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.share-brand-mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--share-line);
+  border-radius: 999px;
+  background: var(--share-glass-strong);
+  color: var(--share-accent);
+}
+.share-brand-mark svg { width: 18px; height: 18px; }
+.share-brand-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.015em;
+}
+
+/* ── Nav actions ──────────────────────────────────────────────────────────── */
+.share-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+.share-home-link {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: .4rem;
+  padding-inline: .95rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: #fff;
+  color: #05070f;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .5),
+    0 4px 16px 0 rgba(0, 0, 0, .55);
+  transition: background-color 140ms ease;
+}
+.share-home-link:hover { background: #e6eaf0; }
+
+/* ── Content column ───────────────────────────────────────────────────────── */
+.share-main {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 1rem;
+  width: min(calc(100% - 4rem), 1120px);
+  /* The nav pill is sticky and stays in flow, so this margin is the only gap
+     between it and the first panel. Mirrors the landing hero's rhythm
+     (`.lr-hero` uses clamp(3.5rem, 8vw, 6.5rem)) at panel scale. */
+  margin: clamp(3rem, 7vh, 4.75rem) auto 0;
+  padding-bottom: 3rem;
+}
+
+/* ── Glass panel: the landing card recipe ─────────────────────────────────── */
+.share-panel {
+  position: relative;
+  padding: 1.5rem 1.5rem 1.25rem;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-top-color: rgba(255, 255, 255, .16);
+  border-radius: 16px;
+  background: var(--share-surface);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .1),
+    0 24px 56px -14px rgba(0, 0, 0, .95);
+}
+/* The intro panel carries the accent as a single soft pool in its corner. */
+.share-panel--intro { overflow: hidden; }
+.share-panel--intro::after {
+  position: absolute;
+  top: -110px;
+  right: -90px;
+  width: 280px;
+  height: 280px;
+  content: "";
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--share-accent) 16%, transparent), transparent 68%);
+  pointer-events: none;
+}
+
+/* ── Type ─────────────────────────────────────────────────────────────────── */
+/* Scoped to `.share-panel` so the accent survives the panel's base `p` rule. */
+.share-panel .share-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  margin: 0;
+  color: var(--share-accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+.share-panel h1 {
+  margin: .75rem 0 .5rem;
+  color: var(--share-ink);
+  font-family: var(--font-display);
+  font-size: clamp(26px, 4.4vw, 34px);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -.03em;
+}
+/* The intro heading is the panel's first child now that its eyebrow is gone,
+   so the panel padding alone provides the top spacing. */
+.share-panel > h1:first-child { margin-top: 0; }
+.share-panel h2 {
+  margin: 0;
+  color: var(--share-ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.015em;
+}
+.share-panel p {
+  margin: 0;
+  color: var(--share-muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.share-subtitle {
+  margin-bottom: .5rem !important;
+  color: rgba(226, 234, 250, .82) !important;
+  font-size: 14px !important;
+}
+.share-notes {
+  max-width: 62ch;
+  margin-top: .5rem !important;
+  white-space: pre-wrap;
+}
+.share-trust-copy {
+  margin-top: 1.1rem !important;
+  padding-left: .75rem;
+  border-left: 2px solid var(--share-accent);
+}
+.share-expiry {
+  margin-top: .65rem !important;
+  color: var(--share-faint) !important;
+  font-family: var(--font-mono);
+  font-size: 10px !important;
+}
+.share-note {
+  color: var(--share-faint) !important;
+  font-size: 10.5px !important;
+}
+
+/* ── Access policy ────────────────────────────────────────────────────────── */
+.share-policy-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin-bottom: 1.1rem;
+}
+.share-policy-heading h2 { margin-top: .3rem; }
+.share-key-prefix {
+  padding: .35rem .55rem;
+  border: 1px solid var(--share-line);
+  border-radius: 999px;
+  color: var(--share-accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.share-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .5rem;
+}
+.share-policy-grid > div {
+  min-width: 0;
+  padding: .7rem .75rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 10px;
+  background: var(--share-glass);
+}
+.share-policy-grid span,
+.share-policy-grid strong { display: block; }
+.share-policy-grid span {
+  color: var(--share-faint);
+  font-size: 10px;
+}
+.share-policy-grid strong {
+  margin-top: .35rem;
+  overflow-wrap: anywhere;
+  color: var(--share-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+.share-model-policy {
+  margin-top: .75rem !important;
+  font-size: 10.5px !important;
+}
+/* The template's provider and model rules cancel out, so nothing is reachable.
+   This is an operator error the recipient cannot act on, and it must not read
+   like a normal policy line. */
+.share-model-policy--conflict {
+  padding: .6rem .75rem;
+  border: 1px solid rgba(251, 191, 36, .22);
+  border-radius: 10px;
+  background: rgba(251, 191, 36, .08);
+  color: #fde68a !important;
+  font-size: 11px !important;
+}
+
+
+/* ── Model access ─────────────────────────────────────────────────────────── */
+/* Recipients copy these names into a client config by hand, so each model is a
+   chip with its own copy control rather than a name inside a sentence. */
+.share-models-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+.share-models-title {
+  margin: .3rem 0 0;
+  color: var(--share-ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.share-models-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+.share-models-toggle {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 9999px;
+  background: var(--share-glass);
+}
+.share-models-toggle-btn {
+  padding: .3rem .7rem;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--share-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.share-models-toggle-btn[aria-pressed="true"] {
+  background: #fff;
+  color: #000;
+}
+.share-models-toggle-btn:hover { color: var(--share-ink); }
+.share-models-toggle-btn[aria-pressed="true"]:hover { color: #000; }
+.share-models-copyall {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .4rem .7rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 9999px;
+  background: var(--share-glass);
+  color: var(--share-ink);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.share-models-copyall:hover { background: var(--share-glass-strong); }
+.share-models-more { margin-top: .9rem; }
+
+/* LIVE STATISTICS collapse: the heading stays, the chart and activity list are
+   one click away so enrollment controls stay above the fold. */
+.share-activity-toggle svg { transition: transform 140ms ease; }
+.share-activity-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.share-activity-metrics { display: flex; justify-content: flex-end; margin: .9rem 0; }
+
+/* The OpenAI-compatible endpoint sits with the key controls: a recipient
+   needs both before their first request. */
+.share-endpoint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: 1.25rem;
+  padding: .85rem 1rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .02);
+}
+.share-endpoint > div { flex: 1 1 12rem; }
+.share-endpoint-caption {
+  display: block;
+  margin-top: .2rem;
+  font-size: 11.5px;
+  color: var(--share-muted);
+}
+.share-endpoint code {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: .45rem .6rem;
+  border-radius: 8px;
+  background: var(--share-glass);
+  color: var(--share-ink);
+  font-size: 11.5px;
+}
+
+.share-models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: .55rem;
+  margin: .8rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.share-model-card {
+  position: relative;
+  display: grid;
+  gap: .6rem;
+  min-width: 0;
+  min-height: 132px;
+  padding: .8rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 12px;
+  background: var(--share-glass);
+  overflow: hidden;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease;
+}
+.share-model-card::after {
+  position: absolute;
+  right: -48px;
+  bottom: -68px;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--share-accent-hot) 7%, transparent);
+  content: "";
+  pointer-events: none;
+}
+.share-model-card:hover {
+  border-color: color-mix(in srgb, var(--share-accent-hot) 28%, transparent);
+  background: rgba(255, 255, 255, .055);
+  transform: translateY(-1px);
+}
+.share-model-card header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .55rem;
+}
+.share-model-bot {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--share-accent-hot) 12%, transparent);
+  color: var(--share-accent-hot);
+}
+.share-model-card code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--share-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-model-card button {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--share-muted);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.share-model-card button:hover { background: var(--share-glass-strong); color: var(--share-ink); }
+.share-model-tags { display: flex; gap: .35rem; }
+.share-model-tags span {
+  padding: .18rem .4rem;
+  border: 1px solid color-mix(in srgb, var(--share-accent-hot) 22%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--share-accent-hot) 8%, transparent);
+  color: var(--share-accent-hot);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.share-model-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  color: var(--share-faint);
+  font-size: 10px;
+}
+.share-model-capabilities { display: inline-flex; align-items: center; gap: .3rem; color: #a9b6ff; }
+.share-model-provider {
+  overflow: hidden;
+  color: var(--share-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-models-groups {
+  display: grid;
+  gap: .8rem;
+  margin-top: .8rem;
+}
+.share-models-group-name {
+  margin: 0 0 .35rem;
+  color: var(--share-accent);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.share-models-group .share-models-grid { margin-top: 0; }
+
+/* ── Recipient statistics ────────────────────────────────────────────────── */
+.share-activity-panel { display: grid; gap: 1.15rem; }
+.share-activity-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.share-activity-heading h2 { margin-top: .35rem; font-size: 19px; }
+.share-activity-heading > div:first-child > p:last-child { margin-top: .3rem; }
+.share-metric-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--share-line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .28);
+}
+.share-metric-toggle button {
+  padding: .45rem .72rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--share-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.share-metric-toggle button[aria-pressed="true"] {
+  background: var(--share-glass-strong);
+  color: var(--share-accent-hot);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--share-accent-hot) 20%, transparent);
+}
+.share-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .55rem;
+  margin-bottom: .9rem;
+}
+.share-stat-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: .35rem;
+  padding: .85rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .025);
+}
+.share-stat-grid span { color: var(--share-faint); font-size: 10px; }
+.share-stat-grid strong {
+  overflow: hidden;
+  color: var(--share-ink);
+  font-family: var(--font-mono);
+  font-size: clamp(17px, 2.4vw, 23px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-stat-grid small { color: var(--share-muted); font-size: 9.5px; }
+.share-chart-shell {
+  padding: .9rem .9rem .65rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, .24);
+  margin-bottom: .9rem;
+}
+.share-chart-caption {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .6rem;
+  color: var(--share-faint);
+  font-size: 9px;
+}
+.share-chart-caption > div { display: grid; gap: .2rem; }
+.share-chart-caption > div span,
+.share-section-title > span { color: var(--share-accent-hot); font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; letter-spacing: .12em; }
+.share-chart-caption strong { color: var(--share-ink); font-size: 12px; }
+.share-usage-chart { height: 205px; }
+.share-usage-chart svg { width: 100%; height: 174px; overflow: visible; }
+.share-chart-gridline { stroke: rgba(255, 255, 255, .065); stroke-dasharray: 3 5; }
+.share-chart-line { fill: none; stroke: var(--share-accent-hot); stroke-width: 2.2; vector-effect: non-scaling-stroke; }
+.share-chart-point { fill: #090b0f; stroke: var(--share-accent-hot); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.share-chart-labels { display: grid; grid-template-columns: repeat(7, 1fr); color: var(--share-faint); font-family: var(--font-mono); font-size: 8.5px; text-align: center; }
+.share-activity-columns { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 1rem; }
+.share-activity-columns > section { min-width: 0; }
+.share-section-title { margin-bottom: .65rem; }
+.share-section-title h3 { margin: .25rem 0 0; color: var(--share-ink); font-size: 13px; }
+.share-model-ranking, .share-public-events { display: grid; gap: .4rem; }
+.share-rank-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .6rem;
+  padding: .55rem .65rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .025);
+}
+.share-rank-index { color: var(--share-faint); font-family: var(--font-mono); font-size: 8.5px; }
+.share-rank-row > div { min-width: 0; }
+.share-rank-row strong { display: block; overflow: hidden; color: var(--share-ink); font-family: var(--font-mono); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.share-rank-row > div > span { display: block; height: 2px; margin-top: .4rem; border-radius: 99px; background: var(--share-line-soft); overflow: hidden; }
+.share-rank-row i { display: block; height: 100%; border-radius: inherit; background: var(--share-accent-hot); }
+.share-rank-row b { color: var(--share-muted); font-family: var(--font-mono); font-size: 9.5px; }
+.share-public-events article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .6rem;
+  padding: .52rem .65rem;
+  border-bottom: 1px solid var(--share-line-soft);
+}
+.share-event-dot { width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 10px currentColor; }
+.share-event-dot--completed { background: var(--share-accent-hot); }
+.share-event-dot--failed, .share-event-dot--truncated { background: #fb7185; }
+.share-public-events article > div:nth-child(2) { min-width: 0; }
+.share-public-events strong { display: block; overflow: hidden; color: var(--share-ink); font-family: var(--font-mono); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.share-public-events span { display: flex; align-items: center; gap: .25rem; margin-top: .2rem; color: var(--share-faint); font-size: 8.5px; }
+.share-public-events article > div:last-child { text-align: right; }
+.share-public-events b { display: block; color: var(--share-ink); font-family: var(--font-mono); font-size: 10px; }
+.share-public-events article > div:last-child span { display: block; }
+.share-empty-copy { padding: 1rem; border: 1px dashed var(--share-line); border-radius: 10px; text-align: center; }
+
+/* ── Issue controls ───────────────────────────────────────────────────────── */
+.share-issue-controls {
+  display: grid;
+  gap: .6rem;
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--share-line-soft);
+}
+.share-warning {
+  padding: .6rem .75rem;
+  border: 1px solid rgba(251, 191, 36, .22);
+  border-radius: 10px;
+  background: rgba(251, 191, 36, .08);
+  color: #fde68a !important;
+}
+.share-action-primary,
+.share-action-secondary {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  padding-inline: 1.1rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: #fff;
+  color: #05070f;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .5),
+    0 4px 16px 0 rgba(0, 0, 0, .55);
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+.share-action-primary:hover:not(:disabled),
+.share-action-secondary:hover {
+  background: #e6eaf0;
+  transform: translateY(-1px);
+}
+.share-action-primary:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.share-action-secondary {
+  border-color: var(--share-line);
+  background: var(--share-glass-strong);
+  color: var(--share-ink);
+  box-shadow: none;
+}
+.share-action-secondary:hover { background: rgba(255, 255, 255, .12); }
+.share-action-primary:focus-visible,
+.share-action-secondary:focus-visible,
+.share-home-link:focus-visible,
+.share-brand:focus-visible {
+  outline: 2px solid var(--share-accent);
+  outline-offset: 3px;
+}
+
+/* ── Issued secret ────────────────────────────────────────────────────────── */
+.share-issued-secret {
+  display: grid;
+  gap: .7rem;
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--share-accent) 34%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--share-accent) 7%, transparent);
+}
+.share-issued-secret code {
+  display: block;
+  padding: .7rem;
+  border: 1px solid var(--share-line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .34);
+  color: var(--share-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.share-secret-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .65rem;
+}
+.share-secret-actions span {
+  color: var(--share-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+.share-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  padding: .75rem 0 .25rem;
+  color: var(--share-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.share-footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  color: var(--share-muted);
+}
+
+/* ── Loading skeleton ─────────────────────────────────────────────────────── */
+.share-skeleton {
+  height: 44px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .06);
+  animation: share-pulse 1.4s ease-in-out infinite;
+}
+.share-skeleton--short { width: 62%; height: 92px; margin-top: .75rem; }
+@keyframes share-pulse { 50% { opacity: .4; } }
+
+@media (max-width: 720px) {
+  .share-main {
+    width: calc(100% - 2rem);
+    margin-top: clamp(2rem, 5vh, 3rem);
+  }
+  .share-navwrap { top: .85rem; margin-top: .85rem; }
+  .share-nav-pill { padding-left: .7rem; }
+  .share-home-link { padding-inline: .75rem; }
+  .share-activity-heading { align-items: flex-start; flex-direction: column; }
+  .share-stat-grid { grid-template-columns: 1fr; }
+  .share-activity-columns { grid-template-columns: 1fr; }
+  .share-chart-caption > span { display: none; }
+}
+
+@media (max-width: 480px) {
+  .share-policy-grid { grid-template-columns: 1fr; }
+  .share-models-grid { grid-template-columns: 1fr; }
+  .share-usage-chart { height: 175px; }
+  .share-usage-chart svg { height: 145px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-skeleton { animation: none; }
+  .share-action-primary,
+  .share-action-secondary,
+  .share-home-link,
+  .share-model-card { transition: none; }
+}
+
+
+/* ── Theme switch (outside the navigation pill) ───────────────────────────── */
+.share-nav-cluster {
+  display: flex;
+  width: min(100%, 1040px);
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: .6rem;
+  max-width: 100%;
+}
+.share-theme-switch {
+  /* The nav wrapper is pointer-transparent so the pill can float over the page;
+     only the pill re-enables input. The switch sits outside the pill and must
+     opt back in, or every click passes through to the panel behind it. */
+  pointer-events: auto;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--share-line);
+  border-radius: 999px;
+  background: var(--share-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+.share-theme-switch button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--share-faint);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.share-theme-switch button:hover { color: var(--share-ink); }
+.share-theme-switch button[aria-pressed="true"] {
+  background: var(--share-ink);
+  color: var(--share-canvas);
+}
+
+/* ── Light theme ───────────────────────────────────────────────────────────
+   The page was single-theme by design; a visitor toggle now has to keep the
+   glass language readable. Tokens carry most of it, and the handful of
+   hardcoded dark surfaces get explicit overrides below. */
+.share-page[data-theme="light"] {
+  --share-accent: #2f3849;
+  --share-accent-hot: #0e9a80;
+  --share-ink: #0c111c;
+  --share-muted: rgba(20, 27, 42, .66);
+  --share-faint: rgba(20, 27, 42, .45);
+  --share-line: rgba(12, 18, 30, .14);
+  --share-line-soft: rgba(12, 18, 30, .08);
+  --share-glass: rgba(12, 18, 30, .035);
+  --share-glass-strong: rgba(12, 18, 30, .07);
+  --share-surface: rgba(255, 255, 255, .82);
+  --share-canvas: #eef1f6;
+  --share-on-ink: #ffffff;
+  color-scheme: light;
+}
+.share-page[data-theme="light"] .share-nav-pill { background: rgba(255, 255, 255, .82); }
+.share-page[data-theme="light"] .share-subtitle { color: var(--share-muted) !important; }
+.share-page[data-theme="light"] .share-panel--intro::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--share-accent) 8%, transparent), transparent 68%);
+}
+.share-page[data-theme="light"] .share-nav-pill,
+.share-page[data-theme="light"] .share-panel {
+  border-color: rgba(12, 18, 30, .12);
+  border-top-color: rgba(12, 18, 30, .18);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .85),
+    0 18px 48px -20px rgba(15, 23, 42, .28);
+}
+.share-page[data-theme="light"] .share-home-link,
+.share-page[data-theme="light"] .share-action-primary {
+  background: #0c111c;
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 6px 18px -8px rgba(15, 23, 42, .45);
+}
+.share-page[data-theme="light"] .share-action-primary:hover { background: #1a2334; }
+.share-page[data-theme="light"] .share-action-secondary {
+  background: rgba(12, 18, 30, .06);
+  color: var(--share-ink);
+  border-color: var(--share-line);
+}
+.share-page[data-theme="light"] .share-action-secondary:hover { background: rgba(12, 18, 30, .12); }
+.share-page[data-theme="light"] .share-metric-toggle { background: rgba(12, 18, 30, .06); }
+.share-page[data-theme="light"] .share-endpoint,
+.share-page[data-theme="light"] .share-stat-grid > div,
+.share-page[data-theme="light"] .share-rank-row,
+.share-page[data-theme="light"] .share-model-card,
+.share-page[data-theme="light"] .share-chart-shell,
+.share-page[data-theme="light"] .share-public-events article { background: rgba(12, 18, 30, .035); }
+.share-page[data-theme="light"] .share-model-tags span { background: rgba(12, 18, 30, .06); }
+.share-page[data-theme="light"] .share-issued-secret code { background: rgba(12, 18, 30, .06); }
+.share-page[data-theme="light"] .share-chart-gridline { stroke: rgba(12, 18, 30, .12); }
+.share-page[data-theme="light"] .share-skeleton { background: rgba(12, 18, 30, .07); }

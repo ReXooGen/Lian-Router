@@ -1,0 +1,62 @@
+/* Procedural Three.js orbit objects.
+   Colocated with the component and imported by `OrbitObject.tsx`, so whichever
+   app renders an object gets these rules: the console bundle and the landing
+   bundle ship separate stylesheets, and a rule parked in one of them would
+   silently miss the other.
+
+   The canvas is a real control: press and hold to take over rotation, drag to
+   spin, release to hand it back to the idle drift. It never captures layout —
+   the wrapper owns the box and the canvas fills it. */
+.orbit-object {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+.orbit-object-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  cursor: grab;
+  touch-action: none;
+  transition: filter 220ms ease;
+}
+
+.orbit-object-canvas.is-held {
+  cursor: grabbing;
+  filter: brightness(1.15);
+}
+
+.orbit-object-canvas:focus-visible {
+  outline: 2px solid var(--accent, #c2cad6);
+  outline-offset: 3px;
+}
+
+/* A soft light bloom behind each object, so it reads as lit rather than pasted
+   onto the panel. Purely decorative and never interactive. */
+.orbit-object::before {
+  content: "";
+  position: absolute;
+  inset: 12%;
+  border-radius: 999px;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 50% 45%,
+    color-mix(in srgb, var(--accent, #c2cad6) 22%, transparent),
+    transparent 68%
+  );
+  opacity: 0.55;
+  filter: blur(18px);
+}
+
+/* Sizes used by the console surfaces. */
+.orbit-object--hero { width: min(100%, 320px); }
+.orbit-object--panel { width: 132px; }
+.orbit-object--inline { width: 96px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .orbit-object-canvas { transition: none; }
+}
