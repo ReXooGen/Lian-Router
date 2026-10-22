@@ -482,3 +482,9 @@ src/        production backend
 ```
 
 For repository-local coding conventions and cleanup rules, see `AGENTS.md`.
+
+## Two projects
+
+This folder is the **local** build. It has its own git history, `.env`, and
+database, and is never deployed to the hosted instance. See [LOCAL.md](LOCAL.md)
+for the boundary between the two and the rules that keep them independent.
