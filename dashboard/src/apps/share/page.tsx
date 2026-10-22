@@ -367,7 +367,17 @@ export function SharePage(): ReactElement {
       return "dark";
     }
   });
-  const baseUrl = typeof window === "undefined" ? "/v1" : `${window.location.origin}/v1`;
+  // The gateway may be reachable at an address other than the one serving this
+  // page: behind a tunnel the page's origin is the tunnel's public host (which
+  // is right), but when the operator exposes a separate API host they set
+  // `LIANROUTER_PUBLIC_BASE_URL` and the server sends it back here.
+  const publicBase = state.data?.apiBaseUrl ?? null;
+  const baseUrl =
+    publicBase !== null
+      ? `${publicBase}/v1`
+      : typeof window === "undefined"
+        ? "/v1"
+        : `${window.location.origin}/v1`;
 
   const data = state.data;
 

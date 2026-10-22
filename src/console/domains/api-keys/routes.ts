@@ -9,6 +9,7 @@ import { hashShareToken } from "../../../persistence/share-store";
 import type { AccessDecision } from "../../../security/access-control";
 import { ConsoleDomainError, errorResponse, requireTenantScope } from "../../shared/errors";
 import { literalUnion } from "../../shared/elysia-schema";
+import { resolvePublicBaseUrl } from "../../../config";
 import { API_KEY_MODES } from "../../../persistence/schema";
 import type { ApiKeyConfig, ApiKeyResponse, RevealApiKeyResponse, UpdateApiKeyResponse } from "./contracts";
 import type { ApiKeyPatch, ApiKeyRecord } from "../../../persistence/api-key-store";
@@ -294,7 +295,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         target: keyId,
         detail: { shareId: link.id },
       });
-      const origin = (options.origin ?? "").replace(/\/$/, "");
+      // A gateway behind a tunnel or reverse proxy sees the proxy's own
+      // address in `request.url`, so a link built from it points at
+      // `http://127.0.0.1:12800` and works for nobody. The configured public
+      // base URL wins when present; otherwise the request origin is used.
+      const origin = (resolvePublicBaseUrl() ?? options.origin ?? "").replace(/\/$/, "");
       return {
         id: link.id,
         url: `${origin}/share/${token}`,

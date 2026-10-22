@@ -65,6 +65,12 @@ export interface ShareUsageActivity {
 export interface ShareEnrollmentData {
   readonly name: string;
   readonly keyPrefix: string | null;
+  /**
+   * Absolute base URL a recipient should configure, when the operator set
+   * `LIANROUTER_PUBLIC_BASE_URL`. `null` means the page's own origin is
+   * correct — the gateway is reachable at the address that served the page.
+   */
+  readonly apiBaseUrl: string | null;
   readonly canIssue: boolean;
   readonly alreadyIssued: boolean;
   /**

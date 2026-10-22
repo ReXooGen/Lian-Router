@@ -166,6 +166,16 @@ export const CONFIG_SPEC = {
     error:
       "LIANROUTER_PUBLIC_ORIGIN is required to build OAuth redirect URIs (e.g. https://lianrouter.example.com)",
   },
+  /**
+   * Externally reachable base URL, used when the gateway sits behind a tunnel
+   * or reverse proxy that rewrites the request origin.
+   *
+   * `LIANROUTER_PUBLIC_ORIGIN` cannot serve this purpose: it is required for
+   * OAuth callbacks and points at the console host, which may differ from the
+   * API host an operator exposes to recipients. Unset means the request origin
+   * is used, which is correct for a directly reachable gateway.
+   */
+  LIANROUTER_PUBLIC_BASE_URL: { kind: "optional-text" },
 
   // Provider OAuth hosts
   LIANROUTER_KIMI_OAUTH_HOST: { kind: "text", default: DEFAULT_KIMI_OAUTH_HOST },
@@ -549,6 +559,38 @@ export function requirePublicOrigin(): string {
     /\/+$/,
     "",
   );
+}
+
+/**
+ * The origin recipients should use to reach this gateway, or `undefined` when
+ * the request origin is authoritative.
+ *
+ * Behind a tunnel (cloudflared, ngrok) or a reverse proxy, `request.url` is the
+ * address the proxy dialed — often `http://127.0.0.1:12800`. An enrollment link
+ * built from that is unusable to anyone else, and the copy-paste `/v1` base URL
+ * on the share page has the same problem. Setting
+ * `LIANROUTER_PUBLIC_BASE_URL` makes both point at the address the operator
+ * actually exposes.
+ */
+export function resolvePublicBaseUrl(): string | undefined {
+  const raw = readOptionalText("LIANROUTER_PUBLIC_BASE_URL", CONFIG_SPEC.LIANROUTER_PUBLIC_BASE_URL);
+  if (raw === undefined) return undefined;
+  const trimmed = raw.replace(/\/+$/, "");
+  // A bare host would be spliced into links as `example.com/share/...` and
+  // resolve as a path. Fail closed on a value that is not an absolute http(s)
+  // origin rather than emitting broken links.
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(
+      "LIANROUTER_PUBLIC_BASE_URL must be an absolute URL, e.g. https://router.example.com",
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("LIANROUTER_PUBLIC_BASE_URL must use http or https");
+  }
+  return trimmed;
 }
 
 /** Builds the fixed OAuth callback URL for a provider id. */

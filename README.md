@@ -5,10 +5,22 @@
 **A self-hosted AI gateway that speaks every client protocol and every provider
 dialect — so you configure a route once, and any client can reach any model.**
 
+<p>
+  <img alt="Runtime" src="https://img.shields.io/badge/runtime-Bun%201.4-black" />
+  <img alt="Language" src="https://img.shields.io/badge/TypeScript-strict-3178c6" />
+  <img alt="Database" src="https://img.shields.io/badge/PostgreSQL-16+-336791" />
+  <img alt="Build" src="https://img.shields.io/badge/distribution-local%20only-2ea043" />
+</p>
+
 This repository is the **local, self-hosted build**: one process, one PostgreSQL
 database, and the console on `http://localhost:12800`. It is meant to be cloned
 and run on your own machine or LAN — there is no hosted service, no account, and
 no shared infrastructure behind it.
+
+> **This build is local-only.** It is a separate working copy from the
+> server-side deployment. Changes here are never published to, deployed to, or
+> synchronised with a remote host. If you also run a hosted instance, treat the
+> two as independent projects with their own configuration and release cadence.
 
 LianRouter sits between your AI clients and your provider accounts. It accepts
 the wire formats real tools already speak, normalizes every one of them into a
@@ -28,6 +40,24 @@ Built with Bun, TypeScript, Elysia, PostgreSQL, and optional Redis coordination.
 > routing engine, provider integrations, and console architecture come from that
 > upstream. This fork is rebranded, trimmed to a console-only distribution, and
 > configured for local use.
+
+## Contents
+
+- [Screenshots](#screenshots)
+- [Highlights](#highlights)
+- [Supported client protocols](#supported-client-protocols)
+- [Request lifecycle](#request-lifecycle)
+- [Requirements](#requirements)
+- [Run it locally](#run-it-locally)
+- [Console](#console)
+- [Share access and tunnels](#share-access-and-tunnels)
+- [Configuration](#configuration)
+- [Development commands](#development-commands)
+- [Tests and coverage](#tests-and-coverage)
+- [Docker](#docker)
+- [Providers and egress](#providers-and-egress)
+- [Generated protobuf](#generated-protobuf)
+- [Repository map](#repository-map)
 
 ## Screenshots
 
@@ -80,6 +110,10 @@ API tokens, or production endpoints appear in them.
 - **Account health as a state machine** — every failure is classified into
   `active` / `degraded` / `cooldown` / `disabled`, with per-account and per-model
   backoffs, automatic recovery, and a full transition log you can read.
+- **Share access without leaking a key** — a share template issues one child
+  key per client IP from a bearer enrollment link. The parent secret is never
+  shown, the child is scoped by the template, and every recipient's usage is
+  visible in the console.
 - **Validated egress pools** — HTTP CONNECT, HTTPS CONNECT, and SOCKS5, with
   SSRF validation at both creation and connection time. Configured pool failures
   surface as failures; a request never silently falls back to direct egress.
@@ -242,6 +276,57 @@ whole console, so opening the dashboard never exposes the router without it.
 The same secret gates the console API: every page, every mutation, and the
 backup export/import flows sit behind it.
 
+## Share access and tunnels
+
+The **Share** page lets you hand out access without revealing a parent
+credential. Create an API key in **Share template** mode, open **Share**, and
+press **Create enrollment link**. The link is a bearer token whose hash alone is
+stored; the recipient opens it, receives one child key scoped by the template,
+and the parent secret is never shown to them.
+
+A recipient can only be reached if the address in that link resolves for them.
+On a machine reachable only over loopback, the link is `http://127.0.0.1:12800/…`
+and is useless to anyone else — so expose the gateway first.
+
+### Exposing the gateway
+
+Any tunnel that forwards HTTPS to the gateway works; two that need no account
+setup for a quick test:
+
+```bash
+# Cloudflare quick tunnel — prints https://<random>.trycloudflare.com
+cloudflared tunnel --url http://localhost:12800
+
+# ngrok
+ngrok http 12800
+```
+
+Then set both values below and restart the gateway:
+
+```text
+LIANROUTER_PUBLIC_ORIGIN=https://<your-public-host>
+LIANROUTER_PUBLIC_BASE_URL=https://<your-public-host>
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+```
+
+- `LIANROUTER_PUBLIC_BASE_URL` is what makes enrollment links and the `/v1`
+  address shown to recipients point at the public host instead of the loopback
+  address the tunnel dialed. Without it the link still works for you and fails
+  for everyone else.
+- `TRUSTED_PROXY_CIDRS` tells the gateway to read the client address from
+  `CF-Connecting-IP` / `X-Forwarded-For`. Share enrollment allows one child key
+  per client IP; without this every visitor looks like `127.0.0.1` and the
+  second person to open the link is refused with "already issued". Set it to the
+  tunnel's own address, never to a range a visitor could originate from.
+
+Cloudflare quick tunnels and free ngrok rotate their hostname on restart, so
+update `LIANROUTER_PUBLIC_BASE_URL` when that happens. A named Cloudflare
+tunnel or a stable reverse proxy avoids the churn.
+
+Two things stay true behind a tunnel: the console password still gates every
+console route, and `/v1` still requires an API key. Exposing the port does not
+open the router by itself.
+
 ## Configuration
 
 `.env.example` is the configuration reference. Required values for a real run:
@@ -252,6 +337,10 @@ LIANROUTER_ENCRYPTION_KEY
 LIANROUTER_PUBLIC_ORIGIN
 REDIS_URL                    # unless REDIS_MODE=single_instance_local
 ```
+
+`LIANROUTER_PUBLIC_BASE_URL` is optional and only matters when the address
+recipients use differs from the address the gateway sees — a tunnel or a reverse
+proxy. See [Share access and tunnels](#share-access-and-tunnels).
 
 When the gateway runs behind a reverse proxy, set `TRUSTED_PROXY_CIDRS` to the
 proxy's CIDRs (for a loopback proxy, `127.0.0.1/32,::1/128`). Without it the

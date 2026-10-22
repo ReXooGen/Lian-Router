@@ -25,7 +25,7 @@ const emptyActivity = {
 } as const;
 
 const data: ShareEnrollmentData = {
-  name: "Team Access", keyPrefix: "ctk", canIssue: true, alreadyIssued: false, recoverable: false,
+  name: "Team Access", keyPrefix: "ctk", apiBaseUrl: null, canIssue: true, alreadyIssued: false, recoverable: false,
   dailyLimit: 50_000, monthlyLimit: null, oneTimeLimit: null, requestsPerMinute: 20,
   maxConcurrentRequests: 3, providerAllowlist: ["openai"], models: [{
     id: "openai/gpt-5", providerId: "openai", modelId: "gpt-5", wireFamily: "chat",
