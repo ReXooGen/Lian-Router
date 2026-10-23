@@ -148,6 +148,13 @@ export interface ProviderDispatchContext {
   readonly probe_marker?: typeof LIANROUTER_PROBE_MARKER;
   /** Original inbound headers needed only for provider-specific negotiation. */
   readonly request_headers?: Readonly<Record<string, string>> | undefined;
+  /**
+   * The proxy pool this attempt's egress actually goes through, absent when it
+   * dials direct. A pool row is one proxy endpoint, so this names the source
+   * address upstream will see — which is what a per-client handle must be
+   * bound to when two attempts leave through different exits.
+   */
+  readonly network_pool_id?: string | undefined;
 }
 
 /** ProviderDispatchTarget identity already resolved by routing before credential leasing. */

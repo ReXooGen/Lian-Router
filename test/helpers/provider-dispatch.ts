@@ -88,6 +88,7 @@ export function candidateFor(
 export function dispatchContext(
   providerId: ProviderDispatchContext["credential"]["provider_id"],
   credential: Partial<ResolvedCredential> = {},
+  networkPoolId?: string,
 ): ProviderDispatchContext {
   return {
     credential: {
@@ -98,6 +99,7 @@ export function dispatchContext(
     },
     deadline: Date.now() + 10_000,
     abort_signal: new AbortController().signal,
+    ...(networkPoolId ? { network_pool_id: networkPoolId } : {}),
   };
 }
 

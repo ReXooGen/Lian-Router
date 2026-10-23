@@ -10,7 +10,7 @@ const here = import.meta.dir;
 
 /**
  * `ProviderIcon.tsx`'s `iconAssets` map and `Providers.tsx`'s
- * `FREE_LIMITED_IDS`/`FREE_AVAILABLE_IDS`/`FOUNDING_IDS` sets are
+ * `FREE_LIMITED_IDS`/`FREE_AVAILABLE_IDS` sets are
  * hand-maintained dashboard copies of backend provider IDs — they cannot import
  * the backend list without bundling its module graph into the browser build
  * (see `lib/provider-names.ts` for the same constraint).
@@ -49,13 +49,12 @@ describe("dashboard/backend parity — hand-maintained provider lists", () => {
     expect(missing).toEqual([]);
   });
 
-  test("no free-tier or founding set names an unknown provider", () => {
+  test("no free-tier set names an unknown provider", () => {
     const source = readFileSync(join(here, "routes/Providers.tsx"), "utf8");
     const known = new Set(bundled);
     for (const marker of [
       "const FREE_LIMITED_IDS = new Set([",
       "const FREE_AVAILABLE_IDS = new Set([",
-      "const FOUNDING_IDS = new Set([",
     ]) {
       const stray = parseSetIds(source, marker).filter((id) => !known.has(id));
       expect(stray).toEqual([]);

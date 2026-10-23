@@ -99,7 +99,7 @@ const access = (tenantId: string): AccessDecision => ({
 describe("API-key lifecycle security", () => {
   test("persists only the hash and reveals plaintext only at creation", async () => {
     const store = new MemoryKeyStore();
-    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} } });
+    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} }, poolLookup: { get: async () => undefined } });
     const created = await factory.createKey(access("tenant-a"), {
       label: "build",
       scopes: ["routing:invoke"],
@@ -122,7 +122,7 @@ describe("API-key lifecycle security", () => {
 
   test("rejects invalid scopes and prevents cross-tenant access", async () => {
     const store = new MemoryKeyStore();
-    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} } });
+    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} }, poolLookup: { get: async () => undefined } });
     await expect(
       factory.createKey(access("tenant-a"), { scopes: ["platform:admin"] }),
     ).rejects.toMatchObject({ code: "invalid_scope" });
@@ -141,7 +141,7 @@ describe("API-key lifecycle security", () => {
 
   test("quota whitelist: empty patch preserves limits, populated allowlist stored verbatim", async () => {
     const store = new MemoryKeyStore();
-    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} } });
+    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} }, poolLookup: { get: async () => undefined } });
     const created = await factory.createKey(access("tenant-a"), {
       requestsPerMinute: 120,
       modelAllowlist: ["openai/gpt-4"],
@@ -172,7 +172,7 @@ describe("API-key lifecycle security", () => {
 
   test("rejects non-positive quota values", async () => {
     const store = new MemoryKeyStore();
-    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} } });
+    const factory = createApiKeyOperations({ store, accessResolver: () => access("tenant-a"), admissionService: { purgeKey: async () => {} }, poolLookup: { get: async () => undefined } });
     const created = await factory.createKey(access("tenant-a"), {});
     await expect(
       factory.updateKey(access("tenant-a"), created.id, { maxConcurrentRequests: 0 }),
@@ -1039,7 +1039,7 @@ function makeModelStore(): {
       return true;
     },
     async probeModel() {
-      return { ok: true, latencyMs: 1 };
+      return { ok: true, latencyMs: 1, httpStatus: 200 };
     },
     async testByokConnection() {
       return { ok: true, latencyMs: 1 };
@@ -1726,6 +1726,74 @@ describe("POST /providers/connection-test", () => {
     const response = await app.handle(request({ apiKey: "sk-test", wireFamily: "chat" }));
     expect(response.status).toBe(422);
     expect(calls).toHaveLength(0);
+  });
+});
+/**
+ * The single-probe route answers with the probe's own status. It used to
+ * answer 200 with `ok: false` in the body, and the console — which has no
+ * `http_status` for a probe row — projected the failure to 500, so an upstream
+ * 429 read as "the gateway broke". `set.status` now carries the real code.
+ */
+describe("POST /providers/:providerId/models/probe", () => {
+  const access: AccessDecision = {
+    id: "key-1",
+    tenantId: "tenant-1",
+    scopes: ["dashboard:read", "dashboard:write", "providers:read", "providers:write", "models:read", "models:write"],
+    admissionIdentity: "key-1",
+  };
+
+  function probeApp(result: {
+    ok: boolean;
+    latencyMs: number;
+    httpStatus: number;
+    code?: string;
+    error?: string;
+  }) {
+    const base = makeModelStore().store;
+    return createProviderCatalogRoutes({
+      store: { ...base, async probeModel() { return result; } },
+      accessResolver: () => access,
+      providerRegistry: testRegistry,
+    });
+  }
+
+  function probeRequest() {
+    return new Request("http://localhost/providers/openai/models/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelId: "deepseek-v4.1-flash-free", wireFamily: "chat" }),
+    });
+  }
+
+  it("answers 429 when the upstream rate limit produced the failure", async () => {
+    const response = await probeApp({
+      ok: false,
+      latencyMs: 3400,
+      httpStatus: 429,
+      code: "quota_exceeded",
+      error: "opencodeft/deepseek-v4.1-flash-free via chat /zen/v1/chat/completions — Free usage limit reached (upstream 429)",
+    }).handle(probeRequest());
+    expect(response.status).toBe(429);
+    const body = (await response.json()) as { ok: boolean; httpStatus: number; code?: string };
+    expect(body.ok).toBe(false);
+    expect(body.httpStatus).toBe(429);
+    expect(body.code).toBe("quota_exceeded");
+  });
+
+  it("still answers 500 for a genuinely unexpected probe failure", async () => {
+    const response = await probeApp({
+      ok: false,
+      latencyMs: 5,
+      httpStatus: 500,
+      code: "unknown_error",
+      error: "Model probe failed",
+    }).handle(probeRequest());
+    expect(response.status).toBe(500);
+  });
+
+  it("answers 200 for a successful probe", async () => {
+    const response = await probeApp({ ok: true, latencyMs: 12, httpStatus: 200 }).handle(probeRequest());
+    expect(response.status).toBe(200);
   });
 });
 }

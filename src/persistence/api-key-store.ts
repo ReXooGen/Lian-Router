@@ -32,6 +32,12 @@ export interface ApiKeyRecord {
   readonly providerAllowlist?: readonly string[];
   readonly modelAllowlist?: readonly string[];
   readonly modelDenylist?: readonly string[];
+  /**
+   * Pool this key's traffic must egress through, or absent for provider
+   * routing. A narrowing constraint on top of the candidate's own pools — see
+   * `acquirePoolSlot` in `transport/dispatch/leases.ts`.
+   */
+  readonly networkPoolId?: string;
   readonly createdAt: Date;
   readonly revokedAt?: Date;
   readonly tokensConsumed: number;
@@ -64,10 +70,17 @@ export interface ApiKeyPatch
     | "monthlyTokenLimit"
     | "lifetimeTokenBudget"
     | "maxConcurrentRequests"
+    | "networkPoolId"
   > {
   readonly keyHash?: string | null;
   readonly keyEncrypted?: Buffer | null;
   readonly keyPrefix?: string | null;
+  /**
+   * Egress binding. `null` detaches the key back to provider routing, which is
+   * why this is a writable patch field rather than an immutable creation-time
+   * property: an operator must be able to undo a choice.
+   */
+  readonly networkPoolId?: string | null;
   readonly notesTitle?: string | null;
   readonly notesSubtitle?: string | null;
   readonly notesBody?: string | null;
@@ -123,6 +136,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
         : { providerAllowlist: row.providerAllowlist as string[] }),
       ...(row.modelAllowlist === null ? {} : { modelAllowlist: row.modelAllowlist as string[] }),
       ...(row.modelDenylist === null ? {} : { modelDenylist: row.modelDenylist as string[] }),
+      ...(row.networkPoolId === null ? {} : { networkPoolId: row.networkPoolId }),
       createdAt: row.createdAt,
       ...(row.revokedAt ? { revokedAt: row.revokedAt } : {}),
       tokensConsumed: row.lifetimeTokensConsumed,
@@ -178,6 +192,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
       providerAllowlist: record.providerAllowlist ?? null,
       modelAllowlist: record.modelAllowlist ?? null,
       modelDenylist: record.modelDenylist ?? null,
+      networkPoolId: record.networkPoolId ?? null,
       lifetimeTokensConsumed: record.tokensConsumed,
     });
   }
@@ -244,6 +259,7 @@ export class DrizzleApiKeyStore implements ApiKeyStore {
             : {}),
           ...(patch.modelAllowlist !== undefined ? { modelAllowlist: patch.modelAllowlist } : {}),
           ...(patch.modelDenylist !== undefined ? { modelDenylist: patch.modelDenylist } : {}),
+          ...(patch.networkPoolId !== undefined ? { networkPoolId: patch.networkPoolId } : {}),
         })
         .where(and(eq(apiKeys.tenantId, tenantId), eq(apiKeys.id, keyId)))
         .returning();

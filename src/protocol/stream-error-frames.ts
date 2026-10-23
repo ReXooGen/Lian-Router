@@ -18,7 +18,7 @@
  * which is honest: the upstream failed and we do not know more.
  */
 import { GatewayError } from "../transport/gateway-error";
-import { extractUpstreamMessage, isContextLengthFailure, statusToGatewayErrorCode } from "../transport/failure-policy";
+import { classifyRateLimitScope, extractUpstreamMessage, isContextLengthFailure, statusToGatewayErrorCode } from "../transport/failure-policy";
 import { isRecord } from "./primitives";
 
 /**
@@ -118,7 +118,7 @@ export function gatewayErrorFromStreamError(
   }
   if (identifier !== undefined) {
     if (QUOTA_IDENTIFIERS.has(identifier))
-      return new GatewayError("quota_exceeded", 429, message || label, { providerCode: identifier, rateLimitScope: "provider" }, "upstream");
+      return new GatewayError("quota_exceeded", 429, message || label, { providerCode: identifier, rateLimitScope: classifyRateLimitScope({ status: 429, providerCode: identifier }) }, "upstream");
     if (AUTH_IDENTIFIERS.has(identifier))
       return new GatewayError("authentication_failed", 401, message || label, { providerCode: identifier, credentialEvidence: true }, "upstream");
     if (OVERLOAD_IDENTIFIERS.has(identifier))

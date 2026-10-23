@@ -34,7 +34,7 @@ import { OpenAICompatibleAdapter } from "../compatible-adapter";
 import { resolveByokWireProfile, stripEndpointBasePath } from "../operations/byok-wire-profile";
 import { recordAccountFailure, recordAccountSuccess } from "../operations/account-health-service";
 import { classifyUpstreamFailure } from "../../transport/failure-policy";
-import { GatewayError } from "../../transport/gateway-error";
+import { GatewayError, type GatewayErrorOrigin } from "../../transport/gateway-error";
 import type {
   ModelDefinition,
   ProviderAdapter,
@@ -491,6 +491,18 @@ export interface ProbeVerdict {
   readonly ok: boolean;
   readonly errorMessage: string | undefined;
   readonly usage: UsageRecord | undefined;
+  /**
+   * The HTTP status this probe outcome stands for — 200 on success, otherwise
+   * the failing error's own status. A probe has no client response of its own,
+   * so this is what the console records and what the single-probe route
+   * answers with: an upstream 429 stays a 429 instead of collapsing to a
+   * gateway-blaming 500.
+   */
+  readonly httpStatus: number;
+  /** Failure category (the `GatewayError` code); absent on success. */
+  readonly code: string | undefined;
+  /** Which boundary produced the failure; absent on success. */
+  readonly origin: GatewayErrorOrigin | undefined;
 }
 
 /**
@@ -575,5 +587,15 @@ export function computeProbeVerdict(args: {
     errorMessage = undefined;
   }
   const usage = terminal?.type === "terminal" ? terminal.usage : undefined;
-  return { ok, errorMessage, usage };
+  // The probe has no client response of its own, so the verdict carries the
+  // status this outcome stands for. A typed failure keeps its own status and
+  // code — the same contract live dispatch records — instead of collapsing to
+  // a gateway-blaming 500; only a genuinely unclassified throw becomes one.
+  const gateway = dispatchError instanceof GatewayError ? dispatchError : undefined;
+  const httpStatus = ok
+    ? 200
+    : gateway?.status ?? (dispatchError === undefined ? 502 : 500);
+  const code = ok ? undefined : gateway?.code ?? "unknown_error";
+  const origin = ok ? undefined : gateway?.origin ?? "gateway";
+  return { ok, errorMessage, usage, httpStatus, code, origin };
 }

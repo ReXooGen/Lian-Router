@@ -15,9 +15,19 @@ describe("mapClaudeHttpError", () => {
     expect(err.details["providerCode"]).toBe("invalid_token");
   });
 
-  test("429 maps to quota_exceeded", () => {
+  test("429 maps to quota_exceeded, scoped to the caller's allowance by default", () => {
+    // A Claude-wire 429 without capacity evidence is the caller's own window:
+    // another account may have room, another egress address cannot help.
     const err = mapClaudeHttpError(429, "slow down");
     expect(err.code).toBe("quota_exceeded");
+    expect(err.details["rateLimitScope"]).toBe("account");
+  });
+
+  test("429 that names provider capacity is scoped to the provider", () => {
+    const err = mapClaudeHttpError(
+      429,
+      JSON.stringify({ error: { type: "overloaded_error", message: "overloaded" } }),
+    );
     expect(err.details["rateLimitScope"]).toBe("provider");
   });
 });

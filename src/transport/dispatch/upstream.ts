@@ -36,6 +36,7 @@ export function buildUpstreamDispatchContext(input: {
   readonly signal: AbortSignal;
   readonly headers: Record<string, string>;
   readonly outboundFetch?: ValidatedOutboundFetch;
+  readonly networkPoolId?: string | undefined;
 }): Record<string, unknown> {
   return {
     credential: input.credential,
@@ -43,5 +44,6 @@ export function buildUpstreamDispatchContext(input: {
     abort_signal: input.signal,
     ...(Object.keys(input.headers).length > 0 ? { request_headers: input.headers } : {}),
     ...(input.outboundFetch ? { outbound_fetch: input.outboundFetch } : {}),
+    ...(input.networkPoolId ? { network_pool_id: input.networkPoolId } : {}),
   } as Record<string, unknown>;
 }

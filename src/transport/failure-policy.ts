@@ -232,7 +232,19 @@ export function classifyUpstreamFailure(error: unknown): UpstreamFailurePolicy {
   const providerCode = typeof error.details.providerCode === "string" ? error.details.providerCode : undefined;
   const providerId = typeof error.details.providerId === "string" ? error.details.providerId : undefined;
   const credentialEvidence = error.details.credentialEvidence === true || error.details.accountScope === true;
-  const scope = error.origin === "network" ? "network" : credentialEvidence ? "account" : "provider";
+  // A 429 states what it limited; that answer outranks the generic
+  // credential/default split, because it decides whether the account is parked
+  // (so routing tries another one) or the egress is (so routing tries another
+  // address). Absent the field, the older derivation stands.
+  const rateLimitScope = error.details.rateLimitScope;
+  const scope: NonNullable<UpstreamFailurePolicy["scope"]> =
+    error.origin === "network"
+      ? "network"
+      : rateLimitScope === "account" || rateLimitScope === "provider" || rateLimitScope === "network"
+        ? rateLimitScope
+        : credentialEvidence
+          ? "account"
+          : "provider";
   const retryAfterMs = typeof error.details.retryAfterMs === "number" ? error.details.retryAfterMs : undefined;
   const retryable = error.code === "capability_unsupported" || error.code === "model_not_found" || error.code === "admission_unavailable" || error.code === "capacity_exhausted" || error.code === "accounts_unavailable" || error.code === "quota_exceeded" || error.code === "authentication_failed" || error.code === "proxy_auth_required" || error.status === 401 || error.status === 403 || error.status === 429 || (error.status >= 500 && error.status <= 504);
   return {
@@ -328,6 +340,113 @@ export function isChannelVerificationFailure(body: unknown, status: number): boo
   return CHANNEL_VERIFICATION_PATTERN.test(message);
 }
 
+/**
+ * What a 429 actually limited. This decides two independent things: whether the
+ * failing *account* is parked (so routing tries another one) and whether the
+ * *egress pool* is parked (so routing tries another address).
+ *
+ * - `account` — the allowance or request window attached to the identity the
+ *   request presented. Another account may have a fresh one; another egress
+ *   address cannot change it, so cooling a pool here sidelines healthy egress
+ *   for every other request to the provider.
+ * - `provider` — the provider's own capacity, not this caller's share.
+ * - `network` — the limit follows the egress address rather than a credential.
+ *   Rotating the pool is the only remedy, so the (pool, provider) pair cools.
+ */
+export type UpstreamRateLimitScope = "account" | "provider" | "network";
+
+/**
+ * Identifiers that name provider-wide capacity rather than a caller's share.
+ * Matched as exact identifiers on the structured error fields, never as prose.
+ */
+const CAPACITY_SCOPE_IDENTIFIERS: Readonly<Record<string, true>> = {
+  capacity_exhausted: true,
+  model_at_capacity: true,
+  server_is_overloaded: true,
+  server_overloaded: true,
+  overloaded_error: true,
+};
+
+/**
+ * Providers whose 429 is keyed on the egress address rather than a credential.
+ *
+ * `opencodeft` is the one bundled provider that presents no caller identity at
+ * all: `requires_account: false` and `credential_forwarding: "never"` mean every
+ * request carries the literal `Authorization: Bearer public`, so upstream has no
+ * credential to key an allowance on. It keys on the source address instead — a
+ * spent address answers `FreeUsageLimitError` whatever `x-opencode-session` it
+ * is handed. A pool row is one proxy endpoint, so a pool identifies one address,
+ * and cooling that (pool, provider) pair is what moves the next request to an
+ * exit that may still have quota.
+ *
+ * Measured, not assumed: the fingerprint itself is not the limit. The adapter's
+ * own captured outbound bytes (headers and body) were replayed to the live
+ * endpoint and returned `200` with a real stream, while a malformed
+ * `x-opencode-session` returned `403 FreeTierError` and a `user-agent` below
+ * `1.18.0` returned `426 UpgradeRequired`. Production telemetry settles the
+ * quota question: real client traffic produced no 429s at all, every recorded
+ * `FreeUsageLimitError` came from the model-probe path, and a freshly minted
+ * session from a spent address is still refused while an unspent address serves
+ * both. So the handle is an identity, not an allowance key.
+ *
+ * For every provider that does present a credential, the same 429 is
+ * `account`-scoped instead.
+ */
+const EGRESS_SCOPED_PROVIDER_IDS: Readonly<Record<string, true>> = { opencodeft: true };
+
+/** Structured identifiers carried by an upstream error body, lowercased. */
+function rateLimitIdentifiers(body: unknown, providerCode?: string): readonly string[] {
+  const identifiers: string[] = [];
+  if (providerCode) identifiers.push(providerCode);
+  if (isRecord(body)) {
+    const envelope = isRecord(body.error) ? body.error : body;
+    for (const candidate of [envelope.code, envelope.type, body.code, body.type]) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) identifiers.push(candidate.trim());
+    }
+  }
+  return identifiers.map((value) => value.toLowerCase());
+}
+
+/**
+ * Classifies one 429 by what the upstream's own structured evidence says was
+ * limited. Status alone is not evidence: a bare 429 is the caller's window
+ * until something says otherwise, so it stays `account` rather than taking a
+ * pool out of service on a guess.
+ */
+export function classifyRateLimitScope(input: {
+  readonly status: number;
+  readonly providerId?: string;
+  readonly providerCode?: string;
+  readonly body?: unknown;
+}): UpstreamRateLimitScope {
+  if (input.status === 529) return "provider";
+  const identifiers = rateLimitIdentifiers(input.body, input.providerCode);
+  if (identifiers.some((identifier) => Object.hasOwn(CAPACITY_SCOPE_IDENTIFIERS, identifier))) return "provider";
+  const providerId = input.providerId?.toLowerCase();
+  if (providerId !== undefined && Object.hasOwn(EGRESS_SCOPED_PROVIDER_IDS, providerId)) return "network";
+  return "account";
+}
+
+/**
+ * OpenCode Free's cap answers a structured `FreeUsageLimitError` with a
+ * subscribe link and nothing an operator can act on: the model stays in the
+ * catalog and the gateway has no account to fail over to. Say what the gateway
+ * actually does about it instead of relaying the sales copy.
+ */
+const FREE_TIER_GATE_IDENTIFIER = "freeusagelimiterror";
+
+function openCodeFreeTierMessage(providerId: string, identifiers: readonly string[]): string | undefined {
+  if (providerId !== "opencodeft") return undefined;
+  if (!identifiers.includes(FREE_TIER_GATE_IDENTIFIER)) return undefined;
+  return (
+    "OpenCode Free usage limit reached (upstream 429 FreeUsageLimitError). The free allowance is " +
+    "keyed on the egress address, so this proxy exit is spent, not the account — the endpoint " +
+    "accepts only the public credential. The gateway cools this (pool, provider) pair so the next " +
+    "request leaves through a different exit; if every exit is spent the request fails and adding " +
+    "pools is the only remedy. Paid tier: `opencodego` serves the same MiMo-V2.6-Flash family."
+  );
+}
+
 /** Converts one failed upstream response into the shared GatewayError contract. */
 export async function mapUpstreamHttpError(response: Response, providerId: string): Promise<never> {
   const text = await response.text().catch(() => "");
@@ -339,6 +458,13 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
   } catch {
     parsedBody = undefined;
   }
+  const identifiers = rateLimitIdentifiers(parsedBody, providerCode);
+  const rateLimitScope = classifyRateLimitScope({
+    status: response.status,
+    providerId,
+    ...(providerCode === undefined ? {} : { providerCode }),
+    body: parsedBody,
+  });
   // A named overflow outranks the status bucket: the upstream may send it as a
   // generic 400, where `invalid_request` told the client its syntax was wrong
   // and invited a byte-identical retry that could never fit. The envelope
@@ -356,12 +482,20 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
   const message = (
     channelVerification
       ? "CodeBuddy channel verification failed (11128 \"conversation id missing\"): the upstream gateway requires the X-Conversation-ID / X-Conversation-Request-ID / X-Conversation-Message-ID header family on every request. If this appears, the gate likely changed (e.g. a new required header)."
-      : extracted.length > 0
-        ? extracted
-        : text.trim() || `Provider returned HTTP ${status}.`
+      : response.status === 429
+        ? openCodeFreeTierMessage(providerId, identifiers) ?? (extracted.length > 0 ? extracted : text.trim() || `Provider returned HTTP ${status}.`)
+        : extracted.length > 0
+          ? extracted
+          : text.trim() || `Provider returned HTTP ${status}.`
   ).slice(0, MAX_UPSTREAM_ERROR_BYTES).replace(/[\r\n]+/g, " ");
   const retryAfterMs = parseUpstreamBackoff(response.headers);
   const requestId = upstreamRequestId(response.headers);
+  // A spent free-tier allowance is attributed to the client handle the request
+  // presented, so the retry has to present a different one. That decision
+  // belongs to the adapter that owns the handle, not to this classifier, which
+  // only reports what upstream's own structured body said.
+  const freeTierAllowanceExhausted =
+    response.status === 429 && identifiers.includes(FREE_TIER_GATE_IDENTIFIER);
   throw new GatewayError(code, status, message, {
     providerId,
     providerStatus: response.status,
@@ -369,7 +503,8 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
     ...(requestId ? { upstreamRequestId: requestId } : {}),
     raw: text.slice(0, MAX_UPSTREAM_ERROR_BYTES).replace(/[\r\n]+/g, " "),
     ...(retryAfterMs === null || retryAfterMs === undefined ? {} : { retryAfterMs }),
-    ...(response.status === 429 ? { rateLimitScope: "provider" } : {}),
+    ...(response.status === 429 ? { rateLimitScope } : {}),
+    ...(freeTierAllowanceExhausted ? { freeTierAllowanceExhausted: true } : {}),
     ...(response.status === 401 || response.status === 403 ? { credentialEvidence: true } : {}),
   }, response.status === 407 ? "network" : "upstream");
 }

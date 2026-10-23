@@ -20,6 +20,7 @@ import { ApiKeysPanel } from "../components/ApiKeysPanel";
 import { useTrackedTimeout } from "../lib/use-timeout";
 import { useNetworkPools } from "../lib/hooks/network";
 import { useSystemHealth, useUsage } from "../lib/hooks/system";
+import { useStartTunnel, useStopTunnel, useTunnelStatus } from "../lib/hooks/tunnel";
 import { useUsageLive } from "../lib/hooks/live";
 import { formatBytes, formatDuration, formatUptime } from "../lib/format";
 
@@ -485,13 +486,42 @@ function SystemOverviewPanel({
 
 function ApiEndpointCard() {
   const [copied, setCopied] = useState(false);
+  const [hostCopied, setHostCopied] = useState(false);
   const schedule = useTrackedTimeout();
-  const endpoint = `${window.location.origin}/v1`;
+  // Separate scheduler: sharing one let a host copy clear the endpoint button's
+  // "Copied" label, or the reverse, when both were pressed within the timeout.
+  const scheduleHost = useTrackedTimeout();
+  const tunnelQuery = useTunnelStatus();
+  const startTunnel = useStartTunnel();
+  const stopTunnel = useStopTunnel();
+
+  const tunnel = tunnelQuery.data;
+  const tunnelUrl = tunnel?.running === true ? tunnel.publicUrl : null;
+  // The advertised base URL follows the tunnel: a recipient handed the
+  // loopback address cannot reach anything but their own machine.
+  const endpoint = tunnelUrl !== null ? `${tunnelUrl}/v1` : `${window.location.origin}/v1`;
+  const tunnelPending = startTunnel.isPending || stopTunnel.isPending;
+  // A failed attempt is also recorded server-side, so the reason survives a
+  // reload instead of only living in this tab's mutation state.
+  const tunnelError =
+    startTunnel.error?.message ?? stopTunnel.error?.message ?? tunnel?.error ?? null;
 
   const copy = () => {
     void navigator.clipboard.writeText(endpoint);
     setCopied(true);
     schedule(() => setCopied(false), 2000);
+  };
+
+  const copyHost = () => {
+    if (tunnelUrl === null) return;
+    void navigator.clipboard.writeText(tunnelUrl);
+    setHostCopied(true);
+    scheduleHost(() => setHostCopied(false), 2000);
+  };
+
+  const toggleTunnel = (next: boolean) => {
+    if (next) startTunnel.mutate();
+    else stopTunnel.mutate();
   };
 
   return (
@@ -537,6 +567,78 @@ function ApiEndpointCard() {
             Point any SDK, CLI, or agent (e.g. Claude Code, Windsurf, OpenCode) to this same-origin
             base URL.
           </p>
+
+          <div
+            style={{
+              paddingTop: "10px",
+              borderTop: "1px solid var(--inner-border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+            }}
+          >
+            <Inline gap="10px">
+              <Switch
+                checked={tunnel?.running === true}
+                onChange={toggleTunnel}
+                disabled={tunnelPending}
+                label="Tunnel"
+              />
+              <Inline gap="6px">
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: "7px",
+                    height: "7px",
+                    borderRadius: "50%",
+                    background:
+                      tunnelPending
+                        ? "var(--orange)"
+                        : tunnelUrl !== null
+                          ? "var(--green)"
+                          : "var(--text-tertiary)",
+                  }}
+                />
+                <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--text-secondary)" }}>
+                  {tunnelPending ? "Starting…" : tunnelUrl !== null ? "Live" : "Off"}
+                </span>
+              </Inline>
+            </Inline>
+            {tunnelUrl !== null ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={copyHost}
+                icon={hostCopied ? <Check size={12} /> : <Copy size={12} />}
+              >
+                {hostCopied ? "Copied" : "Copy host"}
+              </Button>
+            ) : null}
+          </div>
+
+          {tunnelUrl !== null ? (
+            <code
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "12px",
+                color: "var(--text-secondary)",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {tunnelUrl}
+            </code>
+          ) : (
+            <p style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+              Local only — reachable on this machine.
+            </p>
+          )}
+
+          {tunnelError !== null ? (
+            <p role="alert" style={{ fontSize: "12px", color: "var(--red)", lineHeight: 1.5 }}>
+              {tunnelError}
+            </p>
+          ) : null}
         </Stack>
       </CardBody>
     </Card>

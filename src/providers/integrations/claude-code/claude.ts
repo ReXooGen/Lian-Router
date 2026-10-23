@@ -76,10 +76,14 @@ export const CLAUDE_MODELS: readonly ModelDefinition[] = [
   claudeMessagesModel("claude-opus-4-7", 1_000_000, 128_000, true),
   claudeMessagesModel("claude-opus-4-6", 1_000_000, 128_000, true),
   claudeMessagesModel("claude-sonnet-5", 1_000_000, 128_000, true),
+  claudeMessagesModel("claude-sonnet-5-5", 1_000_000, 128_000, true),
   claudeMessagesModel("claude-sonnet-4-6", 1_000_000, 128_000, true),
   claudeMessagesModel("claude-opus-4-5", 200_000, 64_000, true),
   claudeMessagesModel("claude-sonnet-4-5", 1_000_000, 64_000, true),
   claudeMessagesModel("claude-haiku-4-5", 200_000, 64_000, true),
+  // Dated Haiku snapshot: the published catalog lists it as its own id, and a
+  // pinned client cannot address the undated alias.
+  claudeMessagesModel("claude-haiku-4-5-20251001", 200_000, 64_000, true),
   claudeMessagesModel("claude-opus-4-1", 200_000, 32_000, true),
   claudeMessagesModel("claude-3-7-sonnet", 200_000, 64_000, false),
 ];

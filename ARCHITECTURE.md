@@ -75,7 +75,7 @@ and API-key usage totals.
 
 | Layer | Doc | Covers |
 |---|---|---|
-| console | `src/console/CONSOLE.md` | Conventions, cookie auth and first-boot, catalog/accounts, account concurrency and usage, API-key modes and shared-key enrollment/activity, alias/combo and pools, CLI tools, quotas, runtime settings, backup/restore |
+| console | `src/console/CONSOLE.md` | Conventions, cookie auth and first-boot, catalog/accounts, account concurrency and usage, API-key modes and shared-key enrollment/activity, alias/combo and pools, CLI tools, quotas, runtime settings, backup/restore, tunnel mode |
 
 ### Foundation
 

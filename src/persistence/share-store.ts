@@ -358,6 +358,11 @@ export class DrizzleShareLinkStore implements ShareLinkStore {
             providerAllowlist: parent.providerAllowlist,
             modelAllowlist: parent.modelAllowlist,
             modelDenylist: parent.modelDenylist,
+            // Copied, not resolved through the parent at request time: an
+            // issued child keeps the egress it was minted with, so revoking or
+            // re-pointing the template cannot silently move a live credential
+            // to a different address.
+            networkPoolId: parent.networkPoolId,
             lifetimeTokensConsumed: 0,
           })
           .returning({ id: apiKeys.id, tenantId: apiKeys.tenantId, createdAt: apiKeys.createdAt });

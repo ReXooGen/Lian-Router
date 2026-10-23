@@ -2,7 +2,7 @@
 // AES/RSA request signing, alphabet-scrambled binary body, enveloped SSE
 // frames — session/crypto protocol outside factory reach; stays bespoke.
 import { constants, createCipheriv, createHash, publicEncrypt, randomUUID } from "node:crypto";
-import { extractUpstreamMessage, mapUpstreamHttpError, statusToGatewayErrorCode } from "../../transport/failure-policy";
+import { classifyRateLimitScope, extractUpstreamMessage, mapUpstreamHttpError, statusToGatewayErrorCode } from "../../transport/failure-policy";
 import { GatewayError } from "../../transport/gateway-error";
 import type { CanonicalEvent, CanonicalRequest, CanonicalStopReason, ContentPart } from "../../transport/canonical-model";
 import { toolResultParts } from "../../transport/canonical-model";
@@ -13,7 +13,7 @@ import { defineModel } from "../model-definition";
 import { getQoderVersion, resolveQoderVersion } from "../operations/client-versions";
 import { createUpstreamDeadlineLifecycle, abortFailure } from "../operations/upstream-deadline";
 
-interface QoderModeProfile {
+export interface QoderModeProfile {
   readonly chatUrl: string;
   readonly businessProduct: string;
   readonly businessType: string;
@@ -24,6 +24,8 @@ interface QoderModeProfile {
   readonly sendModelSourceHeaders: boolean;
   readonly emptyAliyunUserType: boolean;
 }
+
+export type QoderRegion = "intl" | "cn";
 
 export const MODERN_PROFILE: QoderModeProfile = {
   chatUrl: "https://api2.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1",
@@ -37,7 +39,31 @@ export const MODERN_PROFILE: QoderModeProfile = {
   emptyAliyunUserType: true,
 };
 
+/**
+ * Qoder CN. Both sites run the same path shapes on different hosts and bill
+ * different SKUs behind the same model keys, so the region selects the host
+ * set and the catalog together — never one without the other. CN serves every
+ * token kind (PAT-exchanged job tokens included) from its single gateway host,
+ * so it has no `api2`-style split.
+ */
+export const CN_PROFILE: QoderModeProfile = {
+  ...MODERN_PROFILE,
+  chatUrl: "https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1",
+};
+
+export const QODER_REGION_PROFILES: Readonly<Record<QoderRegion, QoderModeProfile>> = {
+  intl: MODERN_PROFILE,
+  cn: CN_PROFILE,
+};
+
+/** Job-token exchange host per region; the CN gateway doubles as its center. */
+const QODER_JOB_TOKEN_URLS: Readonly<Record<QoderRegion, string>> = {
+  intl: "https://center.qoder.sh/algo/api/v3/user/jobToken?Encode=1",
+  cn: "https://gateway.qoder.com.cn/algo/api/v3/user/jobToken?Encode=1",
+};
+
 const QODER_PROVIDER_ID = "qoder" as const;
+export const QODER_CN_PROVIDER_ID = "qoder-cn" as const;
 
 export const QODER_MODEL_CONFIGS: Record<
   string,
@@ -59,9 +85,34 @@ export const QODER_MODEL_CONFIGS: Record<
   kmodel_latest: { id: "kmodel_latest", display_name: "Kimi K2.7 Latest", max_input_tokens: 256000, is_vl: true, is_reasoning: false },
 };
 
+/**
+ * Qoder CN catalog. The tier keys are shared with intl, but the frontier keys
+ * are not interchangeable: CN serves its own Qwen/GLM generation behind
+ * `qmodel_38max`/`qfmodel`/`gmodel`/`gfmodel` and does not carry intl's
+ * `qmodel_preview` or `gm51model`. Sending an intl key to the CN gateway
+ * downgrades the model silently, so the two catalogs stay separate.
+ */
+export const QODER_CN_MODEL_CONFIGS: QoderModelConfigMap = {
+  ultimate: { id: "ultimate", display_name: "Ultimate", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  auto: { id: "auto", display_name: "Auto", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+  performance: { id: "performance", display_name: "Performance", max_input_tokens: 272000, is_vl: true, is_reasoning: false },
+  efficient: { id: "efficient", display_name: "Efficient", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+  lite: { id: "lite", display_name: "Lite", max_input_tokens: 180000, is_vl: false, is_reasoning: true },
+  qmodel_38max: { id: "qmodel_38max", display_name: "Qwen3.8-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: true },
+  qmodel_latest: { id: "qmodel_latest", display_name: "Qwen3.7-Max", max_input_tokens: 1000000, is_vl: true, is_reasoning: false },
+  qmodel: { id: "qmodel", display_name: "Qwen3.7-Plus", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+  qfmodel: { id: "qfmodel", display_name: "Qwen3.8-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+  kmodel_latest: { id: "kmodel_latest", display_name: "Kimi-K3", max_input_tokens: 256000, is_vl: true, is_reasoning: true },
+  kmodel: { id: "kmodel", display_name: "Kimi-K2.7-Code", max_input_tokens: 256000, is_vl: true, is_reasoning: false },
+  gmodel: { id: "gmodel", display_name: "GLM-5.3", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  gfmodel: { id: "gfmodel", display_name: "GLM-5.3-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+  dmodel: { id: "dmodel", display_name: "DeepSeek-V4-Pro", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  dfmodel: { id: "dfmodel", display_name: "DeepSeek-V4-Flash", max_input_tokens: 180000, is_vl: true, is_reasoning: true },
+  mmodel: { id: "mmodel", display_name: "MiniMax-M3", max_input_tokens: 180000, is_vl: true, is_reasoning: false },
+};
+
 const QODER_APPCODE = "cosy";
 const QODER_SIG_SECRET = "d2FyLCB3YXIgbmV2ZXIgY2hhbmdlcw==";
-const QODER_JOB_TOKEN_URL = "https://center.qoder.sh/algo/api/v3/user/jobToken?Encode=1";
 const QODER_STANDARD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const QODER_ALPHABET = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
 const QODER_RSA_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -79,7 +130,7 @@ export interface QoderAuth {
   refreshToken: string;
   machineId: string;
 }
-interface QoderModelConfig {
+export interface QoderModelConfig {
   id: string;
   display_name: string;
   max_input_tokens: number;
@@ -88,6 +139,9 @@ interface QoderModelConfig {
   is_reasoning: boolean;
   source?: string;
 }
+
+/** Per-region model catalog: the same key names describe different SKUs. */
+export type QoderModelConfigMap = Record<string, QoderModelConfig>;
 
 
 function qoderMd5(value: string | Uint8Array): string {
@@ -157,6 +211,7 @@ function qoderBuildCosyHeaders(
   url: string,
   auth: QoderAuth,
   version = getQoderVersion(),
+  profile: QoderModeProfile = MODERN_PROFILE,
 ): Record<string, string> {
   const key = randomUUID().replaceAll("-", "").slice(0, 16);
   const identity = JSON.stringify({
@@ -193,12 +248,12 @@ function qoderBuildCosyHeaders(
     "cosy-organization-id": "",
     "cosy-organization-tags": "",
     "x-request-id": randomUUID(),
-    ...(MODERN_PROFILE.sendBusinessHeaders
+    ...(profile.sendBusinessHeaders
       ? {
-          "cosy-business-product": MODERN_PROFILE.businessProduct,
-          "cosy-business-type": MODERN_PROFILE.businessType,
+          "cosy-business-product": profile.businessProduct,
+          "cosy-business-type": profile.businessType,
           "cosy-business-version": version,
-          "cosy-scene": MODERN_PROFILE.cosyScene,
+          "cosy-scene": profile.cosyScene,
         }
       : {}),
     "cosy-version": version,
@@ -220,11 +275,12 @@ async function exchangeQoderPat(
   signal: AbortSignal,
   fetcher: QoderFetcher,
   version = getQoderVersion(),
+  region: QoderRegion = "intl",
 ): Promise<QoderAuth> {
   const machineId = qoderMachineIdFromPat(pat);
   const encodedBody = transformQoderBody(JSON.stringify({ payload: JSON.stringify({ personalToken: pat, securityOauthToken: "", refreshToken: "", needRefresh: false, authInfo: {} }), encodeVersion: "1" }));
-  const response = await fetcher(QODER_JOB_TOKEN_URL, { method: "POST", headers: qoderStaticHeaders(machineId, version), body: encodedBody as unknown as BodyInit, signal });
-  if (!response.ok) throw await mapUpstreamHttpError(response, "qoder");
+  const response = await fetcher(QODER_JOB_TOKEN_URLS[region], { method: "POST", headers: qoderStaticHeaders(machineId, version), body: encodedBody as unknown as BodyInit, signal });
+  if (!response.ok) throw await mapUpstreamHttpError(response, region === "cn" ? "qoder-cn" : "qoder");
   let responseBody: unknown;
   try {
     responseBody = await response.json();
@@ -256,14 +312,15 @@ async function callQoder(
   signal: AbortSignal,
   fetcher: QoderFetcher,
   version = getQoderVersion(),
+  profile: QoderModeProfile = MODERN_PROFILE,
 ): Promise<Response> {
   const encoded = transformQoderBody(JSON.stringify(body));
   const modelConfig = (body["model_config"] as Record<string, unknown> | null) ?? null;
   return fetcher(url, {
     method: "POST",
     headers: {
-      ...qoderBuildCosyHeaders(encoded, url, auth, version),
-      ...(MODERN_PROFILE.sendModelSourceHeaders
+      ...qoderBuildCosyHeaders(encoded, url, auth, version, profile),
+      ...(profile.sendModelSourceHeaders
         ? { "x-model-key": modelId, "x-model-source": typeof modelConfig?.["source"] === "string" ? (modelConfig["source"] as string) : "system" }
         : {}),
       Accept: "text/event-stream",
@@ -319,7 +376,7 @@ function qoderEnvelopeToFrames(data: string): Array<{ event: string | null; data
         providerId: QODER_PROVIDER_ID,
         providerStatus: status,
         ...(status === 401 || status === 403 ? { credentialEvidence: true } : {}),
-        ...(status === 429 ? { rateLimitScope: "provider" } : {}),
+        ...(status === 429 ? { rateLimitScope: classifyRateLimitScope({ status }) } : {}),
       },
       "upstream",
     );
@@ -385,6 +442,7 @@ export function buildQoderRequest(
   request: CanonicalRequest,
   modelConfig: QoderModelConfig,
   auth: QoderAuth,
+  profile: QoderModeProfile = MODERN_PROFILE,
 ): Record<string, unknown> {
   const allMessages = request.messages;
   const systemParts: string[] = [];
@@ -402,7 +460,7 @@ export function buildQoderRequest(
   }
   const systemPrompt = systemParts.join("\n\n").trim();
   const qoderMessages: Array<Record<string, unknown>> = [];
-  if (MODERN_PROFILE.mirrorTopLevelSystem && systemPrompt.length > 0) {
+  if (profile.mirrorTopLevelSystem && systemPrompt.length > 0) {
     qoderMessages.push({
       role: "system",
       content: systemPrompt,
@@ -459,7 +517,7 @@ export function buildQoderRequest(
     chat_record_id: recordId,
     session_id: sessionId,
     stream: true,
-    ...(MODERN_PROFILE.emptyAliyunUserType ? { aliyun_user_type: "" } : {}),
+    ...(profile.emptyAliyunUserType ? { aliyun_user_type: "" } : {}),
     chat_task: "FREE_INPUT",
     is_reply: true,
     is_retry: false,
@@ -469,10 +527,10 @@ export function buildQoderRequest(
     agent_id: "agent_common",
     task_id: "common",
     code_language: "",
-    chat_prompt: MODERN_PROFILE.mirrorTopLevelSystem ? systemPrompt : "",
+    chat_prompt: profile.mirrorTopLevelSystem ? systemPrompt : "",
     image_urls: null,
     chat_context: {
-      chatPrompt: MODERN_PROFILE.mirrorTopLevelSystem ? systemPrompt : "",
+      chatPrompt: profile.mirrorTopLevelSystem ? systemPrompt : "",
       imageUrls: null,
       extra: { context: [], modelConfig: { key: modelId, is_reasoning: reasoning }, originalContent: latestUserText },
       features: [],
@@ -591,24 +649,52 @@ async function* qoderBodyToCanonicalEvents(
   } as CanonicalEvent;
 }
 
-// Model catalog — maps QODER_MODEL_CONFIGS (provider) to LianRouter ModelDefinition
+// Model catalog — maps a region's config table to LianRouter ModelDefinitions
 
-export const QODER_MODELS: readonly ModelDefinition[] = Object.entries(QODER_MODEL_CONFIGS).map(([id, cfg]) =>
-  defineModel({ id, endpoint: "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1", ctx: cfg.max_input_tokens, out: cfg.max_output_tokens ?? 32768, vision: cfg.is_vl, reasoning: cfg.is_reasoning }),
-);
+const QODER_CHAT_PATH = "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1" as const;
+
+function qoderCatalog(configs: QoderModelConfigMap): readonly ModelDefinition[] {
+  return Object.entries(configs).map(([id, cfg]) =>
+    defineModel({
+      id,
+      endpoint: QODER_CHAT_PATH,
+      ctx: cfg.max_input_tokens,
+      out: cfg.max_output_tokens ?? 32768,
+      vision: cfg.is_vl,
+      reasoning: cfg.is_reasoning,
+    }),
+  );
+}
+
+export const QODER_MODELS: readonly ModelDefinition[] = qoderCatalog(QODER_MODEL_CONFIGS);
+export const QODER_CN_MODELS: readonly ModelDefinition[] = qoderCatalog(QODER_CN_MODEL_CONFIGS);
 
 // ProviderAdapter — manual dispatch preserving COSY encryption + envelope logic
 
 interface QoderAdapterOptions {
   readonly fetch?: typeof fetch;
+  readonly region?: QoderRegion;
 }
 
+/**
+ * One adapter per region. The codec — COSY signing, body scrambling, envelope
+ * unwrapping — is identical; only the host set, the job-token endpoint, and the
+ * model catalog differ, so the region is a constructor input rather than a
+ * second implementation.
+ */
 class QoderAdapter implements ProviderAdapter {
-  readonly provider_id = QODER_PROVIDER_ID;
+  readonly provider_id: typeof QODER_PROVIDER_ID | typeof QODER_CN_PROVIDER_ID;
   private readonly fetchFn: typeof fetch;
+  private readonly region: QoderRegion;
+  private readonly profile: QoderModeProfile;
+  private readonly modelConfigs: QoderModelConfigMap;
 
   constructor(options: QoderAdapterOptions = {}) {
     this.fetchFn = options.fetch ?? globalThis.fetch;
+    this.region = options.region ?? "intl";
+    this.profile = QODER_REGION_PROFILES[this.region];
+    this.modelConfigs = this.region === "cn" ? QODER_CN_MODEL_CONFIGS : QODER_MODEL_CONFIGS;
+    this.provider_id = this.region === "cn" ? QODER_CN_PROVIDER_ID : QODER_PROVIDER_ID;
   }
 
   async *dispatch(
@@ -617,12 +703,12 @@ class QoderAdapter implements ProviderAdapter {
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
     if (candidate.wire_family !== "chat") {
-      throw new GatewayError("capability_unsupported", 400, `qoder supports chat only, got ${candidate.wire_family}`);
+      throw new GatewayError("capability_unsupported", 400, `${this.provider_id} supports chat only, got ${candidate.wire_family}`);
     }
     const pat = readCredentialSecret(context.credential, "Qoder PAT is required");
 
     const modelId = candidate.model_id || request.model;
-    const modelConfig = (QODER_MODEL_CONFIGS as Record<string, QoderModelConfig>)[modelId] ?? {
+    const modelConfig = this.modelConfigs[modelId] ?? {
       id: modelId,
       display_name: modelId,
       max_input_tokens: 180_000,
@@ -640,15 +726,15 @@ class QoderAdapter implements ProviderAdapter {
 
     try {
       const version = await resolveQoderVersion(outboundFetch, lifecycle.signal);
-      const auth = await exchangeQoderPat(pat, lifecycle.signal, fetcher, version);
-      const qoderBody = buildQoderRequest(modelId, request, modelConfig, auth);
+      const auth = await exchangeQoderPat(pat, lifecycle.signal, fetcher, version, this.region);
+      const qoderBody = buildQoderRequest(modelId, request, modelConfig, auth, this.profile);
       const url =
         candidate.endpoint_path && candidate.endpoint_path.startsWith("http")
           ? candidate.endpoint_path
-          : MODERN_PROFILE.chatUrl;
+          : this.profile.chatUrl;
 
-      const response = await callQoder(url, qoderBody, modelId, auth, lifecycle.signal, fetcher, version);
-      if (!response.ok) throw await mapUpstreamHttpError(response, "qoder");
+      const response = await callQoder(url, qoderBody, modelId, auth, lifecycle.signal, fetcher, version, this.profile);
+      if (!response.ok) throw await mapUpstreamHttpError(response, this.provider_id);
       if (!response.body) throw new GatewayError("platform_unavailable", 502, "Qoder returned empty body", {}, "upstream");
       // Headers arrived: the pre-stream deadline has served its purpose.
       // From here the gateway stall/first-chunk watchdog (propagated via
@@ -669,4 +755,8 @@ class QoderAdapter implements ProviderAdapter {
 
 export function createQoderAdapter(options: QoderAdapterOptions = {}): ProviderAdapter {
   return new QoderAdapter(options);
+}
+
+export function createQoderCnAdapter(options: Omit<QoderAdapterOptions, "region"> = {}): ProviderAdapter {
+  return new QoderAdapter({ ...options, region: "cn" });
 }

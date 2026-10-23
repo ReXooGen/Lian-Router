@@ -30,6 +30,15 @@ export interface ApiKeyAuthorizationSnapshot {
   readonly lifetime_token_budget?: number | null | undefined;
   readonly lifetime_tokens_consumed?: number | null | undefined;
   readonly max_concurrent?: number | null | undefined;
+  /**
+   * Pool this key's traffic must egress through. `null`/`undefined` leaves
+   * egress to the candidate account's own routing.
+   *
+   * Carried on the snapshot rather than read at dispatch time because the
+   * snapshot is the one authorization object every route already receives;
+   * `acquirePoolSlot` intersects it with the candidate's eligible pools.
+   */
+  readonly network_pool_id?: string | null | undefined;
   readonly scopes?: readonly string[] | undefined;
 }
 
@@ -64,6 +73,7 @@ export function freezeSnapshot(s: ApiKeyAuthorizationSnapshot): ApiKeyAuthorizat
     lifetime_token_budget: s.lifetime_token_budget ?? null,
     lifetime_tokens_consumed: s.lifetime_tokens_consumed ?? null,
     max_concurrent: s.max_concurrent ?? null,
+    network_pool_id: s.network_pool_id ?? null,
     scopes: s.scopes ? Object.freeze([...s.scopes]) : undefined,
   };
   return Object.freeze(frozen) as ApiKeyAuthorizationSnapshot;
@@ -83,6 +93,7 @@ export function createAuthorizationSnapshot(input: {
   readonly lifetime_tokens_consumed?: number | null;
   readonly max_concurrent?: number | null;
   readonly rpm_limit?: number | null;
+  readonly network_pool_id?: string | null;
   readonly scopes?: readonly string[];
 }): ApiKeyAuthorizationSnapshot {
   return freezeSnapshot({
@@ -112,6 +123,9 @@ export function createAuthorizationSnapshot(input: {
       : {}),
     ...(input.max_concurrent !== undefined && input.max_concurrent !== null
       ? { max_concurrent: input.max_concurrent }
+      : {}),
+    ...(input.network_pool_id !== undefined && input.network_pool_id !== null
+      ? { network_pool_id: input.network_pool_id }
       : {}),
     ...(input.scopes !== undefined ? { scopes: input.scopes } : {}),
   });
@@ -247,6 +261,7 @@ export async function resolveApiKeyAuthorization(
     ...(row.lifetimeTokenBudget != null ? { lifetime_token_budget: row.lifetimeTokenBudget } : {}),
     lifetime_tokens_consumed: row.lifetimeTokensConsumed ?? 0,
     ...(row.maxConcurrentRequests != null ? { max_concurrent: row.maxConcurrentRequests } : {}),
+    ...(row.networkPoolId != null ? { network_pool_id: row.networkPoolId } : {}),
     scopes,
   });
 

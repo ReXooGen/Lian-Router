@@ -6,6 +6,7 @@ import type { ProviderDispatchTarget, ProviderAdapter, ProviderDispatchContext }
 import { providerBaseUrl } from "../provider-metadata";
 import { createUpstreamDeadlineLifecycle, abortFailure } from "../operations/upstream-deadline";
 import { normalizeBearerToken } from "../../protocol/primitives";
+import { createApiKeyAdapter, type ApiKeyProviderSpec } from "./configured-provider";
 
 export const PERPLEXITY_BASE_URL = providerBaseUrl("perplexity");
 export const PERPLEXITY_PROVIDER_ID = "perplexity" as const;
@@ -16,10 +17,35 @@ export const PERPLEXITY_SEARCH_ENDPOINT = `${PERPLEXITY_BASE_URL}/search`;
 import { defineModel } from "../model-definition";
 import type { ModelDefinition } from "../provider-registry";
 
+/**
+ * Two product surfaces under one origin, so two wire families.
+ *
+ * `sonar` / `sonar-pro` are ordinary chat models on `/chat/completions` and
+ * ride the shared OpenAI-compatible pipeline. The `perplexity-search` rows are
+ * this gateway's own raw search surface: a `{query, num_results}` POST to
+ * `/search` answered with a results array, which no OpenAI wire codec can
+ * express. That surface is declared `native` — the per-provider codec family —
+ * so the two endpoints can coexist without one provider declaring two `chat`
+ * paths, which `bundledModelCatalog` rejects outright.
+ */
 export const PERPLEXITY_MODELS: readonly ModelDefinition[] = [
   defineModel({
-    id: "perplexity-search",
+    id: "sonar",
+    providerId: "perplexity",
     wireFamily: "chat",
+    endpoint: "/chat/completions",
+    webSearch: true,
+  }),
+  defineModel({
+    id: "sonar-pro",
+    providerId: "perplexity",
+    wireFamily: "chat",
+    endpoint: "/chat/completions",
+    webSearch: true,
+  }),
+  defineModel({
+    id: "perplexity-search",
+    wireFamily: "native",
     endpoint: "/search",
     ctx: null,
     out: null,
@@ -28,7 +54,7 @@ export const PERPLEXITY_MODELS: readonly ModelDefinition[] = [
   }),
   defineModel({
     id: "perplexity-deep-research",
-    wireFamily: "chat",
+    wireFamily: "native",
     endpoint: "/search",
     ctx: null,
     out: null,
@@ -71,15 +97,39 @@ function tokenFromContext(context: ProviderDispatchContext): string {
 }
 
 
+/**
+ * The `sonar` surface: OpenAI-compatible chat on the bundled origin. The
+ * bundled base is the bare host, so the path carries its own `/v1`-style
+ * segment — Perplexity serves `/chat/completions` directly off the origin
+ * (`POST https://api.perplexity.ai/chat/completions` answers 401 for a
+ * rejected key while an unknown path answers 404).
+ */
+const PERPLEXITY_CHAT_SPEC: ApiKeyProviderSpec = {
+  provider_id: PERPLEXITY_PROVIDER_ID,
+  endpoint_paths_by_wire_family: { chat: "/chat/completions" },
+  supported_wire_families: ["chat"],
+};
+
 export function createPerplexityAdapter(fetchImpl?: typeof fetch): ProviderAdapter {
+  const chatAdapter = createApiKeyAdapter(PERPLEXITY_CHAT_SPEC, fetchImpl);
   return {
     provider_id: PERPLEXITY_PROVIDER_ID,
     async *dispatch(
       request: CanonicalRequest,
-      _candidate: ProviderDispatchTarget,
+      candidate: ProviderDispatchTarget,
       context: ProviderDispatchContext,
     ): AsyncIterable<CanonicalEvent> {
-      void _candidate;
+      if (candidate.wire_family === "chat") {
+        yield* chatAdapter.dispatch(request, candidate, context);
+        return;
+      }
+      if (candidate.wire_family !== "native") {
+        throw new GatewayError(
+          "capability_unsupported",
+          400,
+          `perplexity supports chat and native, got ${candidate.wire_family}`,
+        );
+      }
       const query = extractSearchQuery(request);
       if (!query) {
         throw new GatewayError("invalid_request", 400, "Search query is required.");

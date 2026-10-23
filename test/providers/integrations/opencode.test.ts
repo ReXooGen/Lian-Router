@@ -11,7 +11,11 @@ import {
   OPENCODE_ZEN_MODELS,
   OPENCODE_ZEN_SPEC,
 } from "../../../src/providers/integrations/opencode";
-import { _resetStableOpenCodeSessionsForTesting } from "../../../src/providers/integrations/opencode-fingerprint";
+import { _resetStableOpenCodeSessionsForTesting, _stableOpenCodeSessionCountForTesting, stableOpenCodeSessionId } from "../../../src/providers/integrations/opencode-fingerprint";
+
+const CHAT_OK: Record<string, unknown> = {
+  choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+};
 
 const TIERS: readonly {
   readonly id: ProviderDispatchTarget["provider_id"];
@@ -71,11 +75,11 @@ describe("OpenCode provider header policy", () => {
   });
 
   test("Zen reuses the stable session per credential and mints a fresh request id each dispatch", async () => {
-    // The upstream free-tier quota (and Zen's own correlation) is per
-    // `x-opencode-session`. Minting a new session per dispatch would burn
-    // quota and look nothing like the real CLI, which carries one session per
-    // conversation. The adapter caches a session per credential identity;
-    // repeat dispatches of the same identity reuse it, request ids stay fresh.
+    // `x-opencode-session` is the client handle: it carries prompt-cache
+    // affinity and identifies the conversation upstream. Minting a new session
+    // per dispatch would look like a brand-new client every turn. The adapter
+    // caches a session per (credential, egress) pair; repeat dispatches of the
+    // same pair reuse it, request ids stay fresh.
     _resetStableOpenCodeSessionsForTesting();
     const sessions = new Set<string>();
     const requests = new Set<string>();
@@ -255,6 +259,156 @@ describe("OpenCode provider header policy", () => {
       "glob",
       "grep",
     ]);
+  });
+});
+
+/**
+ * `x-opencode-session` is the client handle upstream attributes a request to.
+ * These pin the two properties that make it one: a conversation keeps its
+ * handle, and a different client — different account, or different egress
+ * address — never inherits somebody else's. Quota is not among them: the free
+ * allowance is keyed on the source address, not on this handle.
+ */
+describe("OpenCode session identity", () => {
+  function freeContext(egress?: string) {
+    return dispatchContext("opencodeft", { credential_kind: "none" }, egress);
+  }
+
+  test("two egress pools get different session ids", async () => {
+    _resetStableOpenCodeSessionsForTesting();
+    const viaA = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      context: freeContext("pool-a"),
+    });
+    const viaB = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      context: freeContext("pool-b"),
+    });
+
+    expect(viaA.headers["x-opencode-session"]).toMatch(/^ses_/);
+    expect(viaA.headers["x-opencode-session"]).not.toBe(viaB.headers["x-opencode-session"]);
+  });
+
+  test("one egress pool reuses one session id across dispatches", async () => {
+    _resetStableOpenCodeSessionsForTesting();
+    const first = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      context: freeContext("pool-a"),
+    });
+    const second = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      context: freeContext("pool-a"),
+    });
+
+    expect(second.headers["x-opencode-session"]).toBe(first.headers["x-opencode-session"]);
+    // The request id still advances per turn.
+    expect(second.headers["x-opencode-request"]).not.toBe(first.headers["x-opencode-request"]);
+  });
+
+  test("distinct accounts and direct egress are distinct clients", async () => {
+    _resetStableOpenCodeSessionsForTesting();
+    const sessions = new Set<string>();
+    const contexts = [
+      dispatchContext("opencodezen", { account_id: "account-1" }),
+      dispatchContext("opencodezen", { account_id: "account-2" }),
+      dispatchContext("opencodezen", { credential_kind: "none" }, "pool-a"),
+    ];
+    for (const context of contexts) {
+      const captured = await dispatchJson({
+        create: (fetchImpl) => createApiKeyAdapter(OPENCODE_ZEN_SPEC, fetchImpl),
+        candidate: candidateFor("opencodezen", "chat", "/zen/v1/chat/completions"),
+        context,
+      });
+      sessions.add(captured.headers["x-opencode-session"] ?? "");
+    }
+
+    expect(sessions.size).toBe(contexts.length);
+  });
+
+  test("a spent free-tier allowance rotates the session for the retry", async () => {
+    _resetStableOpenCodeSessionsForTesting();
+    const limitBody = {
+      type: "error",
+      error: {
+        type: "FreeUsageLimitError",
+        message: "Free usage limit reached. Subscribe to OpenCode Go to keep going.",
+      },
+    };
+    let attempt = 0;
+    const sessions: string[] = [];
+    const adapter = createApiKeyAdapter(OPENCODE_FREE_SPEC, (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      sessions.push(new Headers(init?.headers as HeadersInit).get("x-opencode-session") ?? "");
+      attempt += 1;
+      return attempt === 1
+        ? new Response(JSON.stringify(limitBody), { status: 429, headers: { "content-type": "application/json" } })
+        : new Response(JSON.stringify(CHAT_OK), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch);
+
+    const context = freeContext("pool-a");
+    const target = candidateFor("opencodeft", "chat", "/zen/v1/chat/completions");
+    const request = canonicalRequest();
+
+    await expect(async () => {
+      for await (const _event of adapter.dispatch(request, target, context)) {
+        // drain
+      }
+    }).toThrow(/FreeUsageLimitError|OpenCode Free usage limit/);
+    // The retry is a new client: same identity, same egress, fresh handle.
+    for await (const _event of adapter.dispatch(request, target, context)) {
+      // drain
+    }
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]).not.toBe(sessions[1]);
+  });
+
+  test("a plain 429 and a 500 keep the session", async () => {
+    for (const [status, body] of [
+      [429, { error: { message: "slow down" } }],
+      [500, { error: { message: "upstream exploded" } }],
+    ] as const) {
+      _resetStableOpenCodeSessionsForTesting();
+      const sessions: string[] = [];
+      const adapter = createApiKeyAdapter(OPENCODE_FREE_SPEC, (async (
+        _input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        sessions.push(new Headers(init?.headers as HeadersInit).get("x-opencode-session") ?? "");
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch);
+
+      const context = freeContext("pool-a");
+      const target = candidateFor("opencodeft", "chat", "/zen/v1/chat/completions");
+      for (let dispatch = 0; dispatch < 2; dispatch += 1) {
+        await expect(async () => {
+          for await (const _event of adapter.dispatch(canonicalRequest(), target, context)) {
+            // drain
+          }
+        }).toThrow();
+      }
+
+      expect(sessions).toHaveLength(2);
+      expect(sessions[1]).toBe(sessions[0]);
+    }
+  });
+
+  test("the session map stays bounded by its cap", async () => {
+    _resetStableOpenCodeSessionsForTesting();
+    for (let index = 0; index < 1_005; index += 1) {
+      stableOpenCodeSessionId(dispatchContext("opencodeft", { credential_kind: "none" }, `pool-${index}`));
+    }
+
+    expect(_stableOpenCodeSessionCountForTesting()).toBe(1_000);
   });
 });
 

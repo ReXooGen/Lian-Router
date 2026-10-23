@@ -15,6 +15,7 @@ src/runtime/
   RUNTIME.md          this file
   lifecycle.ts        ShutdownCoordinator + bootstrap() + LianRouterBoot (globalThis reuse)
   dependencies.ts     buildProductionDeps() -> ProductionDeps (wiring order)
+  public-base-url.ts  runtime override for the advertised public origin (console tunnel)
   timeout.ts          withTimeout() / timeoutAfter()
   backoff.ts          exponentialBackoff() with optional jitter
   ttl-cache.ts        TtlCache (bounded TTL + oldest-first eviction)
@@ -57,6 +58,13 @@ network cannot delay startup by the fetch timeout.
 
 `resolveProviderAdapter` and `resolveOAuthRefresher` are on-demand closures
 over the registry, so heavy provider modules stay off the boot path.
+
+`public-base-url.ts` holds the one piece of mutable process state outside
+boot: the quick-tunnel host the console starts. `src/config.ts` remains a leaf
+that only reads `LIANROUTER_PUBLIC_BASE_URL`; `resolveEffectivePublicBaseUrl()`
+prefers the live tunnel, falls back to the configured value, and returns
+`undefined` so the caller can use the request origin. The value is never
+persisted — it describes a child process of this gateway and dies with it.
 
 ## Shutdown (`lifecycle.ts`)
 

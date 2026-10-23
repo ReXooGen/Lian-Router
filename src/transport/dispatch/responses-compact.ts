@@ -83,6 +83,7 @@ export function createResponsesCompactHandler(deps: ResponsesCompactHandlerDeps)
         estimatedInputTokens: prepared.estimatedInputTokens,
         estimatedOutputTokens: prepared.estimatedOutputTokens,
         authorizationSnapshot: prepared.authorization.snapshot,
+        networkPoolId: prepared.authorization.snapshot.network_pool_id ?? undefined,
       },
       candidates: prepared.candidates,
       tenantId: prepared.authorization.tenantId,

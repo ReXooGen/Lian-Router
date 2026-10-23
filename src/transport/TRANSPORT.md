@@ -298,6 +298,56 @@ mutually exclusive by CHECK — a row carrying both would have no defined egress
 
 Deleting a pool detaches its accounts (`set null`) rather than deleting them, which returns them to the group mode.
 
+**Credential-less egress (`requires_account: false`).** A provider with no accounts and `requires_account: false`
+(`opencodeft`) emits one pooled candidate per tenant that has active pools, plus an unpooled one whose `tenant_id` is the
+provider's (usually `null`). That unpooled candidate is a fallback for a tenant that owns no pool, never a second chance at
+direct egress beside one: when the pooled candidate cannot take a slot — every pool at capacity or cooling — the attempt loop
+would fall through to it and the request would leave from the operator's own address, burning the free-tier allowance the
+proxy exists to protect. So the builder suppresses it for a tenant whose plan has pooled candidates to offer, and that fails
+closed: a saturated or cooling pool set yields the pooled candidate's own `proxy_pool_capacity_exceeded` / `proxy_pool_cooldown`
+rather than a silent direct dial.
+
+The predicate is `activePoolsByTenant`, not `resolveNetworkPools(...) !== undefined`. `resolveNetworkPools` also answers
+`undefined` for a tenant whose pool rows are all disabled or cooling, and for a provider-level `bypassProxy`; suppressing on it
+would delete the only candidate such a tenant has and turn a working direct dial into a 503. The predicate therefore reads the
+same two facts the pooled emission does — at least one `status: "active"` pool, and no bypass — and a tenant that fails either
+keeps its direct candidate. The global build (`tenantId === undefined`) has no requesting tenant, so it keeps emitting both
+shapes and `acquirePoolSlot` refuses the unpooled one when the plan also carries a pool-scoped sibling for the same provider.
+
+**Key egress (`api_keys.network_pool_id`).** An API key may name one pool, which is a *narrowing*
+constraint applied on top of the account's resolved egress — never a widening one. The id travels
+`resolveApiKeyAuthorization` → `ApiKeyAuthorizationSnapshot.network_pool_id` →
+`AttemptLeaseSource.networkPoolId` (an explicit field on the lease source, so a dispatch route that
+forgets it fails to compile instead of silently ignoring the setting) → `acquirePoolSlot`. There it
+intersects with `candidate.network_pool_ids` **after** sibling inheritance and **before** selection:
+
+- A candidate carrying `network_pool_direct` fails closed with `proxy_pool_not_allowed` (403,
+  `details.reason: "account_direct"`). The account's `bypass_proxy` is an operator statement that
+  this credential never leaves through a proxy; a key cannot un-say it, and dialing direct would
+  violate the key's own binding. Neither side silently wins.
+- A key pool outside the candidate's set fails with the same code (`reason:
+  "pool_not_in_candidate_set"`) rather than falling back to the candidate's pools. Falling back
+  would dispatch from an address the key's owner deliberately excluded.
+- When it intersects, the eligible set collapses to that one id, so the selector's cooldown and
+  capacity handling still applies to it.
+- The binding also removes the one path that could still reach direct egress: with no selector, or
+  under the lenient (`strictPoolSelection: false`) semantics the native compact route uses, a bound
+  key throws `proxy_pool_unavailable` instead of dialing out. A key with no binding keeps today's
+  behavior exactly, on every route.
+
+`acquirePoolSlot` also refuses an unpooled candidate outright when the plan carries a sibling with a
+non-empty pool set for the same provider (`proxy_pool_unhealthy`, 503, `details.reason:
+"candidate_pool_missing"`) — belt-and-braces for any future path that emits one, and the only thing
+standing between the global build's unpooled fallback and a direct dial once a sibling exists. The
+sibling must carry real ids: a pool-scoped sibling with an *empty* set is the all-pools-disabled
+configuration, where the direct candidate is the tenant's only route, so the guard must not fire.
+Runtime cooldown does not produce that shape — the selector's cooldown is volatile and the candidate
+keeps its ids — so a cooling pool still trips the guard. It runs **after** the key-binding checks, so
+a key that named a pool still sees `proxy_pool_not_allowed` 403: the binding is the narrower
+statement and the caller must learn their pool is unusable, not that some unrelated candidate carried
+none. A plan with no pooled sibling at all is untouched, which is what keeps a tenant that owns no
+pool dialing direct.
+
 Account fan-out is per account, not per provider-tenant: global providers still pair with each tenant's own accounts. Expired
 cooldowns read as healthy (the health sweeper materializes recovery); per-model `modelCooldowns` mark individual candidates
 cooling down, and degraded accounts are excluded until explicit recovery.
@@ -342,8 +392,10 @@ routing — the first to a reader that asked post-mutation, the second to every 
 write — so a snapshot may only be reused at its own revision and only cached while still current.
 Bounded state everywhere:
 round-robin state behind a `MAX_ROUND_ROBIN_ENTRIES` (1000) LRU. `requires_account: false` is the only credential-less
-path; missing accounts otherwise mean unusable, never silently public. A new provider default is `defaultBypassProxy` in the
-provider registry, not here.
+path; missing accounts otherwise mean unusable, never silently public. A credential-less provider never offers both egresses
+to one tenant: a tenant with an active pool gets the pooled candidate alone, and the unpooled fallback exists only for a
+tenant that has none — so a saturated pool set fails closed instead of leaking a direct dial. A new provider default is
+`defaultBypassProxy` in the provider registry, not here.
 
 ## Dispatch (`dispatch/`)
 
@@ -371,8 +423,15 @@ then runs `runAttemptLoop` over `eligibleRouteCandidates`.
 last-candidate attempts are terminal, others back off with jittered `fallbackRetryDelayMs` and try the next candidate.
 Terminal attempts record their `errorCategory` via `classifyTerminalCategory` (GatewayError code passthrough, signal-reason
 deadline/close mapping, else `unknown_error`).
-Provider 429s with provider scope flag a pool cooldown (`flagPoolCooldown`, in `../network/pool-health.ts`, writing the
-volatile flag and the durable `health_events` row through one call). A 403 is refreshed only when
+Provider 429s flag a pool cooldown (`flagPoolCooldown`, in `../network/pool-health.ts`, writing the
+volatile flag and the durable `health_events` row through one call) **only when the evidence says the egress was
+limited**. `classifyRateLimitScope` reads the upstream's structured identifiers (`error.code` / `error.type`, never
+prose) and answers `account` | `provider` | `network`: provider-capacity identifiers are `provider`, a provider that
+presents no caller identity at all is `network` (its only discriminator is the source address — `opencodeft`, which is
+`requires_account: false` and sends the literal `Bearer public`), and everything else — including a bare 429 — is
+`account`. Only `provider` and `network` cool the pool; an `account`-scoped limit parks the *account* so routing tries
+another one, because cooling a pool for a credential- or tier-scoped limit sidelines healthy egress for every other
+request to that provider while changing nothing about the limit. A 403 is refreshed only when
 `isOAuthCredentialInvalidated()` finds credential evidence; policy rejections (e.g. CodeBuddy `11140`) are retryable but
 never refresh, so the loop advances to the next candidate. The only same-candidate retry is the post-refresh re-entry, which
 by definition runs only when the credential was actually refreshed.
@@ -469,6 +528,7 @@ disagreed on 5xx and 529 — it is gone, and no adapter keeps a private copy of 
 | `proxy_pool_cooldown` | 503 | lianrouter | yes | all pools are cooling down for this provider |
 | `proxy_pool_unavailable` | 503 | network | yes | no active pool for this tenant and provider |
 | `proxy_pool_unhealthy` | 503 | network | yes | the selected pool could not establish a tunnel |
+| `proxy_pool_not_allowed` | 403 | lianrouter | yes | the key's pool binding conflicts with the selected account's egress (`account_direct`, or a pool outside the candidate's set) |
 | `admission_unavailable` | 503 | lianrouter | yes | the admission store is unreachable |
 | `accounts_unavailable` | 503 | lianrouter | yes | no account is available for this route |
 | `shutting_down` | 503 | lianrouter | yes | the process is draining |

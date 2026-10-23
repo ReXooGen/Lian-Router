@@ -20,7 +20,8 @@ src/providers/
   reasoning.ts            canonical reasoning-intent → per-wire reasoning payload helpers
   usage.ts                usage home: normalizeUsage, usageFromProvider, repriceUsage, wire encoders
   authentication/         OAuth kit every per-provider login client builds on
-  discovery/              model probing: discovery contract, /models fetcher, offline billing catalog, sync service
+  discovery/              model probing: discovery contract, /models fetcher, non-OpenAI rosters,
+                          offline billing catalog, sync service
   operations/             runtime glue: seeding, caches, version resolution, health, credentials, deadlines
   quota/                  quota kit: one result shape, dispatch, connectivity probe, declarative window engine
   integrations/           one module (or directory) per provider: adapters, OAuth, quota, CLI-version quirks
@@ -34,20 +35,70 @@ Three layers combine in `default-registry.ts: BUNDLED_PROVIDER_MODULES`, then `c
 1. **Metadata** (`provider-metadata.ts: RAW_BUNDLED_PROVIDER_METADATA`): `id`, `displayName`, `baseUrl` are
    the only required fields. Optionals: `wireFamilyDefault` (default `chat`; `messages` for
    `anthropic`/`claude`, `responses` for `codex`), `requiresAccount` (only `opencodeft: false`),
-   `defaultBypassProxy` (only `inferhub`), `credentialUrl` (only `groq`), `jwtVerification` (only `grok`).
+   `defaultBypassProxy` (no bundled provider sets it today; the field remains for one that must
+   always dial direct), `credentialUrl` (only `groq`), `jwtVerification` (only `grok`).
    `providerBaseUrl()` is the single declaration of origin; `providerUpstreamHost()` carries the SSRF
    binding, so dispatch needs no second map. For `opencodeft` the origin is overridable at
    deployment time through `LIANROUTER_OPENCODEFT_BASE_URL` (read via `resolveOpenCodeFtBaseUrl()`).
-   The free gate validates the request-side client fingerprint (desktop `User-Agent`,
-   `x-opencode-*` correlation headers, the `bash`/`glob`/`grep`/`read` tool quartet, and
-   `Authorization: Bearer public`), which `buildOpenCodeFreeHeaders` + `ensureFreeAgentRequest`
-   install in-process — direct dispatch works and is the default. A CLI bridge remains an
+   The free gate validates the request-side client fingerprint (desktop `User-Agent` with a
+   version at or above `1.18.0`, `x-opencode-*` correlation headers, the `bash`/`glob`/`grep`/`read`
+   tool quartet, and `Authorization: Bearer public`), which `buildOpenCodeFreeHeaders` +
+   `ensureFreeAgentRequest` install in-process — direct dispatch works and is the default. A CLI bridge remains an
    optional deployment fallback for an environment whose edge rejects the in-process client, but
    it is lossy: a CLI bridge flattens message content to text and drops `tools`, so vision and
    tool calls declared by the catalog stop working. Point the override at a bridge only when
    direct dispatch itself returns `FreeTierError`. A DB `base_url` on the bundled row is not an
    option — custom rows only, and
-   `registerByokProviders()` rejects bundled-id collisions at boot. `DEFAULT_PROXY_BYPASS_PROVIDER_IDS` derives the one
+   `registerByokProviders()` rejects bundled-id collisions at boot.
+   **The fingerprint is not the limit.** Verified against the live endpoint with the adapter's own
+   captured request bytes: a correct fingerprint returns `200` and a real stream, a malformed
+   `x-opencode-session` returns `403 FreeTierError`, and a `user-agent` below `1.18.0` returns `426
+   UpgradeRequired`. Separately, the free tier's *allowance* cannot be keyed on a credential — this
+   provider is `requires_account: false` and sends the literal `Bearer public`, so there is no
+   account identity to key on and no account to fail over to.
+   **The free-tier allowance is keyed on the source address.** A spent address answers
+   `FreeUsageLimitError` (`429`) no matter which `x-opencode-session` it is given; an unspent one
+   answers `200` for a reused handle and a freshly minted one alike. Rotating the proxy is therefore
+   what changes the quota, and the pool is the unit of that rotation. Confirmed from production
+   telemetry (24h and all-time): real client traffic to this provider produced **zero** 429s while
+   every one of the recorded `FreeUsageLimitError` events came from the console's model-probe path,
+   which is what burned the addresses.
+   **The session handle is an identity, not a quota key.** `stableOpenCodeSessionId` keys
+   `x-opencode-session` per `(credential identity, egress)`. That is correct on its own terms — the
+   handle carries prompt-cache affinity and is the identity upstream attributes a request to, so two
+   tenants, two accounts, or two exits must not present the same one. The previous key resolved to a
+   single constant (`opencode:default`) for every dispatch — `credential.secret` is a `Uint8Array`
+   and the old key only accepted a `string`, so even two distinct paid accounts collided — and
+   fixing that is worth keeping. It does **not** buy quota: a fresh handle from a spent address is
+   still refused. `invalidateOpenCodeSession` retires the handle on the structured
+   `FreeUsageLimitError` (`details.freeTierAllowanceExhausted`) as hygiene, not as a remedy; a bare
+   429 or a 5xx leaves it alone. Worst case the session map holds `MAX_STABLE_SESSIONS` (1000)
+   entries, each expiring after `STABLE_SESSION_TTL_MS` (1h), with LRU eviction at the cap —
+   bounded regardless of how many identities or pools exist.
+   **What actually lifts the limit is the pool cooldown.** `classifyRateLimitScope` scopes this
+   provider's 429s to `network`, `shouldCooldownPool` accepts that, and the attempt loop calls
+   `flagPoolCooldown` for the (pool, provider) pair, so the selector stops handing out that spent
+   exit.
+   **The probe path cools its pool too.** `ProviderProbingService` dispatches outside `runAttemptLoop`,
+   so it cannot inherit the attempt loop's cooldown; it calls `flagPoolCooldown` itself, gated on the
+   same predicates live dispatch uses — `shouldCooldownPool(error) || isPoolConnectFailure(error)`.
+   A probe that burns an address therefore retires that (pool, provider) pair instead of leaving it
+   selectable for the next probe or client request, which is what let probe traffic spend a set of
+   addresses while client traffic never saw a 429. The gate is deliberately no looser than the client
+   path: a bad model id, empty content, a deadline, or a 400 says nothing about the egress and must
+   not sideline a healthy pool. `recordProbeHealth` keeps owning account health separately — pools and
+   accounts are different machines, and the account branch still runs for credentialed providers.
+   > **Koreksi.** Two earlier readings in this doc were wrong and are retracted here. First, that
+   > this was purely a per-address cap with the handle irrelevant: the handle sharing was real
+   > (every caller collided on `opencode:default`) but it was not the cause of the observed 429s.
+   > Second, that the shared handle made a spent allowance "follow the gateway across every exit":
+   > that inverted the causality. Both exits were simply already spent — 16 pools had been burned,
+   > and the probe path is what burned them. The per-address keying is the correct model; the
+   > identity-scoped handle stands on its own merits and is not a quota mechanism.
+   The `*-free` model rows stay in the catalog: they are
+   referenced by tenant aliases and fallback combos, and `seedBundledModels` prunes any `builtin`
+   row the catalog no longer declares, after which routing reports `model_not_found` for the alias.
+   `DEFAULT_PROXY_BYPASS_PROVIDER_IDS` derives the one
    proxy-bypass default that console routing, provider detail, and domain registration all read.
    `PROVIDER_COMPATIBILITY_PROFILES` holds wire overrides for the three `opencode*` hosts and for
    `browseruse`, whose two dialects live under one origin. `PROVIDER_PROMOTIONS` carries
@@ -203,6 +254,15 @@ Owns the credential-scoped discovery contract, the tolerant OpenAI-compatible `/
 models.dev billing catalog, and the probing/orchestration service that syncs discovered models into the
 database. Per-provider entry points live in `integrations/`, registered as each `loadModelDiscovery`.
 
+- **Non-OpenAI rosters.** `discovery/bespoke-model-discovery.ts` reads a model list and pins every id to a
+  named wire family and endpoint; `discovery/provider-model-lists.ts` supplies the per-provider request
+  (URL, auth header, wire). A provider whose roster is not a flat chat list — Kimi and the four MiniMax
+  plans on Messages, Muse and Codex on Responses, Copilot's policy-filtered catalog, ClinePass's
+  `cline-pass/` bucket, MiniMax's nested agent envelope — goes through there rather than through
+  `fetchOpenAICompatibleModels`, because the generic fetcher would register those ids on
+  `/v1/chat/completions` rows the adapter rejects with `capability_unsupported`. `test/providers/discovery/
+  discovery-request-contract.test.ts` pins the URL and auth header of every wired provider's request, so a
+  wrong header cannot pass as "wired".
 - **One discovery input.** `DiscoveryInput` is the credential-scoped entry shape every adapter's
   `discover*Models` takes: `credential`, optional `signal`, optional injectable `fetcher`.
   `ProviderModelDiscovery` (`context => ModelDefinition[] | null`) types the registry-facing boundary; a
@@ -262,7 +322,12 @@ database. Per-provider entry points live in `integrations/`, registered as each 
 
 Rules: discovery never imports console presentation types — probe contracts live here so the lower layer
 stays console-free. Failures yield `null` or a `ProbeModelResult` with `ok: false`, never a thrown dispatch
-error. Credential-free discovery may be cached (see Operations); credential-scoped discovery is never cached
+error. A failed probe carries the status it stands for (`httpStatus`, plus `code`) rather than a fixed one:
+`computeProbeVerdict` passes a `GatewayError`'s own status and code through, so an upstream 429 is recorded
+and answered as 429, and only an unclassified throw (`unknown_error`, no `GatewayError`) becomes 500. The
+console records that status in `telemetry_events.http_status`; without it the Usage projection fills a
+`failed` row with 500 and an exhausted free tier reads as a gateway fault. Credential-free discovery may be
+cached (see Operations); credential-scoped discovery is never cached
 here, because entitlements must reflect the caller's account. Upstream arrays and numbers pass through
 bounded-array and bounded-number guards so a hostile `/models` payload cannot blow up memory. A wire family
 is never taken from the discovery payload alone: the generic `/models` fetcher carries no wire information
@@ -303,6 +368,22 @@ provider, as a canonical `system` part. Empty/NULL injects nothing, which is the
   which also maps empty/whitespace to NULL so a blank string cannot become an empty system message on
   every request.
 
+## Media ids are not registered
+
+Some upstream catalogs list image and video generation models alongside their chat models. Those ids
+are deliberately absent from the bundled catalogs because the gateway has no image or video wire
+family — `WireFamily` is `chat | responses | messages | embeddings | native`, and `native` is a
+per-provider codec (Cursor, Devin), not a generic media escape hatch. Registering one of these ids as a
+`chat` row would advertise a capability dispatch cannot serve.
+
+Known ids in this position, recorded so the omission reads as a decision rather than an oversight:
+
+- `xai` — `grok-2-image-1212`, `grok-imagine-video`.
+- `venice` — `venice-sd35`, `flux-2-pro`, `gpt-image-2`.
+
+Their providers' text and embedding models are registered normally. Adding these would mean introducing
+an image/video wire and its request/response codec first.
+
 ## Operations: runtime glue
 
 Runtime glue between the static registry and the database: seeding, layered caches, client-version
@@ -311,7 +392,10 @@ deadlines. Routing, console, and discovery consume providers through these servi
 `integrations/` or hardcoding hosts, versions, or health thresholds.
 
 - **Catalog materialization.** `seedBundledProviders` idempotently inserts every `BUNDLED_PROVIDER_MODULES`
-  row (`onConflictDoNothing`, then a compatibility-profile merge `UPDATE`). `seedBundledModels` persists the
+  row (`onConflictDoNothing`, then a compatibility-profile merge `UPDATE`). It never prunes: a provider
+  removed from the bundle keeps its global `providers` row, because deleting that row would cascade its
+  accounts, models, and routing settings for a removal the operator may not have intended. The row is
+  surfaced as `stale` and the operator deletes it explicitly (see `CONSOLE.md`). `seedBundledModels` persists the
   compiled `ModelDefinition` maps and deletes stale `builtin` rows by the `(model, endpoint)` composite key,
   so a moved endpoint never leaves a duplicate dead route. `registerByokProviders` / `syncByokProvider` wire
   tenant-supplied endpoints with SSRF validation.
@@ -389,6 +473,10 @@ deadlines. Routing, console, and discovery consume providers through these servi
 - **Dispatch-time request context.** `resolveCustomCliHeaders` stamps Codex-CLI identity
   (`codex_cli_rs/<version>`) on chat/responses traffic and Claude-CLI identity (`x-app: cli` + stainless
   headers) on messages traffic so upstream sees realistic first-party tooling.
+  `ProviderDispatchContext.network_pool_id` names the pool the attempt's egress actually uses (absent when
+  it dials direct) — one pool row is one proxy endpoint, so this identifies the source address upstream
+  sees. It is set by both proxy-request dispatch paths and by the probe path, and it exists because a
+  per-client upstream handle must be bound to the egress that presents it; nothing else may key on it.
   Probe dispatch carries the internal `LianRouter-Probe` marker in context and
   telemetry; `createProbeFetch` strips any `User-Agent` before the network
   boundary.
@@ -431,14 +519,56 @@ zero-hook hosts (`groq`, `mistral`, `siliconflow`, `fireworks`, `nvidia`, `gmi`,
 single-file specs add hooks only where needed. `zai/spec.ts` shows the credential-codec variant
 (`extractAccessTokenOrRaw` + `credential_forwarding: "never"`).
 
+**Reseller and regional batches.** Most of the catalog is resellers and regional gateways whose whole contract is
+an origin, a wire family, and a model list: `integrations/alibaba.ts` holds the four Alibaba key products
+(`alicode`, `alicode-intl`, `alims-intl`, `alitp-intl`), because they are the same OpenAI wire on four hosts
+and a key issued for one is rejected by the others — a selectable region would hide that. `deepseek.ts`,
+`xai.ts`, `cohere.ts`, `together.ts`, `hyperbolic.ts`, `featherless.ts`, `nebius.ts`, `morph.ts`,
+`tokenrouter.ts`, `venice.ts`, `bazaarlink.ts`, `llm7.ts`, `baidu.ts`, `tencent.ts`, `volcengine-ark.ts`,
+`glm-cn.ts`, `byteplus.ts`, `dahl.ts`, `atria.ts`, `agnes.ts`, `api-airforce.ts`, `kilo-gateway.ts`,
+`blackbox.ts`, `poolside.ts`, `vercel-ai-gateway.ts` and `chutes.ts` follow the same shape.
+`integrations/minimax.ts` holds the four MiniMax plans: the two coding plans serve Anthropic Messages at
+`/v1/messages?beta=true` behind `x-api-key`, and the two agent gateways (`minimax-code`, `minimax-code-global`)
+serve Messages behind a bearer token plus a placeholder `x-api-key` and the agent identity headers.
+`integrations/perplexity-agent.ts` is Responses-only. Two providers ship no static catalog because their
+upstream publishes the roster only through `/models` (`chutes`, `vercel-ai-gateway`); they register an empty
+catalog and rely on `loadModelDiscovery`, so Sync fills them.
+
+**The Gemini wire family has three hosts.** `gemini.ts` posts to `generativelanguage.googleapis.com` with
+`x-goog-api-key` and a per-model `:generateContent` path. `vertex.ts` reuses that module's
+`buildGeminiPayload` and response decoders unchanged and changes exactly two things: the project-scoped path
+(`/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`) and the
+credential chain — a service-account JSON is signed into an RS256 JWT assertion and exchanged at Google's
+token endpoint for a Bearer token (cached per credential, since an assertion lives an hour), an
+`authorized_user` ADC JSON refreshes through the same endpoint, and a bare API key rides `?key=` on the
+projectless path. `gemini-cli.ts` is a separate adapter because Cloud Code Assist has neither: the model
+travels inside a `{project, model, request}` envelope POSTed to the fixed
+`v1internal:{generate,streamGenerate}Content` RPC, so the URL carries no model and the auth is an OAuth
+Bearer token.
+
+**Vertex's `veo-*` ids are not registered.** They are video generation — `predictLongRunning` plus
+`fetchPredictOperation`, a long-running-operation protocol — and this repository has no video wire family.
+A `chat` row for a video model would advertise a capability dispatch cannot serve, so the catalog carries
+only the five chat ids. Adding video means a new wire family and a job-polling dispatch path, not a catalog
+row.
+
 **Bespoke adapters** stay hand-written classes implementing `ProviderAdapter` when the wire is outside the
 factory's reach, each carrying a `Factory-blocked` or `Bespoke by wire protocol` header comment naming the
 reason: `anthropic.ts` (Messages envelope + `x-api-key`), `gemini.ts` (per-model `:generateContent` RPC +
 `x-goog-api-key`), `claude-code/claude.ts` (the assistant CLI fingerprint: Stainless identity headers, beta negotiation, CCH billing, and a persisted per-install `device_id` in `metadata.user_id`), `codex/codex.ts`
 (Responses envelope + session headers; `protocol/request/codex.ts` emits tool results from both Chat `tool` and Messages `user` turns as `function_call_output` with the matching `call_id`), `cursor/` and `devin/` (Connect+protobuf), `qoder.ts` (COSY AES/RSA
-signing + enveloped SSE), `commandcode.ts` (NDJSON thread/config envelope), `agentrouter.ts`, `cloudflare.ts`
+signing + enveloped SSE), `commandcode.ts` (NDJSON thread/config envelope), `gemini-cli.ts` (Cloud Code
+Assist `{project, model, request}` envelope on a fixed RPC path), `vertex.ts` (Gemini payload on a
+project-scoped path with a service-account/ADC token chain), `agentrouter.ts`, `cloudflare.ts`
 (composite `{apiKey, accountId}` credential), `kimi/kimi.ts` (Messages envelope reusing the shared Claude
 pipeline).
+
+`qoder.ts` serves both Qoder sites. The COSY codec — RSA-wrapped AES key, alphabet-scrambled body,
+`{statusCodeValue, body}` envelope — is identical between them, so `QoderRegion` selects the host set, the
+job-token endpoint, and the model catalog together rather than forking the implementation. The catalogs are
+deliberately separate: the CN gateway bills its own Qwen/GLM generation behind `qmodel_38max`, `qfmodel`,
+`gmodel` and `gfmodel`, does not carry intl's `qmodel_preview` or `gm51model`, and silently downgrades an
+unknown key instead of rejecting it — so a shared catalog would send the wrong SKU without an error.
 
 Qoder's enveloped SSE status codes are normalized inside `qoder.ts` at the integration boundary through the shared
 `statusToGatewayErrorCode` table, tagged `origin: "upstream"` because the status came from the provider's own envelope.

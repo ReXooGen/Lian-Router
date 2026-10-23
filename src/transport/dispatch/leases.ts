@@ -22,6 +22,16 @@ export interface AttemptLeaseSource {
   readonly estimatedInputTokens: number;
   readonly estimatedOutputTokens: number;
   readonly authorizationSnapshot: ApiKeyAuthorizationSnapshot;
+  /**
+   * The authenticating key's egress binding (`api_keys.network_pool_id`), or
+   * `undefined` when the key leaves egress to provider routing.
+   *
+   * Threaded explicitly from the snapshot rather than read off
+   * `authorizationSnapshot` at the point of use, so every dispatch surface has
+   * to state it: a route that forgets this field is a compile error, not a key
+   * whose proxy setting silently does nothing.
+   */
+  readonly networkPoolId: string | undefined;
 }
 
 async function acquirePoolSlot(
@@ -57,6 +67,65 @@ async function acquirePoolSlot(
       routing = sibling.network_pool_routing;
     }
   }
+  const keyPoolId = source.networkPoolId;
+  if (keyPoolId !== undefined) {
+    // The key's pool is a narrowing constraint, never a widening one. A
+    // direct-pinned account outranks the key: the operator said this
+    // credential never leaves through a proxy, and a key setting cannot
+    // un-say that. Dialing direct instead would send the request from an
+    // address the key's owner excluded, so this fails closed.
+    if (candidate.network_pool_direct) {
+      throw new GatewayError(
+        "proxy_pool_not_allowed",
+        403,
+        "This API key is bound to a proxy pool, but the selected account is configured to dial direct.",
+        { poolId: keyPoolId, reason: "account_direct" },
+      );
+    }
+    // Intersect with what this candidate may actually use. Naming a pool the
+    // candidate does not offer must fail rather than fall back to the
+    // candidate's own pools: falling back would dispatch from an address the
+    // key's owner deliberately excluded.
+    if (!poolIds?.includes(keyPoolId)) {
+      throw new GatewayError(
+        "proxy_pool_not_allowed",
+        403,
+        "This API key is bound to a proxy pool that is not available on the selected route.",
+        { poolId: keyPoolId, reason: "pool_not_in_candidate_set" },
+      );
+    }
+    poolIds = [keyPoolId];
+  }
+  // Belt-and-braces for a plan that still carries an unpooled candidate beside
+  // a pooled one. A same-tenant sibling was inherited above, so an unpooled
+  // candidate that reaches this point has a pooled sibling only when that
+  // sibling belongs to another tenant — the credential-less global fallback
+  // next to a tenant's pooled candidate. Dialing it direct would leave from the
+  // host address the pool exists to hide, so this fails closed instead.
+  //
+  // The sibling must carry real ids. A pool-scoped sibling with an *empty* set
+  // is the all-pools-disabled configuration: that tenant has no working egress
+  // at all, and the direct candidate is its only route — exactly the case the
+  // builder keeps it for. Runtime cooldown does not look like this: the
+  // selector's cooldown is volatile and the candidate keeps its ids, so a
+  // cooling pool still trips this guard.
+  if (!candidate.network_pool_direct && !poolIds?.length && !candidate.network_pool_required) {
+    const hasPooledSibling = source.plan.candidates.some(
+      (c) =>
+        c.provider_id === candidate.provider_id &&
+        !c.network_pool_direct &&
+        (c.network_pool_ids?.length ?? 0) > 0,
+    );
+    if (hasPooledSibling) {
+      throw new GatewayError(
+        "proxy_pool_unhealthy",
+        503,
+        "This route has proxy pools configured, but the selected candidate carries none.",
+        { reason: "candidate_pool_missing" },
+        "network",
+      );
+    }
+  }
   // Round-robin rotation rides the strategy the snapshot attached to the
   // candidate (the pool-owning tenant scopes the cursor); absent strategy or
   // `least_loaded` keeps the default weighted least-loaded scan.
@@ -75,16 +144,41 @@ async function acquirePoolSlot(
         "network",
       );
     }
+    // A key bound to a pool must never fall through to direct egress: the
+    // binding exists to hide this credential's host address. Without a
+    // selector there is nothing to dial, so this fails closed.
+    if (keyPoolId !== undefined) {
+      throw new GatewayError(
+        "proxy_pool_unavailable",
+        503,
+        "This API key is bound to a proxy pool, but no pool selector is available.",
+        { poolId: keyPoolId, reason: "pool_selector_unavailable" },
+        "network",
+      );
+    }
     return undefined;
   }
   if (!strictPoolSelection) {
-    return poolSelector.tryAcquireAvailablePool(
+    const slot = await poolSelector.tryAcquireAvailablePool(
       poolIds,
       candidate.provider_id,
       limits,
       weights,
       rotation,
     );
+    // Lenient pool semantics tolerate direct egress when a slot is missing —
+    // except for a key that named its pool. Widening here would dispatch from
+    // the host address the key's owner excluded, so it stays closed.
+    if (slot === undefined && keyPoolId !== undefined) {
+      throw new GatewayError(
+        "proxy_pool_unavailable",
+        503,
+        "The proxy pool bound to this API key could not be acquired.",
+        { poolId: keyPoolId, reason: "key_pool_unavailable" },
+        "network",
+      );
+    }
+    return slot;
   }
   let acquiredSlot: { poolId: string; release: () => void } | undefined;
   try {

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { FetchLike } from "../../../src/providers/quota/quota-contracts";
 import { probeApiKeyConnectivity } from "../../../src/providers/quota/quota-support";
 import { fetchCerebrasQuota } from "../../../src/providers/integrations/cerebras";
-import { fetchInferhubQuota } from "../../../src/providers/integrations/inferhub";
 
 function mockFetch(status: number): {
   fetcher: FetchLike;
@@ -22,9 +21,9 @@ function mockFetch(status: number): {
 describe("probeApiKeyConnectivity", () => {
   test("200 means the key is valid", async () => {
     const { fetcher, seenUrl, seenInit } = mockFetch(200);
-    const result = await probeApiKeyConnectivity("inferhub", "sk-test", fetcher);
-    expect(seenUrl[0]).toBe("https://api.inferhub.dev/v1/models");
-    expect(result).toMatchObject({ source: "inferhub", error: null });
+    const result = await probeApiKeyConnectivity("cerebras", "sk-test", fetcher);
+    expect(seenUrl[0]).toBe("https://api.cerebras.ai/v1/models");
+    expect(result).toMatchObject({ source: "cerebras", error: null });
     expect(new Headers(seenInit[0]?.headers).get("user-agent")).toBeNull();
     expect(result.windows).toEqual([]);
   });
@@ -66,10 +65,4 @@ describe("provider connectivity fetchers", () => {
     expect(result).toMatchObject({ source: "cerebras", error: null });
   });
 
-  test("inferhub probes its models endpoint", async () => {
-    const { fetcher, seenUrl } = mockFetch(200);
-    const result = await fetchInferhubQuota("key", fetcher);
-    expect(seenUrl[0]).toBe("https://api.inferhub.dev/v1/models");
-    expect(result).toMatchObject({ source: "inferhub", error: null });
-  });
 });

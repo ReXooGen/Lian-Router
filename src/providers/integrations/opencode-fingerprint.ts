@@ -35,34 +35,68 @@ export function generateOpenCodeRequestId(): string {
 }
 
 /**
- * Stable session cache keyed per credential identity.
+ * Stable session cache keyed per (client identity, egress) pair.
  *
- * The upstream free-tier gate accounts quota per `x-opencode-session`; minting
- * a fresh session on every dispatch burns through the per-session quota and
- * surfaces as `429 FreeUsageLimitError` with growing reset-after delays, while
- * the real CLI reuses one long-lived canonical session per conversation.
- * Mirror that: one stable session per downstream identity, evicted after
- * `STABLE_SESSION_TTL_MS` to bound memory.
+ * `x-opencode-session` is the client handle upstream attributes a request to,
+ * and it carries prompt-cache affinity, so two properties have to hold:
+ *
+ * 1. **One session per conversation.** Minting a fresh id on every dispatch
+ *    looks like a brand-new client each turn, so nothing upstream can be
+ *    attributed to a continuing conversation.
+ * 2. **One session per client.** A handle is an identity: two tenants, two
+ *    accounts, or two egress addresses presenting the same id are the same
+ *    client to upstream. Sharing one is wrong on its own terms — it collapses
+ *    distinct conversations into one correlation identity — so the key pairs
+ *    the credential with the egress that presents it.
+ *
+ * What the key does **not** do is buy quota. The free tier's allowance is
+ * keyed on the **source address**, not on this handle: the probe evidence is
+ * that a freshly minted `ses_` id from a spent address still answers `429`,
+ * while a fresh id from an unspent address answers `200`. Rotating the proxy
+ * is therefore what actually changes the quota, and reusing a session id is
+ * not what produced the observed 429s — those came from addresses that were
+ * already spent. Correct keying here is about identity and cache affinity; it
+ * does not, by itself, lift a spent allowance.
+ *
+ * Entries expire after `STABLE_SESSION_TTL_MS` and the map evicts its
+ * least-recently-used entry at `MAX_STABLE_SESSIONS`, so the key space is
+ * bounded regardless of how many identities or pools exist.
  */
 const STABLE_SESSION_TTL_MS = 60 * 60 * 1000; // 1h
 const MAX_STABLE_SESSIONS = 1000;
 const stableOpencodeSessions = new Map<string, { sessionId: string; lastUsed: number }>();
 
-function identityKey(context?: ProviderDispatchContext): string {
-  const credential = context?.credential;
-  if (credential && typeof credential === "object" && "secret" in credential) {
-    const secret = (credential as { secret?: unknown }).secret;
-    if (typeof secret === "string" && secret.length > 0) {
-      // Hash the secret so the map key cannot leak the raw credential.
-      let hash = 0;
-      for (let i = 0; i < secret.length; i++) hash = ((hash << 5) - hash + secret.charCodeAt(i)) | 0;
-      return `opencode:cred:${hash}`;
+/**
+ * Which client this dispatch is, from what upstream can actually distinguish.
+ *
+ * The account id is the strongest available identity. Failing that, the
+ * credential bytes are hashed (FNV-1a over the raw secret) so the map key never
+ * retains key material. A provider with no account and no secret — OpenCode
+ * Free sends the literal `Bearer public` — has no identity at all, and
+ * `anonymous` is the honest answer: upstream cannot tell those callers apart
+ * either, so the egress half of the key is what separates them.
+ */
+function credentialKey(credential: ProviderDispatchContext["credential"] | undefined): string {
+  if (!credential) return "anonymous";
+  if (credential.account_id) return `account:${credential.account_id}`;
+  const secret = credential.secret;
+  if (secret && secret.length > 0) {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < secret.length; i += 1) {
+      hash ^= secret[i] ?? 0;
+      hash = Math.imul(hash, 0x01000193);
     }
+    return `secret:${(hash >>> 0).toString(16)}`;
   }
-  return "opencode:default";
+  return "anonymous";
 }
 
-/** Resolve (or mint and cache) a stable session id for this credential identity. */
+function identityKey(context?: ProviderDispatchContext): string {
+  const egress = context?.network_pool_id ?? "direct";
+  return `${credentialKey(context?.credential)}|egress:${egress}`;
+}
+
+/** Resolve (or mint and cache) a stable session id for this identity+egress pair. */
 export function stableOpenCodeSessionId(context?: ProviderDispatchContext): string {
   const key = identityKey(context);
   const now = Date.now();
@@ -84,9 +118,33 @@ export function stableOpenCodeSessionId(context?: ProviderDispatchContext): stri
   return sessionId;
 }
 
+/**
+ * Drop this identity+egress session so the next dispatch mints a new one.
+ *
+ * Called when upstream reports `FreeUsageLimitError`. This is hygiene, not the
+ * remedy: the allowance is keyed on the source address, so the retry that
+ * matters is one leaving through a *different* exit, and a fresh handle from
+ * the same spent address is still refused. Retiring it is still correct —
+ * a handle upstream has just declared spent should not be reused, and a new
+ * conversation should not inherit it — but no reader should expect this to
+ * restore quota by itself.
+ *
+ * Scoped deliberately to that one error: a bare 429 is a request window the
+ * same handle may pass shortly, and a 5xx is not about this handle at all;
+ * rotating on either would discard a healthy conversation's affinity.
+ */
+export function invalidateOpenCodeSession(context?: ProviderDispatchContext): void {
+  stableOpencodeSessions.delete(identityKey(context));
+}
+
 /** Test-only: clear the stable-session cache so tests observe fresh ids. */
 export function _resetStableOpenCodeSessionsForTesting(): void {
   stableOpencodeSessions.clear();
+}
+
+/** Test-only: observable cache size, so bounds are asserted rather than assumed. */
+export function _stableOpenCodeSessionCountForTesting(): number {
+  return stableOpencodeSessions.size;
 }
 
 /**

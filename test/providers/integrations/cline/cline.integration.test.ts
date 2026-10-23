@@ -191,8 +191,28 @@ describe("Cline model catalog", () => {
       "cline-free/deepseek-v4.1-flash",
       "z-ai/glm-5.3-flash",
       "cline-free/muse-spark-1.3-contributor",
+      "anthropic/claude-opus-4.7",
+      "anthropic/claude-sonnet-4.6",
+      "anthropic/claude-opus-4.6",
+      "openai/gpt-5.3-codex",
+      "openai/gpt-5.4",
+      "google/gemini-3.1-pro-preview",
+      "google/gemini-3.1-flash-lite-preview",
     ]);
-    expect(CLINE_MODELS.every((model) => model.cost.input === 0 && model.cost.output === 0)).toBe(true);
+    // Only the free bucket bills zero. The paid rows added from the same
+    // roster must keep their real cost, or a billed model would route as free.
+    const freeIds = new Set([
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "google/gemma-4-31b-it:free",
+      "deepseek/deepseek-v4-flash",
+      "cline-free/deepseek-v4.1-flash",
+      "z-ai/glm-5.3-flash",
+      "cline-free/muse-spark-1.3-contributor",
+    ]);
+    for (const model of CLINE_MODELS.filter((m) => freeIds.has(m.modelId))) {
+      expect(model.cost.input).toBe(0);
+      expect(model.cost.output).toBe(0);
+    }
   });
 
   test("workosToken helper correctly applies prefix", () => {

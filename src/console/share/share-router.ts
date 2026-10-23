@@ -14,7 +14,7 @@ import { generateApiKeySecret } from "../domains/api-keys/contracts";
 import { decryptCredentialToString, encryptCredential } from "../../security/crypto";
 import { hashShareToken, type ShareLinkStore, type ShareApiKeyRow } from "../../persistence/share-store";
 import type { ShareActivityPort } from "./share-usage";
-import { resolvePublicBaseUrl } from "../../config";
+import { resolveEffectivePublicBaseUrl } from "../../runtime/public-base-url";
 
 /** Minimum accepted token length; generated tokens are 43 base64url chars. */
 const MIN_TOKEN_LENGTH = 20;
@@ -200,9 +200,10 @@ export function createShareRouter(options: ShareRouterOptions): Elysia {
         keyPrefix: row.keyPrefix,
         // The base URL a recipient should point their client at. Behind a
         // tunnel or reverse proxy the page's own origin is the proxy's
-        // address, so the operator-configured value wins when present. `null`
-        // means "use the origin you loaded this page from".
-        apiBaseUrl: resolvePublicBaseUrl() ?? null,
+        // address, so a console-started tunnel wins, then the
+        // operator-configured value. `null` means "use the origin you loaded
+        // this page from".
+        apiBaseUrl: resolveEffectivePublicBaseUrl() ?? null,
         canIssue: clientIpKey !== undefined && !alreadyIssued,
         alreadyIssued,
         // Drives the locked-out page's copy: a child without stored ciphertext

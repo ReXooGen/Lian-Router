@@ -25,6 +25,8 @@ import { toast } from "../lib/toast";
 import { getErrorMessage } from "../lib/helpers";
 import type { ApiKeyResponse, ShareKeyResponse } from "../lib/contracts";
 import { useApiKeys, useCreateApiKey, useRevealApiKey, useRevokeApiKey, useShareApiKey, useUpdateApiKey } from "../lib/hooks/api-keys";
+import { useNetworkPools } from "../lib/hooks/network";
+import { networkPoolLabel } from "../lib/network-pool-label";
 
 /** Compact K/M/B/T token count used by the panel's stat cards and rows. */
 function compactTokens(value: number | null | undefined): string {
@@ -66,6 +68,12 @@ export function ApiKeysPanel(): ReactNode {
   const [shareExpiry, setShareExpiry] = useState("");
 
   const keys = keysQuery.data ?? [];
+  // One pool list for the whole panel: each row resolves its binding label
+  // from it, so a renamed pool never leaves a stale name on a key.
+  const poolsQuery = useNetworkPools();
+  const poolNames: Record<string, string> = Object.fromEntries(
+    (poolsQuery.data ?? []).map((pool) => [pool.id, networkPoolLabel(pool)]),
+  );
   const activeKeys = keys.filter((key) => !key.revokedAt).length;
   const totalUsage = keys.reduce((sum, key) => sum + Math.max(0, key.tokensConsumed ?? 0), 0);
 
@@ -293,6 +301,12 @@ export function ApiKeysPanel(): ReactNode {
                     <span>One-time {limitLabel(key.lifetimeTokenBudget)}</span>
                     <span>Concurrent {limitLabel(key.maxConcurrentRequests)}</span>
                     <span>Models {key.modelAllowlist?.length ?? "All"}</span>
+                    <span>
+                      Proxy{" "}
+                      {key.networkPoolId
+                        ? (poolNames[key.networkPoolId] ?? `${key.networkPoolId.slice(0, 8)}…`)
+                        : "Default"}
+                    </span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "6px", flexShrink: 0, flexWrap: "wrap" }}>

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ApiKeyForm, keyCredentialFields, oneTimeSecretForMode } from "./ApiKeyForm";
+import { queryKeys } from "../lib/query-keys";
 import type { ApiKeyResponse } from "../lib/contracts";
 
 const shareRecord: ApiKeyResponse = {
@@ -51,5 +52,39 @@ describe("API key mode form", () => {
     expect(oneTimeSecretForMode("personal", "rk_once")).toBe("rk_once");
     expect(oneTimeSecretForMode("share", "must-not-show")).toBeNull();
     expect(oneTimeSecretForMode("personal", undefined)).toBeNull();
+  });
+  test("the proxy selector renders in both personal and share-template modes", () => {
+    const personal = render("create", null);
+    const share = render("create", shareRecord);
+    for (const markup of [personal, share]) {
+      expect(markup).toContain("Proxy");
+      expect(markup).toContain("Default (provider routing)");
+    }
+    // A share template's pool is inherited by the children it mints, so the
+    // copy has to say so rather than describe a single key's traffic.
+    expect(share).toContain("every child key minted from it");
+  });
+  test("a key with no pools offers an explanation instead of an empty picker", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // A resolved empty pool list is the state that used to render a dropdown
+    // whose only entry was the default.
+    client.setQueryData(queryKeys.network.pools, []);
+    const markup = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(ApiKeyForm, {
+          mode: "create",
+          record: null,
+          busy: false,
+          onDone: () => undefined,
+          onClose: () => undefined,
+        }),
+      ),
+    );
+    // The explanation replaces an empty dropdown, and the field still reads as
+    // "Default (provider routing)" rather than blank.
+    expect(markup).toContain("No active proxy pool exists in this tenant");
+    expect(markup).toContain("Default (provider routing)");
   });
 });

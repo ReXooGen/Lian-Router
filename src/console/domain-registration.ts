@@ -20,6 +20,8 @@ import { createNetworkPoolRoutes } from "./routing/pools/contracts";
 import { DrizzleModelRoutingStore } from "./routing/model/store";
 import { DrizzleNetworkPoolStore } from "./routing/pools/store";
 import { createRuntimeSettingsRoutes } from "./settings/contracts";
+import { createTunnelRoutes } from "./tunnel/contracts";
+import { getTunnelService } from "./tunnel/service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
 import { createPromptInjectionRoutes } from "./prompt-injection/routes";
 import { DrizzlePromptInjectionStore } from "../persistence/prompt-injection-store";
@@ -173,6 +175,7 @@ export function registerConsoleDomains(
       return { fetch: ctx.networkBindingFactory.fetch(undefined, tenantId) };
     },
     snapshotInvalidator: ctx.routeSnapshotService,
+    poolSelector: ctx.poolSelector,
   });
   const providerDetailStore = new DrizzleProviderDetailStore(ctx.db);
   const networkPoolStore = new DrizzleNetworkPoolStore(ctx.db, resolveSsrfPolicy());
@@ -230,6 +233,13 @@ export function registerConsoleDomains(
   }));
   console.use(createRuntimeSettingsRoutes({ store: runtimeSettingsStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
   console.use(
+    createTunnelRoutes({
+      service: getTunnelService(),
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+    }),
+  );
+  console.use(
     createPromptInjectionRoutes({
       store: new DrizzlePromptInjectionStore(ctx.db),
       accessResolver: ctx.accessResolver,
@@ -255,7 +265,7 @@ export function registerConsoleDomains(
     }),
   );
   console.use(createModelRoutingRoutes({ store: modelRoutingStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, snapshotInvalidator: ctx.routeSnapshotService }));
-  console.use(createApiKeyRoutes({ store: apiKeyStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, shareStore, shareActivity, admissionService: ctx.admissionService }));
+  console.use(createApiKeyRoutes({ store: apiKeyStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, shareStore, shareActivity, admissionService: ctx.admissionService, poolLookup: networkPoolStore }));
   console.use(createCliToolsRoutes({ service: ctx.cliToolService, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder, snapshotInvalidator: ctx.routeSnapshotService }));
   console.use(createAccountQuotaRoutes({
     db: ctx.db,

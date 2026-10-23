@@ -211,7 +211,9 @@ export function createGeminiAdapter(options: GeminiAdapterOptions = {}): Provide
 export async function discoverGeminiModels(input: DiscoveryInput): Promise<readonly ModelDefinition[] | null> {
   return fetchOpenAICompatibleModels({
     baseUrl: providerBaseUrl("gemini"),
+    providerId: "gemini",
     headers: { "x-goog-api-key": input.credential },
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.fetcher ? { fetcher: input.fetcher } : {}),
   });
 }

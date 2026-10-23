@@ -55,6 +55,7 @@ export function sanitizeProviderResponse(
     isBuiltIn: (p.isBuiltIn as boolean | undefined) ?? false,
     requiresAccount: (p.requiresAccount as boolean | undefined) ?? true,
     supportsModelDiscovery: (p.supportsModelDiscovery as boolean | undefined) ?? !p.isBuiltIn,
+    ...(typeof p.stale === "boolean" ? { stale: p.stale } : {}),
     ...(typeof p.createdAt === "string" ? { createdAt: p.createdAt } : {}),
     ...(typeof p.updatedAt === "string" ? { updatedAt: p.updatedAt } : {}),
   };

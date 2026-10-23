@@ -1,6 +1,6 @@
 // Console authentication, sessions, lockouts, first-boot setup, and audit.
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, eq, gt, ne, sql } from "drizzle-orm";
+import { and, eq, gt, ne, sql, type SQL } from "drizzle-orm";
 import type { ConsoleSession, ConsoleUser } from "../../persistence/schema";
 import { log } from "../../observability/logger";
 import {
@@ -96,12 +96,53 @@ export function assertMutationApplied(
   if (!applied) throw new Error(`${operation} was not persisted`);
 }
 
+/**
+ * The one username comparison for console identity: case-insensitive.
+ *
+ * Every read of `console_users.username` goes through this predicate so the
+ * login route, the password gate, and boot reconciliation cannot disagree
+ * about whether `Liaan` and `liaan` are the same account. `lower()` on both
+ * sides rather than `ilike` because the right-hand value is user input, and
+ * `ilike` would treat `%`/`_` in a username as wildcards.
+ */
+export function consoleUsernameMatches(username: string): SQL {
+  return sql`lower(${consoleUsers.username}) = lower(${username})`;
+}
+
 export class ConsoleUserStore {
   constructor(private readonly db: LianRouterDatabase) {}
 
+  /**
+   * The one console-user identity lookup: case-insensitive.
+   *
+   * `console_users.username` is a `text` column whose unique index is
+   * case-sensitive, so an `eq` cannot find the row `Liaan` when the caller
+   * passes `liaan` — the production login failure, where the route lowercased
+   * the submitted name before the lookup. Comparing `lower(...)` on both sides
+   * states the rule explicitly: a username identifies a user regardless of how
+   * it is capitalized.
+   *
+   * The unique index still permits two rows differing only by case. That is a
+   * broken invariant, not a tie to break, so the query reads both matches and
+   * this method refuses to resolve one — callers then take their ordinary
+   * "no such user" path instead of signing in whichever row sorted first.
+   */
   async findByUsername(username: string): Promise<unknown | undefined> {
-    const rows = await this.db.select().from(consoleUsers).where(eq(consoleUsers.username, username)).limit(1);
+    const rows = await this.findMatchesByUsername(username);
+    if (rows.length > 1) {
+      log.warn("[console-auth] ambiguous console username; refusing to resolve", username);
+      return undefined;
+    }
     return rows[0];
+  }
+
+  /** Every row matching `username` ignoring case, bounded to what ambiguity needs. */
+  private async findMatchesByUsername(username: string): Promise<unknown[]> {
+    return this.db
+      .select()
+      .from(consoleUsers)
+      .where(consoleUsernameMatches(username))
+      .limit(2);
   }
 
   async findById(userId: string): Promise<unknown | undefined> {

@@ -60,14 +60,21 @@ export function mapProviderRow(row: typeof providers.$inferSelect): ProviderReco
     row.wireFamilyDefault,
     row.compatibilityProfile,
   );
+  const isBuiltIn = isBundledProviderId(row.id);
   return {
     providerId: row.id,
     tenantId: row.tenantId,
     enabled: row.enabled,
-    isBuiltIn: isBundledProviderId(row.id),
+    isBuiltIn,
     configured: false,
     requiresAccount: row.requiresAccount,
-    supportsModelDiscovery: !isBundledProviderId(row.id),
+    supportsModelDiscovery: !isBuiltIn,
+    // A global row whose id is no longer bundled is a leftover from a removed
+    // bundle entry, not a provider the operator created: `createProvider`
+    // always writes a tenant id. `seedBundledProviders` never prunes, so the
+    // row outlives the bundle and the card must say so instead of presenting
+    // it as a custom provider.
+    stale: row.tenantId === null && !isBuiltIn,
     ...(row.wireFamilyDefault ? { wireFamilyDefault: row.wireFamilyDefault } : {}),
     ...(supportedWireFamilies ? { supportedWireFamilies } : {}),
     ...(row.capabilityProfile

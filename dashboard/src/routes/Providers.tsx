@@ -391,6 +391,11 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
               {customProvider.label || customProvider.providerId}
             </div>
             <div style={{ marginTop: "3px", display: "flex", flexWrap: "wrap", gap: "4px" }}>
+              {customProvider.stale ? (
+                <Badge tone="warn" dot>
+                  Removed from bundle — safe to delete
+                </Badge>
+              ) : null}
               {activeConnections > 0 ? (
                 <Badge tone="ok" dot>
                   {activeConnections} Connected
@@ -463,14 +468,27 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
         }}
         title={`Delete ${customProvider.label || customProvider.providerId}`}
       />
-      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete Custom Provider">
+      <Dialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        title={customProvider.stale ? "Delete Stale Provider" : "Delete Custom Provider"}
+      >
         <Stack gap="12px">
-          <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-            Are you sure you want to delete custom provider{" "}
-            <strong>{customProvider.label || customProvider.providerId}</strong>? Its models,
-            accounts, and routing preferences are deleted together, and requests to this
-            provider will no longer route.
-          </p>
+          {customProvider.stale ? (
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+              <strong>{customProvider.label || customProvider.providerId}</strong> was removed from
+              the bundled catalog, so it is no longer dispatchable. This row is a leftover — no
+              accounts or routing settings reference it. Deleting it removes its model rows and
+              cannot affect any other provider.
+            </p>
+          ) : (
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+              Are you sure you want to delete custom provider{" "}
+              <strong>{customProvider.label || customProvider.providerId}</strong>? Its models,
+              accounts, and routing preferences are deleted together, and requests to this
+              provider will no longer route.
+            </p>
+          )}
           {deleteMutation.isError ? (
             <p style={{ fontSize: "12px", color: "var(--red)" }}>
               {getErrorMessage(deleteMutation.error, "Delete failed")}
@@ -647,12 +665,20 @@ function CustomProvidersSection({
 
 // ── Provider Card ─────────────────────────────────────────────────────────────
 
-const FOUNDING_IDS = new Set(["inferhub"]);
 /** Free tiers that are metered (a few requests per day) rather than a standing
  * free allowance. They are listed in {@link FREE_AVAILABLE_IDS} too, but get
  * their own section instead of the general free-available one. */
 const FREE_LIMITED_IDS = new Set(["siliconflow", "cerebras", "groq", "opencodeft", "opencodezen", "opencodego", "bai", "tokenharbor"]);
 const FREE_AVAILABLE_IDS = new Set([
+  // 9router-sourced providers that publish a free tier: free-credit sign-ups and
+  // zero-cost routing aliases. Membership is a product fact, not a price claim.
+  "agnes",
+  "api-airforce",
+  "bazaarlink",
+  "byteplus",
+  "kilo-gateway",
+  "llm7",
+  "poolside",
   "qoder",
   "agentrouter",
   "mistral",
@@ -679,7 +705,6 @@ const ProviderCard = memo(function ProviderCard({
 }: {
   provider: ProviderResponse;
 }): ReactNode {
-  const isFounding = FOUNDING_IDS.has(provider.providerId.toLowerCase());
   const displayName = providerDisplayName(provider.providerId, provider.label);
   const modelsQuery = useProviderModels(provider.providerId);
   const modelCount = modelsQuery.data?.length ?? 0;
@@ -700,26 +725,6 @@ const ProviderCard = memo(function ProviderCard({
         transition: "transform var(--dur-micro) var(--ease-spring), border-color var(--dur-micro) var(--ease-spring), box-shadow var(--dur-micro) var(--ease-spring)",
       }}
     >
-      {isFounding ? (
-        <div
-          style={{
-            position: "absolute",
-            right: "-24px",
-            top: "10px",
-            transform: "rotate(45deg)",
-            background: "var(--accent)",
-            color: "var(--accent-foreground)",
-            fontSize: "9px",
-            fontWeight: 800,
-            padding: "2px 24px",
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            zIndex: 5,
-          }}
-        >
-          Friend
-        </div>
-      ) : null}
 
       <Link
         to={`/providers/${encodeURIComponent(provider.providerId)}`}
@@ -814,11 +819,6 @@ function compareConfiguredProviders(a: ProviderResponse, b: ProviderResponse): n
 
 const SECTIONS = [
   {
-    title: "Founding Friend & Sponsors",
-    subtitle: "Super Cheap inference pool",
-    filter: (p: ProviderResponse) => FOUNDING_IDS.has(p.providerId.toLowerCase()),
-  },
-  {
     title: "Free Limited Providers",
     filter: (p: ProviderResponse) => FREE_LIMITED_IDS.has(p.providerId.toLowerCase()),
   },
@@ -842,7 +842,6 @@ const SECTIONS = [
     title: "API Key Providers",
     filter: (p: ProviderResponse) =>
       p.isBuiltIn &&
-      !FOUNDING_IDS.has(p.providerId.toLowerCase()) &&
       !FREE_AVAILABLE_IDS.has(p.providerId.toLowerCase()) &&
       p.oauthFlows === undefined,
   },

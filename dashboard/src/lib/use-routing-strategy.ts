@@ -20,7 +20,6 @@ export const ROUTING_ACTIVE_LABEL = {
 // This set only decides whether the UI shows an explanatory tip; the backend
 // constant is what actually enforces the default. Keep in sync.
 export const PROXY_UNSUPPORTED_HINT_PROVIDERS: ReadonlySet<string> = new Set([
-  "inferhub",
 ]);
 
 export interface RoutingStrategyState {

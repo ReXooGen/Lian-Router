@@ -43,6 +43,8 @@ src/console/
                           (`/automation/*`, enabled by LIANROUTER_AUTOMATION_UPSTREAM; lives at
                           the root, not under /console/api, because the embedded app calls
                           absolute paths)
+  tunnel/                 cloudflared quick-tunnel lifecycle (`/tunnel*`) that publishes this
+                          gateway publicly and outranks LIANROUTER_PUBLIC_BASE_URL while live
 ```
 
 ## Conventions
@@ -94,6 +96,19 @@ argon2id hash, and sets session plus CSRF cookies. First-boot setup is gated on 
 one advisory-locked transaction with in-process single-flight; change-password rotates the hash
 and deletes all other sessions in the same transaction. CSRF is double-submit: login and refresh
 set a fresh CSRF cookie beside the session cookie, and logout clears both.
+
+**Login identity.** A console username identifies a user regardless of capitalization:
+`ConsoleUserStore.findByUsername` matches with `lower(username) = lower($1)` (not `ilike` — the
+submitted value is user input, and `%`/`_` in it must not act as wildcards). Because the unique
+index on `console_users.username` is case-sensitive, two rows may differ only by case; that is a
+broken invariant rather than a tie to break, so the lookup reads up to two matches and resolves
+neither, letting the caller take its ordinary `unknown_user` path. Usernames are **stored as
+typed** and matched case-insensitively: first-boot setup writes the operator's spelling verbatim
+(it only runs on an empty table, so it cannot collide), and boot reconciliation compares
+case-insensitively before deciding to insert the gate user, so it updates a row stored `Admin`
+instead of adding a second `admin`. The lockout key is the *other* concern and stays case-folded
+(`lowercased-username:clientIp`): one bucket per human, so re-casing the name cannot reset the
+failure counter.
 
 **Single-password ownership.** `LIANROUTER_CONSOLE_PASSWORD` seeds the gate but does not own it
 forever. `resolveEffectiveConsolePassword` reports which side is authoritative: while the
@@ -150,6 +165,19 @@ deleted (`builtin_model_immutable`). Accounts soft-revoke via `status: disabled`
 decrypted secrets as a downloaded file, never rendered. OAuth advertises the fixed loopback URI
 `http://127.0.0.1:59653/callback`; the server-side console callback remains the exchange
 endpoint, so token material never reaches the dashboard.
+
+**Stale global rows are deletable, not adopted.** `seedBundledProviders` only upserts, so a
+provider that leaves the bundle keeps its `providers` row with `tenant_id IS NULL`. The tenant
+route `DELETE /providers/:providerId` therefore deletes with the same `globalOrOwnedBy`
+predicate `list`/`get` read, gated on `!isBundledProviderId` (bundled ids answer
+`provider_is_builtin`). This is not a widening of tenant authority: `createProvider` always
+writes the caller's tenant id, so a global row whose id is not bundled can only be that kind of
+leftover — never another tenant's provider, which stays outside the predicate and answers
+`provider_not_found`. Such a row is projected with `stale: true` and the card says it was removed
+from the bundle rather than presenting it as a custom provider the operator created. Pruning at
+boot is deliberately not done: deleting a provider row cascades its accounts, models, and routing
+settings, which would destroy configuration for a removal the operator may not have intended, so
+the operator deletes it explicitly through this route.
 
 Per-provider routing preferences (`GET`/`PATCH /providers/:providerId/routing`) are the
 operator's own settings, so they live on `provider_routing_settings` rather than on the
@@ -256,6 +284,19 @@ prefix-length hints leave the store.
   owner-supplied key, hashed via `hashSecret` plus an encrypted copy so share recipients can
   reuse it; secret returned once), patch, revoke (also purges admission state, so a recycled id
   never inherits admission history), and share links (a bearer token whose hash alone is stored).
+  A key also carries an optional **egress binding** (`networkPoolId` → `api_keys.network_pool_id`,
+  `ON DELETE SET NULL`), which is a *narrowing* constraint on top of the account's own routing:
+  `acquirePoolSlot` intersects it with the candidate's pool set, so a key can never widen an
+  account's egress. `null`/omitted leaves provider routing untouched, `null` on a patch detaches,
+  and `undefined` leaves the column alone. Writes validate the pool through `poolLookup` — a
+  tenant-scoped `NetworkPoolStore.get`, not the whole store, because this domain must be able to
+  *check* a pool and never to mutate one — rejecting an unknown or foreign id
+  (`network_pool_not_found`, 400; a foreign id misses because the read is tenant-scoped, so this
+  route cannot probe another tenant's pool ids) and a non-`active` one (`network_pool_inactive`,
+  409). The response returns the pool **id**, and the dashboard joins it against the pool list it
+  already loads, so renaming a pool cannot leave a stale label on a key. A share template's pool
+  is copied onto every child it mints at insert time (see `PERSISTENCE.md`), never resolved
+  through the parent at request time.
 - **Studio** (`studio/`): CRUD over per-tenant saved sessions (capped, messages and media
   normalized and bounded on write and read), a tenant-scoped `web-fetch` tool over
   the validated outbound network binding, plus a key endpoint that decrypts the tenant's default
@@ -571,6 +612,42 @@ deactivates its enrollment links. Child keys cannot be edited through the person
 revoke them from the Share page. Revoking one child releases its canonical IP for a future
 enrollment. Public responses are `no-store` and carry the locked-down API CSP, frame protection,
 `nosniff`, and `no-referrer`.
+
+## Tunnel (`tunnel/`)
+
+`GET /tunnel` reads the state, `POST /tunnel/start` starts a cloudflared quick tunnel, and
+`POST /tunnel/stop` kills it. Reads take `dashboard:read`; start and stop take
+`dashboard:write` and audit `tunnel.started`, `tunnel.start_failed`, and `tunnel.stopped` — the
+failure row matters most, since it records who tried to expose the gateway and why it failed.
+Start is idempotent (a running tunnel is returned as-is, and concurrent starts share one attempt
+so two tabs cannot spawn two children) and bounded: it waits about 25 s for the host in
+cloudflared's stderr, and a missing binary, an early exit, or a silent child is a
+`tunnel_unavailable` / `tunnel_timeout` 502 after the child is killed. The host is taken from the
+quick-tunnel banner only; cloudflared also prints `https://api.trycloudflare.com` in its own
+error lines, and advertising that as the tunnel would point every recipient at the API.
+
+**State is process-local, and that is the whole design.** The host belongs to the child
+cloudflared process; a gateway restart kills the child, mints a new host on the next start, and
+makes the old one worthless. There is therefore no table, no migration, and no entry in
+`console_settings` — a persisted URL would advertise an address that stopped resolving the
+moment the process that owned it exited. `status().running` is true only once a host is actually
+advertised, not merely while a child exists, so the dashboard never offers a host mid-handshake
+or after a crash.
+
+**The advertised origin is a layered override.** `src/config.ts` stays a leaf that only reads
+`LIANROUTER_PUBLIC_BASE_URL`; `src/runtime/public-base-url.ts` owns the one mutable value and
+`resolveEffectivePublicBaseUrl()` returns the live tunnel first, then the configured value, then
+`undefined` (request origin). Both call sites that hand an address to a recipient — the
+enrollment link in `domains/api-keys` and `apiBaseUrl` in the share payload — read the effective
+resolver, so starting a tunnel from the Overview card changes the links without editing `.env`.
+A stopped tunnel and a crashed one both clear the override.
+
+**Process handling.** The child is spawned from an argument array (never a shell string) and is
+deliberately not unref'd: this process owns it, so an `exit` hook kills it with the gateway, and
+its `exit` event flips the status to not-running with an error rather than leaving a dead host
+advertised. stderr is drained for the child's whole life, keeping only a bounded tail to scan
+for the host — an unread pipe eventually blocks cloudflared. The child's environment is never
+logged. The binary comes from `LIANROUTER_CLOUDFLARED_BIN` (default `cloudflared` on PATH).
 
 ## Automation proxy (`automation/`)
 

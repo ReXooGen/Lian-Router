@@ -68,6 +68,17 @@ const CODEBUDDY_INTL_RAW: readonly BuddyRawEntry[] = [
   ["gemini-3.5-flash", "Gemini 3.5 Flash", true, true, 1_048_576, 65_536],
   ["glm-5.2", "GLM-5.2", true, true, 200_000, 128_000],
   ["glm-5.3", "GLM-5.3", true, true, 200_000, 128_000],
+  // Roster ids absent from the local catalog. Limits are left to
+  // `defineModel`'s fallback: the published list states ids only.
+  ["glm-5.1", "GLM-5.1", true, true, null, null],
+  ["glm-5.0", "GLM-5.0", true, true, null, null],
+  ["glm-5.0-turbo", "GLM-5.0 Turbo", true, true, null, null],
+  ["glm-5v-turbo", "GLM-5V Turbo", true, true, null, null],
+  ["glm-4.7", "GLM-4.7", true, true, null, null],
+  ["minimax-m2.7", "MiniMax-M2.7", true, true, null, null],
+  ["hy3-preview", "Hy3 Preview", true, true, null, null],
+  ["deepseek-v4-pro", "DeepSeek-V4-Pro", true, true, null, null],
+  ["deepseek-v3-2-volc", "DeepSeek-V3.2", true, true, null, null],
   ["gpt-5.3-codex", "GPT-5.3 Codex", true, true, 400_000, 128_000],
   ["gpt-5.4", "GPT-5.4", true, true, 400_000, 128_000],
   ["gpt-5.5", "GPT-5.5", true, true, 400_000, 128_000],

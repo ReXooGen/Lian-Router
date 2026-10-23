@@ -62,7 +62,6 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "zai", displayName: "Z.AI", baseUrl: "https://api.z.ai/api/paas/v4" },
   { id: "hermes", displayName: "Nous Research", baseUrl: "https://inference-api.nousresearch.com/v1" },
   { id: "bai", displayName: "B.AI", baseUrl: "https://api.b.ai/v1" },
-  { id: "inferhub", displayName: "InferHub", baseUrl: "https://api.inferhub.dev/v1", defaultBypassProxy: true },
   { id: "browseruse", displayName: "Browser Use", baseUrl: "https://api.browser-use.com" },
   { id: "aihubmix", displayName: "AiHubMix", baseUrl: "https://aihubmix.com/v1" },
   { id: "tokenharbor", displayName: "TokenHarbor", baseUrl: "https://tokenharbor.ai/v1" },
@@ -74,11 +73,86 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "cloudflare", displayName: "Cloudflare Workers AI", baseUrl: "https://api.cloudflare.com/client/v4/accounts" },
   { id: "commandcode", displayName: "Command Code", baseUrl: "https://api.commandcode.ai/alpha/generate" },
   { id: "qoder", displayName: "Qoder", baseUrl: "https://api2.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1" },
+  // Same COSY codec as `qoder`; a separate row because the CN gateway bills a
+  // different model catalog behind the same keys and a key from one site is
+  // rejected by the other.
+  { id: "qoder-cn", displayName: "Qoder CN", baseUrl: "https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1" },
   { id: "ollamacloud", displayName: "Ollama Cloud", baseUrl: "https://ollama.com/v1" },
   { id: "gemini", displayName: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta" },
+  // Vertex serves the same Gemini generateContent envelope on a project-scoped
+  // path, so it declares the same wire family. Its `veo-*` video ids are not
+  // modelled: this repo has no video wire family.
+  { id: "vertex", displayName: "Vertex AI", baseUrl: "https://aiplatform.googleapis.com" },
+  // Cloud Code Assist wraps the Gemini payload in `{project, model, request}`
+  // behind a fixed RPC path. Like Antigravity — the other Cloud Code Assist
+  // client here — the canonical surface stays `chat`; the bespoke part is the
+  // upstream encoding, not the client wire.
+  { id: "gemini-cli", displayName: "Gemini CLI", baseUrl: "https://cloudcode-pa.googleapis.com/v1internal" },
   { id: "xiaomipg", displayName: "Xiaomi MiMo (PAYG)", baseUrl: "https://api.xiaomimimo.com/v1" },
   { id: "xiaomitp", displayName: "Xiaomi MiMo (Token Plan)", baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1" },
   { id: "perplexity", displayName: "Perplexity", baseUrl: "https://api.perplexity.ai" },
+  // Alibaba serves four distinct key products on four hosts; a key issued for
+  // one is rejected by the others, so they stay separate rows rather than one
+  // provider with a selectable region.
+  { id: "alicode", displayName: "Alibaba", baseUrl: "https://coding.dashscope.aliyuncs.com/v1" },
+  { id: "alicode-intl", displayName: "Alibaba Coding", baseUrl: "https://coding-intl.dashscope.aliyuncs.com/v1" },
+  { id: "alims-intl", displayName: "Alibaba Studio", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
+  { id: "alitp-intl", displayName: "Alibaba Token Plan", baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1" },
+  { id: "agnes", displayName: "Agnes AI", baseUrl: "https://apihub.agnes-ai.com/v1" },
+  { id: "api-airforce", displayName: "API.airforce", baseUrl: "https://api.airforce/v1" },
+  { id: "atria", displayName: "Atria Dawn", baseUrl: "https://api.atria-asi.ai/v1" },
+  { id: "baidu", displayName: "Baidu Qianfan", baseUrl: "https://qianfan.baidubce.com/v2" },
+  { id: "bazaarlink", displayName: "Bazaarlink", baseUrl: "https://bazaarlink.ai/api/v1" },
+  { id: "bluesminds", displayName: "BluesMinds", baseUrl: "https://api.bluesminds.com/v1" },
+  { id: "blackbox", displayName: "Blackbox AI", baseUrl: "https://api.blackbox.ai/v1" },
+  { id: "byteplus", displayName: "BytePlus ModelArk", baseUrl: "https://ark.ap-southeast.bytepluses.com/api/coding/v3" },
+  { id: "chutes", displayName: "Chutes AI", baseUrl: "https://llm.chutes.ai/v1" },
+  { id: "clinepass", displayName: "ClinePass", baseUrl: "https://api.cline.bot/api/v1" },
+  { id: "cohere", displayName: "Cohere", baseUrl: "https://api.cohere.ai/v1" },
+  { id: "dahl", displayName: "Dahl Inference", baseUrl: "https://inference.dahl.global/v1" },
+  { id: "deepseek", displayName: "DeepSeek", baseUrl: "https://api.deepseek.com" },
+  { id: "featherless", displayName: "Featherless", baseUrl: "https://api.featherless.ai/v1" },
+  { id: "github", displayName: "GitHub Copilot", baseUrl: "https://api.githubcopilot.com" },
+  { id: "glm-cn", displayName: "GLM (China)", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
+  { id: "hyperbolic", displayName: "Hyperbolic", baseUrl: "https://api.hyperbolic.xyz/v1" },
+  { id: "iflow", displayName: "iFlow AI", baseUrl: "https://apis.iflow.cn/v1" },
+  { id: "kimchi", displayName: "Kimchi", baseUrl: "https://llm.kimchi.dev/openai/v1" },
+  { id: "kilo-gateway", displayName: "Kilo Gateway", baseUrl: "https://api.kilo.ai/api/gateway" },
+  { id: "kilocode", displayName: "Kilo Code", baseUrl: "https://api.kilo.ai/api/openrouter" },
+  { id: "llm7", displayName: "LLM7", baseUrl: "https://api.llm7.io/v1" },
+  // The MiniMax coding plans speak the Messages wire, so their default family
+  // is `messages` and their catalog rows carry the `/v1/messages?beta=true` path.
+  { id: "minimax", displayName: "Minimax Coding", baseUrl: "https://api.minimax.io/anthropic", wireFamilyDefault: "messages" },
+  { id: "minimax-cn", displayName: "Minimax (China)", baseUrl: "https://api.minimaxi.com/anthropic", wireFamilyDefault: "messages" },
+  { id: "minimax-code", displayName: "MiniMax Code", baseUrl: "https://agent.minimax.cn/mavis/api/v1/llm", wireFamilyDefault: "messages" },
+  { id: "minimax-code-global", displayName: "MiniMax Code (Global)", baseUrl: "https://agent.minimax.io/mavis/api/v1/llm", wireFamilyDefault: "messages" },
+  { id: "morph", displayName: "Morph", baseUrl: "https://api.morphllm.com/v1" },
+  { id: "nebius", displayName: "Nebius AI", baseUrl: "https://api.studio.nebius.ai/v1" },
+  { id: "perplexity-agent", displayName: "Perplexity Agent", baseUrl: "https://api.perplexity.ai", wireFamilyDefault: "responses" },
+  { id: "poolside", displayName: "Poolside", baseUrl: "https://inference.poolside.ai/v1" },
+  { id: "sambanova", displayName: "SambaNova", baseUrl: "https://api.sambanova.ai/v1" },
+  { id: "tencent", displayName: "Tencent Hunyuan", baseUrl: "https://api.hunyuan.cloud.tencent.com/v1" },
+  { id: "together", displayName: "Together AI", baseUrl: "https://api.together.xyz/v1" },
+  { id: "tokenrouter", displayName: "TokenRouter", baseUrl: "https://api.tokenrouter.com/v1" },
+  { id: "venice", displayName: "Venice AI", baseUrl: "https://api.venice.ai/api/v1" },
+  { id: "vercel-ai-gateway", displayName: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1" },
+  { id: "volcengine-ark", displayName: "Volcengine Ark", baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3" },
+  { id: "xai", displayName: "xAI (Grok)", baseUrl: "https://api.x.ai/v1" },
+  // Azure OpenAI is deployment-scoped: the origin is `<resource>.openai.azure.com`
+  // and the path is `/openai/deployments/<deployment>/chat/completions`, so the
+  // operator supplies both in the credential. This row is the service's front
+  // door — the host the identity is declared against — not a dispatch origin.
+  { id: "azure", displayName: "Azure OpenAI", baseUrl: "https://api.openai.azure.com" },
+  // GitLab Duo takes a single `content` string and answers with a JSON string —
+  // not the OpenAI envelope — so its adapter is bespoke. The base is the REST
+  // root; the adapter appends `/chat/completions`.
+  { id: "gitlab", displayName: "GitLab Duo", baseUrl: "https://gitlab.com/api/v4" },
+  // The MiMo free channel is fingerprint-gated rather than keyed, so both rows
+  // are no-account providers. `mmf` is upstream's alias row for the same host.
+  { id: "mimo-free", displayName: "MiMo Code Free", baseUrl: "https://api.xiaomimimo.com", requiresAccount: false },
+  { id: "mmf", displayName: "MMF", baseUrl: "https://api.xiaomimimo.com", requiresAccount: false },
+  { id: "vertex-partner", displayName: "Vertex Partner", baseUrl: "https://aiplatform.googleapis.com" },
+  { id: "zed", displayName: "Zed", baseUrl: "https://cloud.zed.dev" },
 ] as const;
 
 export type BundledProviderId = (typeof RAW_BUNDLED_PROVIDER_METADATA)[number]["id"];

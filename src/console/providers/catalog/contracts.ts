@@ -494,6 +494,14 @@ export interface ProviderResponse {
   /** `false` only for a genuinely credential-less provider (OpenCode Free) —
    * the dashboard hides account creation for it since none is usable. */
   requiresAccount: boolean;
+  /**
+   * True when the row is global (`tenant_id IS NULL`) but its id is no longer
+   * part of the bundled catalog: a leftover from a removed bundle entry, not a
+   * provider the operator created. It is listed and deletable through the
+   * tenant-scoped route, and the dashboard labels it as removable rather than
+   * as a custom provider.
+   */
+  stale?: boolean;
   capabilityProfile?: Record<string, unknown>;
   baseUrl?: string;
   compatibilityProfile?: CompatibilityProfile;

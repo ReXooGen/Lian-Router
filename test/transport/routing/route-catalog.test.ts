@@ -719,3 +719,134 @@ dbDescribe("createDatabaseSnapshotBuilder — zero-account provider eligibility"
   });
 });
 
+dbDescribe("createDatabaseSnapshotBuilder — credential-less direct candidate suppression", () => {
+  let db: LianRouterDatabase;
+  // Three tenants, one per case the predicate has to distinguish.
+  const pooledTenantId = randomUUID();
+  const bareTenantId = randomUUID();
+  const disabledPoolTenantId = randomUUID();
+  const providerId = `snapshot-builder-public-pooled-${randomUUID().slice(0, 8)}`;
+  const modelId = `public-pooled-model-${randomUUID().slice(0, 8)}`;
+  const activePoolId = randomUUID();
+  const disabledPoolId = randomUUID();
+
+  beforeAll(async () => {
+    db = getDb();
+    await db.insert(tenants).values([
+      { id: pooledTenantId, name: "public-pooled-tenant", status: "active" },
+      { id: bareTenantId, name: "public-bare-tenant", status: "active" },
+      { id: disabledPoolTenantId, name: "public-disabled-pool-tenant", status: "active" },
+    ]);
+    // No accounts anywhere: this is the `accounts.length === 0` branch.
+    await db.insert(providers).values({ id: providerId, tenantId: null, enabled: true, requiresAccount: false });
+    await db.insert(models).values({
+      providerId,
+      modelId,
+      wireFamily: "chat",
+      endpointPath: "/v1/chat/completions",
+      enabled: true,
+    });
+    await db.insert(networkPools).values([
+      {
+        id: activePoolId,
+        kind: "http",
+        endpointConfig: { endpoint: "https://public-proxy.example:443" },
+        tenantId: pooledTenantId,
+        status: "active",
+        maxInflight: 6,
+      },
+      {
+        id: disabledPoolId,
+        kind: "http",
+        endpointConfig: { endpoint: "https://public-proxy-disabled.example:443" },
+        tenantId: disabledPoolTenantId,
+        status: "disabled",
+        maxInflight: 6,
+      },
+    ]);
+  });
+
+  afterAll(async () => {
+    await db.delete(networkPools).where(inArray(networkPools.id, [activePoolId, disabledPoolId]));
+    await db.delete(models).where(eq(models.providerId, providerId));
+    await db.delete(providers).where(eq(providers.id, providerId));
+    await db.delete(tenants).where(inArray(tenants.id, [pooledTenantId, bareTenantId, disabledPoolTenantId]));
+  });
+
+  const candidatesFor = async (tenantId: string | undefined) =>
+    (await createDatabaseSnapshotBuilder(db, tenantId)()).candidates.filter(
+      (c) => c.provider_id === providerId && c.model_id === modelId,
+    );
+
+  test("a tenant with an active pool gets only pooled candidates — no direct fallback", async () => {
+    const candidates = await candidatesFor(pooledTenantId);
+
+    // The pooled candidate is the whole plan: an unpooled candidate beside it
+    // is what let a saturated/cooldown pool fall through to the host address.
+    expect(candidates.map((c) => c.tenant_id)).toEqual([pooledTenantId]);
+    expect(candidates.some((c) => c.tenant_id === null)).toBe(false);
+    expect(candidates.every((c) => (c.network_pool_ids?.length ?? 0) > 0)).toBe(true);
+    expect(candidates[0]?.network_pool_ids).toEqual([activePoolId]);
+    expect(candidates[0]?.network_pool_required).toBe(true);
+  });
+
+  test("a tenant with zero pools still gets the direct candidate", async () => {
+    const candidates = await candidatesFor(bareTenantId);
+
+    // Without this the tenant loses the free provider entirely.
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.tenant_id).toBeNull();
+    expect(candidates[0]?.network_pool_ids).toBeUndefined();
+    expect(candidates[0]?.requires_account).toBe(false);
+  });
+
+  test("a tenant whose pools exist but are all disabled still gets the direct candidate", async () => {
+    // The regression the `activePoolsByTenant` predicate protects:
+    // `resolveNetworkPools` also answers `undefined` here, so suppressing on
+    // it would delete the only candidate and turn a working direct dial into
+    // a 503.
+    const candidates = await candidatesFor(disabledPoolTenantId);
+
+    // The direct candidate is still emitted. (The tenant's own placeholder
+    // candidate is emitted too, with an empty eligible set, so a route that
+    // requires a pool fails closed instead of dialing — unchanged behavior.)
+    const direct = candidates.filter((c) => c.tenant_id === null);
+    expect(direct).toHaveLength(1);
+    expect(direct[0]?.network_pool_ids).toBeUndefined();
+    expect(direct[0]?.requires_account).toBe(false);
+  });
+
+  test("a tenant with active pools that bypasses the proxy still gets the direct candidate", async () => {
+    // `bypassProxy` means no pooled candidate is emitted for this tenant, so
+    // suppressing the direct one would leave the provider with no route at
+    // all. The suppression predicate has to read the same two facts the pooled
+    // emission does: active pools *and* no bypass.
+    await db.insert(providerRoutingSettings).values({
+      providerId,
+      tenantId: pooledTenantId,
+      strategy: "fallback",
+      enabled: true,
+      bypassProxy: true,
+    });
+    try {
+      const candidates = await candidatesFor(pooledTenantId);
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]?.tenant_id).toBeNull();
+      expect(candidates[0]?.network_pool_ids).toBeUndefined();
+      expect(candidates[0]?.requires_account).toBe(false);
+    } finally {
+      await db.delete(providerRoutingSettings).where(eq(providerRoutingSettings.providerId, providerId));
+    }
+  });
+
+  test("the global build keeps both the pooled candidate and the unpooled fallback", async () => {
+    const candidates = await candidatesFor(undefined);
+
+    // There is no requesting tenant, so every pooled candidate is emitted and
+    // the unpooled one stays for tenants that own no pool. Dispatch refuses it
+    // when the plan also carries a pooled sibling.
+    expect(candidates.some((c) => c.tenant_id === pooledTenantId)).toBe(true);
+    expect(candidates.some((c) => c.tenant_id === null && c.network_pool_ids === undefined)).toBe(true);
+  });
+});

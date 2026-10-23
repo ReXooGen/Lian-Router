@@ -56,9 +56,12 @@ src/persistence/
   rejected the request".
 - **Inbound keys / sharing:** `api_keys` (personal authentication hashes or
   hashless share templates, child-parent relationship, canonical issued-IP
-  identity, encrypted personal-key material, limits and allow/deny lists);
-  `share_links` (SHA-256 `token_hash` only, enroll-only kind, active/expiry/
-  last-viewed metadata; legacy `used_at` stays stored but is not exposed);
+  identity, encrypted personal-key material, limits and allow/deny lists, and
+  `network_pool_id` — the optional per-key egress binding, `ON DELETE SET NULL`
+  so dropping a pool widens the key back to provider routing rather than
+  revoking it); `share_links` (SHA-256 `token_hash` only, enroll-only kind,
+  active/expiry/last-viewed metadata; legacy `used_at` stays stored but is not
+  exposed);
   `console_lockouts` (IP-keyed, survives restart, shared across instances).
 - **Ops:** `admin_audit_log` (actor, tenant SET NULL, action, target, detail);
   `console_settings(tenant_id PK, preferences JSONB, updated_at)`;
@@ -131,7 +134,10 @@ ciphertext.
 - `share-store.ts`: `hashShareToken()` (SHA-256); `DrizzleShareLinkStore` —
   creates enroll-only links and resolves only active, unexpired links whose
   parent is an active hashless share template. `issueSharedApiKey()` locks
-  parent and link before inserting the policy-inheriting child; the database
+  parent and link before inserting the policy-inheriting child; the child
+  **copies** the template's `network_pool_id` onto its own row rather than
+  resolving it through the parent later, so revoking or re-pointing the
+  template cannot retroactively move an issued child's egress. The database
   unique-IP violation maps to the one-active-child-per-IP conflict.
 - `api-key-store.ts`: list/get/create/update/revoke plus `listChildren()` and
   `findActiveByHash()`. Parent revoke or conversion to personal mode revokes
@@ -165,6 +171,10 @@ ciphertext.
   applied by hand (its own header says so).
 - Manual migration `0011` backfills lifetime usage totals from telemetry rows
   still retained at rollout. Older events already pruned cannot be reconstructed.
+- Manual migration `0023` adds `api_keys.network_pool_id` and its `set null`
+  foreign key. It is additive and idempotent: every existing row keeps `NULL`,
+  which is exactly the pre-column behavior (egress decided by the account and
+  provider), so applying it changes no routing on its own.
 - It disables legacy share links and normalizes their kind to `enroll`; the
   old bearer values remain in the database but can no longer be used.
 - **The baseline must be self-contained.** It is the entire schema for a

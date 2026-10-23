@@ -71,6 +71,7 @@ const expectedColumns: Record<string, readonly ExpectedColumn[]> = {
     column("notes_title", "text", "text", "YES"),
     column("notes_subtitle", "text", "text", "YES"),
     column("notes_body", "text", "text", "YES"),
+    column("network_pool_id", "uuid", "uuid", "YES"),
   ],
   share_links: [
     column("id", "uuid", "uuid", "NO"),
@@ -430,6 +431,7 @@ dbDescribe("isolated PostgreSQL schema", () => {
       "admin_audit_log.tenant_id->tenants.id:set null",
       "api_keys.tenant_id->tenants.id:cascade",
       "api_keys.parent_key_id->api_keys.id:cascade",
+      "api_keys.network_pool_id->network_pools.id:set null",
       "cli_tool_mappings.tenant_id->tenants.id:cascade",
       "cli_tool_settings.tenant_id->tenants.id:cascade",
       "console_sessions.user_id->console_users.id:cascade",

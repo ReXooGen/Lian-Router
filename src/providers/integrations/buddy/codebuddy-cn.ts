@@ -104,6 +104,10 @@ const CODEBUDDY_CN_RAW: readonly BuddyRawEntry[] = [
   ["glm-5.3", "GLM 5.3", true, true, 1_000_000, 48_000],
   ["glm-5.3-flash", "GLM 5.3 Flash", true, true, 1_000_000, 32_000],
   ["kimi-k3-1", "Kimi K3", true, true, 1_000_000, 32_000],
+  // Limits left undeclared: the published roster states ids only, so
+  // `defineModel` keeps its documented fallback instead of a guessed number.
+  ["kimi-k2.8-preview", "Kimi K2.8 Preview", true, true, null, null],
+  ["deepseek-v4-pro", "DeepSeek V4 Pro", true, true, null, null],
   ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true, 1_000_000, 50_000],
 ];
 

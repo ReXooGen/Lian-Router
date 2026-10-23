@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
@@ -8,6 +8,8 @@ import { dbDescribe } from "../../helpers/db-gate";
 import { models, providers, tenants } from "../../../src/persistence/schema";
 import { DrizzleTelemetryStore } from "../../../src/persistence/telemetry-store";
 import { DrizzleProviderCatalogStore } from "../../../src/console/providers/catalog/store";
+import { createProviderCatalogOperations } from "../../../src/console/providers/catalog/provider-operations";
+import type { AccessDecision } from "../../../src/security/access-control";
 import { createDefaultProviderRegistry } from "../../../src/providers/default-registry";
 
 function storeOptions() {
@@ -260,5 +262,96 @@ dbDescribe("DrizzleProviderCatalogStore account mutations", () => {
     // a one-provider and a five-provider tenant.
     expect(counted[0]).toBe(counted[1]);
     expect(counted[0]).toBeLessThanOrEqual(2);
+  });
+});
+
+dbDescribe("DrizzleProviderCatalogStore — stale global provider rows", () => {
+  // A bundled provider that later left the bundle keeps its `providers` row
+  // (`seedBundledProviders` upserts and never prunes) with `tenant_id IS NULL`.
+  // The tenant-scoped delete must remove it — it is visible in `list`, so it
+  // must be removable — while a row owned by another tenant stays invisible
+  // and undeletable, and a bundled id stays refused.
+  let db: LianRouterDatabase;
+  let store: DrizzleProviderCatalogStore;
+  const tenantId = randomUUID();
+  const otherTenantId = randomUUID();
+  const staleId = `stale-orphan-${randomUUID().slice(0, 8)}`;
+  const foreignId = `foreign-orphan-${randomUUID().slice(0, 8)}`;
+
+  const accessFor = (tenant: string): AccessDecision => ({
+    id: `user-${tenant}`,
+    tenantId: tenant,
+    scopes: ["providers:read", "providers:write"],
+    admissionIdentity: `user-${tenant}`,
+  });
+
+  beforeAll(async () => {
+    db = getDb();
+    store = new DrizzleProviderCatalogStore(db, storeOptions());
+    await db
+      .insert(tenants)
+      .values([
+        { id: tenantId, name: "stale-orphan-test", status: "active" },
+        { id: otherTenantId, name: "stale-orphan-other", status: "active" },
+      ])
+      .onConflictDoNothing();
+    await db.insert(providers).values([
+      { id: staleId, tenantId: null, enabled: true, requiresAccount: true },
+      { id: foreignId, tenantId: otherTenantId, enabled: true, requiresAccount: true },
+    ]);
+    await db.insert(models).values({
+      providerId: staleId,
+      modelId: "orphan-model",
+      endpointPath: "/v1/chat/completions",
+      wireFamily: "chat",
+      source: "builtin",
+    } as never);
+  });
+
+  afterAll(async () => {
+    await db.delete(tenants).where(inArray(tenants.id, [tenantId, otherTenantId]));
+  });
+
+  function operations() {
+    return createProviderCatalogOperations({
+      store,
+      accessResolver: () => accessFor(tenantId),
+      providerRegistry: createDefaultProviderRegistry(),
+    });
+  }
+
+  test("a global row for a provider that left the bundle is listed as stale and deletes through the tenant route", async () => {
+    const factory = operations();
+    const listed = await factory.listProviders(accessFor(tenantId));
+    const stale = listed.find((p) => p.providerId === staleId);
+    expect(stale).toMatchObject({ isBuiltIn: false, stale: true });
+
+    await expect(factory.deleteProvider(accessFor(tenantId), staleId)).resolves.toEqual({
+      success: true,
+    });
+    expect(await store.get(tenantId, staleId)).toBeUndefined();
+    // The provider FK cascade removed its models with the row.
+    expect(
+      await db.select().from(models).where(eq(models.providerId, staleId)),
+    ).toEqual([]);
+  });
+
+  test("a global row for a bundled id still fails with provider_is_builtin", async () => {
+    await expect(operations().deleteProvider(accessFor(tenantId), "openai")).rejects.toMatchObject(
+      { code: "provider_is_builtin", status: 403 },
+    );
+    expect(await store.get(tenantId, "openai")).toBeDefined();
+  });
+
+  test("a row owned by another tenant is not deletable and still answers provider_not_found", async () => {
+    await expect(operations().deleteProvider(accessFor(tenantId), foreignId)).rejects.toMatchObject(
+      { code: "provider_not_found", status: 404 },
+    );
+    // Still present, still owned by the other tenant: the widened predicate
+    // did not become a cross-tenant delete.
+    expect(await store.get(otherTenantId, foreignId)).toMatchObject({
+      providerId: foreignId,
+      tenantId: otherTenantId,
+    });
   });
 });

@@ -532,6 +532,13 @@ export const apiKeys = pgTable(
     modelAllowlist: jsonb("model_allowlist").$type<readonly string[]>(),
     modelDenylist: jsonb("model_denylist").$type<readonly string[]>(),
     modelPrefix: text("model_prefix"),
+    // Egress narrowing for everything this key sends. NULL keeps today's
+    // per-account/provider routing untouched. `set null` on pool deletion:
+    // dropping the pool must widen the key back to provider routing, not take
+    // the key and its children with it.
+    networkPoolId: uuid("network_pool_id").references(() => networkPools.id, {
+      onDelete: "set null",
+    }),
     createdAt: createdAtColumn(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },

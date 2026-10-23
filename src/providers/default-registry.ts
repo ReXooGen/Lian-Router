@@ -46,6 +46,11 @@ function configuredProvider(
 ): ProviderModuleCapabilities {
   return {
     loadAdapter: async () => createApiKeyAdapter(GENERIC_API_KEY_SPECS[providerId]),
+    // Every generic host serves an OpenAI-compatible `GET <base>/models` under
+    // the same bearer its dispatch sends, so discovery is the shared fetcher.
+    loadModelDiscovery: openAIModelDiscovery(providerId, {
+      headers: (credential) => ({ authorization: `Bearer ${credential}` }),
+    }),
   };
 }
 
@@ -82,13 +87,21 @@ export const PROVIDER_CAPABILITIES = {
     endpointPathsByWireFamily: { chat: "/v1/chat/completions", responses: "/v1/responses", embeddings: "/v1/embeddings" },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openai")).OPENAI_SPEC),
     loadModels: async () => (await import("./integrations/openai")).OPENAI_MODELS,
-    loadModelDiscovery: openAIModelDiscovery("openai", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+    // The bundled origin is the bare host; the roster lives under `/v1`.
+    loadModelDiscovery: openAIModelDiscovery("openai", {
+      transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/v1`,
+      headers: (credential) => ({ authorization: `Bearer ${credential}` }),
+    }),
   },
   anthropic: {
     endpointPathsByWireFamily: { messages: "/v1/messages" },
     loadAdapter: async () => (await import("./integrations/anthropic")).createAnthropicAdapter(),
     loadModels: async () => (await import("./integrations/anthropic")).ANTHROPIC_MODELS,
-    loadModelDiscovery: openAIModelDiscovery("anthropic", { headers: (credential) => ({ "x-api-key": credential, "anthropic-version": "2023-06-01" }) }),
+    // Anthropic's roster is `/v1/models`; the bundled origin is the bare host.
+    loadModelDiscovery: openAIModelDiscovery("anthropic", {
+      transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/v1`,
+      headers: (credential) => ({ "x-api-key": credential, "anthropic-version": "2023-06-01" }),
+    }),
   },
   browseruse: {
     // Two dialects under one origin. Declaring both paths here is what the
@@ -131,6 +144,12 @@ export const PROVIDER_CAPABILITIES = {
     loadModels: async () => (await import("./integrations/codex/codex")).CODEX_MODELS,
     loadAuthentication: oauthCapability(() => import("./integrations/codex/codex-oauth"), "codexOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/codex/codex-quota"), "fetchCodexQuota"),
+    // The ChatGPT backend publishes the roster the account may serve; the
+    // static catalog is the fallback when it cannot be read.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverCodexModels } = await import("./discovery/provider-model-lists");
+      return discoverCodexModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
   },
   grok: {
     loadAdapter: async () => (await import("./integrations/grok/grok")).GrokAdapter,
@@ -138,7 +157,12 @@ export const PROVIDER_CAPABILITIES = {
     loadAuthentication: oauthCapability(() => import("./integrations/grok/grok-oauth"), "grokOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/grok/grok-quota"), "fetchGrokQuota"),
     loadModelDiscovery: async () => async ({ baseUrl, credential, fetcher }) => {
-      const discovery = await openAIModelDiscovery("grok", { headers: (token) => ({ authorization: `Bearer ${token}` }) })();
+      // The CLI proxy's roster is `${origin}/v1/models`; the bundled base is the
+      // bare origin, so `/models` alone would 404.
+      const discovery = await openAIModelDiscovery("grok", {
+        transformBaseUrl: (value) => `${value.replace(/\/+$/, "")}/v1`,
+        headers: (token) => ({ authorization: `Bearer ${token}` }),
+      })();
       const models = await discovery({ baseUrl, credential, ...(fetcher ? { fetcher } : {}) });
       if (!models) return null;
       // The advertised allowlist is derived from `GROK_MODELS` rather than
@@ -179,12 +203,21 @@ export const PROVIDER_CAPABILITIES = {
     loadModels: async () => (await import("./integrations/muse/muse")).MUSE_CODE_MODELS,
     loadAuthentication: oauthCapability(() => import("./integrations/muse/muse-oauth"), "museCodeOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/muse/muse-quota"), "fetchMuseQuota"),
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverMuseModels } = await import("./discovery/provider-model-lists");
+      return discoverMuseModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
   },
   kimi: {
     loadAdapter: async () => (await import("./integrations/kimi/kimi")).kimiCodeAdapter,
     loadModels: async () => (await import("./integrations/kimi/kimi")).KIMI_CODE_MODELS,
     loadAuthentication: oauthCapability(() => import("./integrations/kimi/kimi-oauth"), "kimiCodeOAuthClient", { withRefresher: true }),
     loadQuotaCollector: quotaCapability(() => import("./integrations/kimi/kimi-quota"), "fetchKimiQuota"),
+    // Messages-wire provider: the roster ids must land on `/v1/messages`.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverKimiModels } = await import("./discovery/provider-model-lists");
+      return discoverKimiModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
   },
   cerebras: {
     endpointPathsByWireFamily: { chat: "/chat/completions" },
@@ -193,19 +226,43 @@ export const PROVIDER_CAPABILITIES = {
     loadQuotaCollector: quotaCapability(() => import("./integrations/cerebras"), "fetchCerebrasQuota"),
     loadModelDiscovery: openAIModelDiscovery("cerebras", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
-  groq: configuredProvider("groq"),
-  mistral: configuredProvider("mistral"),
-  siliconflow: configuredProvider("siliconflow"),
-  fireworks: configuredProvider("fireworks"),
-  nvidia: configuredProvider("nvidia"),
-  gmi: configuredProvider("gmi"),
+  groq: {
+    ...configuredProvider("groq"),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).GROQ_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("groq", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  mistral: {
+    ...configuredProvider("mistral"),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).MISTRAL_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("mistral", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  siliconflow: {
+    ...configuredProvider("siliconflow"),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).SILICONFLOW_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("siliconflow", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  fireworks: {
+    ...configuredProvider("fireworks"),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).FIREWORKS_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("fireworks", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  nvidia: {
+    ...configuredProvider("nvidia"),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).NVIDIA_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("nvidia", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  gmi: {
+    ...configuredProvider("gmi"),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).GMI_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("gmi", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
   opencodeft: {
-    // No `messages` path: the adapter declares `supported_wire_families`
-    // ["chat", "responses"] and no catalog row uses it, so a probe resolving
-    // `messages` would name a family dispatch rejects.
+    // `messages` carries the free tier's one Claude-format model
+    // (`union-alpha`); the adapter declares the family only for this tier.
     endpointPathsByWireFamily: {
       chat: "/zen/v1/chat/completions",
       responses: "/zen/v1/responses",
+      messages: "/zen/v1/messages",
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode")).OPENCODE_FREE_SPEC),
     loadModels: async () => (await import("./integrations/opencode")).OPENCODE_FREE_MODELS,
@@ -241,23 +298,54 @@ export const PROVIDER_CAPABILITIES = {
   gemini: {
     loadAdapter: async () => (await import("./integrations/gemini")).createGeminiAdapter(),
     loadModels: async () => (await import("./integrations/gemini")).GEMINI_MODELS,
-    loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/gemini")).discoverGeminiModels({ credential }),
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/gemini")).discoverGeminiModels({
+        credential,
+        ...(fetcher ? { fetcher } : {}),
+      }),
+  },
+  vertex: {
+    loadAdapter: async () => (await import("./integrations/vertex")).createVertexAdapter(),
+    loadModels: async () => (await import("./integrations/vertex")).VERTEX_MODELS,
+  },
+  "gemini-cli": {
+    loadAdapter: async () => (await import("./integrations/gemini-cli")).createGeminiCliAdapter(),
+    loadModels: async () => (await import("./integrations/gemini-cli")).GEMINI_CLI_MODELS,
+    // Cloud Code Assist publishes the roster through an RPC
+    // (`v1internal:fetchAvailableModels`), not a REST `/models` collection, so
+    // the decoder is provider-specific and pins the `:generateContent` action.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverGeminiCliModels } = await import("./discovery/provider-model-lists");
+      return discoverGeminiCliModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
   },
   cloudflare: {
+    // Root-relative: the adapter joins `…/accounts/{accountId}/ai/v1` itself.
+    endpointPathsByWireFamily: { chat: "/chat/completions" },
     loadAdapter: async () => (await import("./integrations/cloudflare")).createCloudflareAdapter(),
-    loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/cloudflare")).discoverCloudflareModels({ credential }),
+    loadModels: async () => (await import("./integrations/cloudflare")).CLOUDFLARE_MODELS,
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/cloudflare")).discoverCloudflareModels({
+        credential,
+        ...(fetcher ? { fetcher } : {}),
+      }),
   },
   aihubmix: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/aihubmix")).AIHUBMIX_SPEC),
     loadModels: async () => (await import("./integrations/aihubmix")).AIHUBMIX_FALLBACK_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("aihubmix", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   bai: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/bai")).BAI_SPEC),
     loadModels: async () => (await import("./integrations/bai")).BAI_FALLBACK_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("bai", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   tokenharbor: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/tokenharbor")).TOKENHARBOR_SPEC),
     loadModels: async () => (await import("./integrations/tokenharbor")).TOKENHARBOR_FALLBACK_MODELS,
+    // The fallback catalog mirrors a 59-row `/models` snapshot; the live list is
+    // authoritative and grows without a release.
+    loadModelDiscovery: openAIModelDiscovery("tokenharbor", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   cline: {
     loadAdapter: async () => (await import("./integrations/cline/cline")).createClineAdapter(),
@@ -296,48 +384,369 @@ export const PROVIDER_CAPABILITIES = {
     loadAdapter: async () => (await import("./integrations/qoder")).createQoderAdapter(),
     loadModels: async () => (await import("./integrations/qoder")).QODER_MODELS,
   },
-  inferhub: {
-    loadAdapter: async () => (await import("./integrations/inferhub")).createInferhubAdapter(),
-    loadModels: async () => (await import("./integrations/inferhub")).INFERHUB_MODELS,
-    loadQuotaCollector: quotaCapability(() => import("./integrations/inferhub"), "fetchInferhubQuota"),
+  "qoder-cn": {
+    loadAdapter: async () => (await import("./integrations/qoder")).createQoderCnAdapter(),
+    loadModels: async () => (await import("./integrations/qoder")).QODER_CN_MODELS,
   },
   hermes: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/hermes")).HERMES_SPEC),
     loadModels: async () => (await import("./integrations/hermes")).HERMES_MODELS,
+    // Nous publishes the whole free roster on `/models`; the six static rows
+    // are only the subset the portal-tag path was verified against.
+    loadModelDiscovery: openAIModelDiscovery("hermes", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   openrouter: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/openrouter")).OPENROUTER_SPEC),
-    loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/openrouter")).discoverOpenrouterModels({ credential }),
+    loadModels: async () => (await import("./integrations/openrouter")).OPENROUTER_MODELS,
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/openrouter")).discoverOpenrouterModels({
+        credential,
+        ...(fetcher ? { fetcher } : {}),
+      }),
   },
   xiaomipg: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/xiaomi")).XIAOMIPG_SPEC),
     loadModels: async () => (await import("./integrations/xiaomi")).XIAOMI_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("xiaomipg", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   xiaomitp: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/xiaomi")).XIAOMITP_SPEC),
     loadModels: async () => (await import("./integrations/xiaomi")).XIAOMI_MODELS,
+    // Token-plan keys are cluster-specific; discovery runs against the bundled
+    // SGP origin, the same one this row dispatches to.
+    loadModelDiscovery: openAIModelDiscovery("xiaomitp", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   zai: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/zai/spec")).ZAI_SPEC),
+    loadModels: async () => (await import("./integrations/zai/spec")).ZAI_MODELS,
     loadQuotaCollector: quotaCapability(() => import("./integrations/zai/zai-quota"), "fetchZaiQuota"),
-    loadModelDiscovery: async () => async ({ credential }) => (await import("./integrations/zai/spec")).discoverZaiModels({ credential }),
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/zai/spec")).discoverZaiModels({
+        credential,
+        ...(fetcher ? { fetcher } : {}),
+      }),
   },
   perplexity: {
+    // Two surfaces: `sonar` chat and the raw `/search` codec. `native` is a
+    // per-provider codec family, so it is not declared here as a dispatchable
+    // OpenAI-style path.
+    endpointPathsByWireFamily: { chat: "/chat/completions" },
     loadAdapter: async () => (await import("./integrations/perplexity")).createPerplexityAdapter(),
     loadModels: async () => (await import("./integrations/perplexity")).PERPLEXITY_MODELS,
+    // Roster on `/v1/models`, chat dispatch on the bare origin's
+    // `/chat/completions`; the pin keeps discovered rows off `/v1/chat/...`.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverPerplexityModels } = await import("./discovery/provider-model-lists");
+      return discoverPerplexityModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
   },
   ollamacloud: {
     // Only the two families its adapter spec declares. `native` and `messages`
     // were listed here with no catalog row and no support in the adapter, so
     // the probe resolved a wire family that would have been rejected with
     // `capability_unsupported` had a request ever reached dispatch.
-    endpointPathsByWireFamily: {
-      chat: "/v1/chat/completions",
-      responses: "/v1/responses",
-    },
+    //
+    // The paths are root-relative because the bundled base already ends in
+    // `/v1`: the `/v1/...` spellings joined onto it produced
+    // `/v1/v1/chat/completions`, which the host answers with 404 while
+    // `/v1/chat/completions` answers 401 for a bad key.
+    // `chat` only: the registry map may name a path the catalog serves, and
+    // every bundled row is chat. The adapter spec still serves `responses` for
+    // a discovered row that asks for it.
+    endpointPathsByWireFamily: { chat: "/chat/completions" },
     loadAdapter: async () => createApiKeyAdapter(GENERIC_API_KEY_SPECS.ollamacloud),
+    loadModels: async () => (await import("./integrations/configured-openai-providers")).OLLAMACLOUD_MODELS,
     loadQuotaCollector: quotaCapability(() => import("./integrations/ollama-cloud-quota"), "fetchOllamaQuota"),
     loadModelDiscovery: openAIModelDiscovery("ollamacloud", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  alicode: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/alibaba")).ALICODE_SPEC),
+    loadModels: async () => (await import("./integrations/alibaba")).ALICODE_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("alicode", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "alicode-intl": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/alibaba")).ALICODE_INTL_SPEC),
+    loadModels: async () => (await import("./integrations/alibaba")).ALICODE_INTL_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("alicode-intl", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "alims-intl": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/alibaba")).ALIMS_INTL_SPEC),
+    loadModels: async () => (await import("./integrations/alibaba")).ALIMS_INTL_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("alims-intl", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "alitp-intl": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/alibaba")).ALITP_INTL_SPEC),
+    loadModels: async () => (await import("./integrations/alibaba")).ALITP_INTL_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("alitp-intl", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  agnes: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/agnes")).AGNES_SPEC),
+    loadModels: async () => (await import("./integrations/agnes")).AGNES_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("agnes", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "api-airforce": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/api-airforce")).API_AIRFORCE_SPEC),
+    loadModels: async () => (await import("./integrations/api-airforce")).API_AIRFORCE_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("api-airforce", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  atria: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/atria")).ATRIA_SPEC),
+    loadModels: async () => (await import("./integrations/atria")).ATRIA_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("atria", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  baidu: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/baidu")).BAIDU_SPEC),
+    loadModels: async () => (await import("./integrations/baidu")).BAIDU_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("baidu", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  bazaarlink: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/bazaarlink")).BAZAARLINK_SPEC),
+    loadModels: async () => (await import("./integrations/bazaarlink")).BAZAARLINK_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("bazaarlink", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  blackbox: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/blackbox")).BLACKBOX_SPEC),
+    loadModels: async () => (await import("./integrations/blackbox")).BLACKBOX_MODELS,
+  },
+  byteplus: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/byteplus")).BYTEPLUS_SPEC),
+    loadModels: async () => (await import("./integrations/byteplus")).BYTEPLUS_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("byteplus", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  chutes: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/chutes")).CHUTES_SPEC),
+    loadModels: async () => (await import("./integrations/chutes")).CHUTES_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("chutes", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  clinepass: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/clinepass")).CLINEPASS_SPEC),
+    loadModels: async () => (await import("./integrations/clinepass")).CLINEPASS_MODELS,
+    // Shares Cline's roster endpoint, narrowed to the `cline-pass/` bucket. The
+    // bucket is entitlement-scoped: an unentitled key sees Cline's own catalog
+    // with no `cline-pass/` ids at all, so this stays credential-scoped rather
+    // than caching a public list that cannot contain the provider's models.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverClinepassModels } = await import("./discovery/provider-model-lists");
+      return discoverClinepassModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
+  },
+  cohere: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/cohere")).COHERE_SPEC),
+    loadModels: async () => (await import("./integrations/cohere")).COHERE_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("cohere", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  dahl: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/dahl")).DAHL_SPEC),
+    loadModels: async () => (await import("./integrations/dahl")).DAHL_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("dahl", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  deepseek: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/deepseek")).DEEPSEEK_SPEC),
+    loadModels: async () => (await import("./integrations/deepseek")).DEEPSEEK_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("deepseek", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  featherless: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/featherless")).FEATHERLESS_SPEC),
+    loadModels: async () => (await import("./integrations/featherless")).FEATHERLESS_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("featherless", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  github: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/github")).GITHUB_SPEC),
+    loadModels: async () => (await import("./integrations/github")).GITHUB_MODELS,
+    // Copilot's roster is filtered to enabled chat entries; the static catalog
+    // is the fallback for an account whose policy list is unreadable.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverGithubModels } = await import("./discovery/provider-model-lists");
+      return discoverGithubModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
+  },
+  "glm-cn": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/glm-cn")).GLM_CN_SPEC),
+    loadModels: async () => (await import("./integrations/glm-cn")).GLM_CN_MODELS,
+  },
+  hyperbolic: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/hyperbolic")).HYPERBOLIC_SPEC),
+    loadModels: async () => (await import("./integrations/hyperbolic")).HYPERBOLIC_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("hyperbolic", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  iflow: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/iflow")).IFLOW_SPEC),
+    loadModels: async () => (await import("./integrations/iflow")).IFLOW_MODELS,
+  },
+  "kilo-gateway": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/kilo-gateway")).KILO_GATEWAY_SPEC),
+    loadModels: async () => (await import("./integrations/kilo-gateway")).KILO_GATEWAY_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("kilo-gateway", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  kilocode: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/kilocode")).KILOCODE_SPEC),
+    loadModels: async () => (await import("./integrations/kilocode")).KILOCODE_MODELS,
+    // Kilo Code proxies the OpenRouter catalog, so the 8 static rows are only a
+    // fallback. The gateway catalog answers without a credential, which keeps
+    // this discovery TTL-cached instead of always-live.
+    loadModelDiscovery: openAIModelDiscovery("kilocode", {
+      transformBaseUrl: (baseUrl) => baseUrl.replace(/\/openrouter\/?$/, "/gateway"),
+    }),
+    modelDiscoveryRequiresCredential: false,
+  },
+  llm7: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/llm7")).LLM7_SPEC),
+    loadModels: async () => (await import("./integrations/llm7")).LLM7_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("llm7", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  morph: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/morph")).MORPH_SPEC),
+    loadModels: async () => (await import("./integrations/morph")).MORPH_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("morph", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  nebius: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/nebius")).NEBIUS_SPEC),
+    loadModels: async () => (await import("./integrations/nebius")).NEBIUS_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("nebius", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  poolside: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/poolside")).POOLSIDE_SPEC),
+    loadModels: async () => (await import("./integrations/poolside")).POOLSIDE_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("poolside", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  tencent: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/tencent")).TENCENT_SPEC),
+    loadModels: async () => (await import("./integrations/tencent")).TENCENT_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("tencent", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  together: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/together")).TOGETHER_SPEC),
+    loadModels: async () => (await import("./integrations/together")).TOGETHER_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("together", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  tokenrouter: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/tokenrouter")).TOKENROUTER_SPEC),
+    loadModels: async () => (await import("./integrations/tokenrouter")).TOKENROUTER_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("tokenrouter", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  venice: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/venice")).VENICE_SPEC),
+    loadModels: async () => (await import("./integrations/venice")).VENICE_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("venice", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "vercel-ai-gateway": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/vercel-ai-gateway")).VERCEL_AI_GATEWAY_SPEC),
+    loadModels: async () => (await import("./integrations/vercel-ai-gateway")).VERCEL_AI_GATEWAY_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("vercel-ai-gateway", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "volcengine-ark": {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/volcengine-ark")).VOLCENGINE_ARK_SPEC),
+    loadModels: async () => (await import("./integrations/volcengine-ark")).VOLCENGINE_ARK_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("volcengine-ark", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  xai: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/xai")).XAI_SPEC),
+    loadModels: async () => (await import("./integrations/xai")).XAI_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("xai", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  // Azure's origin is per resource and its path per deployment, both supplied in
+  // the credential, so neither is a static path here. The catalog is empty on
+  // purpose: `/openai/models` lists base model names, while dispatch addresses a
+  // deployment, and the two coincide only by operator convention.
+  azure: {
+    loadAdapter: async () => (await import("./integrations/azure")).createAzureAdapter(),
+    loadModels: async () => [],
+  },
+  gitlab: {
+    loadAdapter: async () => (await import("./integrations/gitlab")).createGitlabAdapter(),
+    loadModels: async () => [],
+  },
+  // Fingerprint-gated free channel: the operator holds no key, so dispatch
+  // mints its own JWT from the bootstrap exchange on first use.
+  "mimo-free": {
+    loadAdapter: async () => (await import("./integrations/mimo-free")).createMimoFreeAdapter(),
+    loadModels: async () => (await import("./integrations/mimo-free")).MIMO_FREE_MODELS,
+  },
+  mmf: {
+    loadAdapter: async () => (await import("./integrations/mimo-free")).createMmfAdapter(),
+    loadModels: async () => (await import("./integrations/mimo-free")).MMF_MODELS,
+  },
+  "vertex-partner": {
+    loadAdapter: async () => (await import("./integrations/vertex-partner")).createVertexPartnerAdapter(),
+    loadModels: async () => (await import("./integrations/vertex-partner")).VERTEX_PARTNER_MODELS,
+  },
+  zed: {
+    loadAdapter: async () => (await import("./integrations/zed")).createZedAdapter(),
+    loadModels: async () => (await import("./integrations/zed")).ZED_MODELS,
+    // Zed's hosted catalog rotates, so the static list is empty and the live
+    // `/models` (behind the minted LLM token) is the only honest source.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverZedModels } = await import("./integrations/zed");
+      return discoverZedModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
+  },
+  minimax: {
+    endpointPathsByWireFamily: { messages: "/v1/messages?beta=true" },
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/minimax")).MINIMAX_SPEC),
+    loadModels: async () => (await import("./integrations/minimax")).MINIMAX_MODELS,
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverMinimaxModels } = await import("./discovery/provider-model-lists");
+      return discoverMinimaxModels("minimax", { credential, ...(fetcher ? { fetcher } : {}) });
+    },
+  },
+  "minimax-cn": {
+    endpointPathsByWireFamily: { messages: "/v1/messages?beta=true" },
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/minimax")).MINIMAX_CN_SPEC),
+    loadModels: async () => (await import("./integrations/minimax")).MINIMAX_CN_MODELS,
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverMinimaxModels } = await import("./discovery/provider-model-lists");
+      return discoverMinimaxModels("minimax-cn", { credential, ...(fetcher ? { fetcher } : {}) });
+    },
+  },
+  "minimax-code": {
+    endpointPathsByWireFamily: { messages: "/v1/messages" },
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/minimax")).MINIMAX_CODE_SPEC),
+    loadModels: async () => (await import("./integrations/minimax")).MINIMAX_CODE_MODELS,
+    // The agent gateway publishes its roster unauthenticated, so this is the
+    // one MiniMax plan whose discovery can be cached.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverMinimaxCodeModels } = await import("./discovery/provider-model-lists");
+      return discoverMinimaxCodeModels("minimax-code", { credential, ...(fetcher ? { fetcher } : {}) });
+    },
+    modelDiscoveryRequiresCredential: false,
+  },
+  "minimax-code-global": {
+    endpointPathsByWireFamily: { messages: "/v1/messages" },
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/minimax")).MINIMAX_CODE_GLOBAL_SPEC),
+    loadModels: async () => (await import("./integrations/minimax")).MINIMAX_CODE_GLOBAL_MODELS,
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverMinimaxCodeModels } = await import("./discovery/provider-model-lists");
+      return discoverMinimaxCodeModels("minimax-code-global", { credential, ...(fetcher ? { fetcher } : {}) });
+    },
+    modelDiscoveryRequiresCredential: false,
+  },
+  bluesminds: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/bluesminds")).BLUESMINDS_SPEC),
+    loadModels: async () => (await import("./integrations/bluesminds")).BLUESMINDS_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("bluesminds", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  kimchi: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/kimchi")).KIMCHI_SPEC),
+    loadModels: async () => (await import("./integrations/kimchi")).KIMCHI_MODELS,
+    // The roster endpoint sits on Kimchi's origin, not under the `/openai`
+    // dispatch base, and keys ids as `slug`.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) => {
+      const { discoverKimchiModels } = await import("./discovery/provider-model-lists");
+      return discoverKimchiModels({ credential, ...(fetcher ? { fetcher } : {}) });
+    },
+  },
+  sambanova: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/sambanova")).SAMBANOVA_SPEC),
+    loadModels: async () => (await import("./integrations/sambanova")).SAMBANOVA_MODELS,
+    loadModelDiscovery: openAIModelDiscovery("sambanova", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  "perplexity-agent": {
+    endpointPathsByWireFamily: { responses: "/v1/responses" },
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/perplexity-agent")).PERPLEXITY_AGENT_SPEC),
+    loadModels: async () => (await import("./integrations/perplexity-agent")).PERPLEXITY_AGENT_MODELS,
+    // The Responses wire lives under `/v1` while the bundled base URL is the bare
+    // origin, which is the host `/v1/models` answers discovery on.
+    loadModelDiscovery: openAIModelDiscovery("perplexity-agent", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/v1`, headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
 } satisfies Readonly<Record<BundledProviderId, ProviderModuleCapabilities>>;
 

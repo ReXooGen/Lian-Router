@@ -29,7 +29,11 @@ import { encryptCredential, hashSecret } from "../../security/crypto";
 import { DEFAULT_API_KEY_LABEL } from "../domains/api-keys/contracts";
 import { and } from "drizzle-orm";
 import { apiKeys } from "../../persistence/schema";
-import { returningRows, assertMutationApplied } from "./service";
+import {
+  returningRows,
+  assertMutationApplied,
+  consoleUsernameMatches,
+} from "./service";
 import type { ConsoleCredentialService } from "./service";
 
 /** Username the gate signs in as when the operator did not pick one. */
@@ -145,7 +149,7 @@ async function gatePreferences(db: LianRouterDatabase): Promise<unknown> {
   const userRows = await db
     .select({ tenantId: consoleUsers.tenantId })
     .from(consoleUsers)
-    .where(eq(consoleUsers.username, DEFAULT_GATE_USERNAME))
+    .where(consoleUsernameMatches(DEFAULT_GATE_USERNAME))
     .limit(1);
   const tenantId = userRows[0]?.tenantId;
   if (tenantId === undefined) return undefined;
@@ -290,7 +294,7 @@ export async function resolveEffectiveConsolePassword(
   const rows = await db
     .select({ id: consoleUsers.id, passwordHash: consoleUsers.passwordHash })
     .from(consoleUsers)
-    .where(eq(consoleUsers.username, DEFAULT_GATE_USERNAME))
+    .where(consoleUsernameMatches(DEFAULT_GATE_USERNAME))
     .limit(1);
   return {
     enabled: true,
@@ -354,10 +358,13 @@ export async function reconcileConsolePasswordUser(
       tenantId = isRecord(inserted) && typeof inserted.id === "string" ? inserted.id : candidateId;
     }
 
+    // Same predicate the login route reads with: a row stored `Admin` is the
+    // gate's account, and inserting a second `admin` beside it would make
+    // every login ambiguous and lock the operator out.
     const userRows = await scope
       .select()
       .from(consoleUsers)
-      .where(eq(consoleUsers.username, gate.username))
+      .where(consoleUsernameMatches(gate.username))
       .limit(1);
     const existing = userRows[0];
     if (existing === undefined) {

@@ -175,6 +175,12 @@ const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<
   // Anthropic on Antigravity caps at 64000 output tokens.
   "claude-opus-4-6-thinking": { maxOutputTokens: 64000 },
   "claude-sonnet-4-6": { maxOutputTokens: 64000 },
+  "claude-sonnet-5-5-high(high)": { maxOutputTokens: 64000 },
+  "claude-sonnet-5-5-medium(medium)": { maxOutputTokens: 64000 },
+  "claude-sonnet-5-5-low(low)": { maxOutputTokens: 64000 },
+  "claude-opus-5-5-high(high)": { maxOutputTokens: 64000 },
+  "claude-opus-5-5-medium(medium)": { maxOutputTokens: 64000 },
+  "claude-opus-5-5-low(low)": { maxOutputTokens: 64000 },
   // Gemini effort-routed wire ids (real deployment names).
   "gemini-3.5-flash-extra-low": {
     modelEnum: "MODEL_PLACEHOLDER_M187",
@@ -203,6 +209,7 @@ const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<
     modelEnum: "MODEL_PLACEHOLDER_M36",
     maxOutputTokens: 65535,
   },
+  "gemini-4-argon-high(high)": { maxOutputTokens: 65536 },
   "gemini-pro-agent": {
     modelEnum: "MODEL_PLACEHOLDER_M16",
     maxOutputTokens: 65535,
@@ -230,6 +237,21 @@ export function antigravityWireModelId(modelId: string): string {
     return "gemini-pro-agent";
   }
   if (modelId === "gemini-3.5-flash") return "gemini-3.5-flash-extra-low";
+  // Gemini 4 / 3.1-pro effort tiers: each is its own deployment name upstream,
+  // carrying the effort as a `(effort)` suffix. The bare `-high` spelling is a
+  // distinct id, not a collapse of the bare family id.
+  if (modelId === "gemini-4-argon-high") return "gemini-4-argon-high(high)";
+  if (modelId === "gemini-3.1-pro-low") return "gemini-3.1-pro-low(low)";
+  // Claude 5.5 on Antigravity: the bare id rides the high tier, and each
+  // effort tier is a separate deployment.
+  if (modelId === "claude-sonnet-5-5") return "claude-sonnet-5-5-high(high)";
+  if (modelId === "claude-sonnet-5-5-high") return "claude-sonnet-5-5-high(high)";
+  if (modelId === "claude-sonnet-5-5-medium") return "claude-sonnet-5-5-medium(medium)";
+  if (modelId === "claude-sonnet-5-5-low") return "claude-sonnet-5-5-low(low)";
+  if (modelId === "claude-opus-5-5") return "claude-opus-5-5-high(high)";
+  if (modelId === "claude-opus-5-5-high") return "claude-opus-5-5-high(high)";
+  if (modelId === "claude-opus-5-5-medium") return "claude-opus-5-5-medium(medium)";
+  if (modelId === "claude-opus-5-5-low") return "claude-opus-5-5-low(low)";
   // Gemini 3.6/3.7 flash: effort routed through the `-tiered(<effort>)` deployment
   // (captured from the 9Router production catalog; matches what the Antigravity
   // IDE sends when the user picks a thinking budget). Logical bare id defaults

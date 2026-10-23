@@ -130,5 +130,13 @@ export const ANTHROPIC_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "claude-haiku-4-5", wireFamily: "messages", endpoint: "/v1/messages", ctx: 200000, out: 64000, vision: true, reasoning: true, webSearch: true }),
   defineModel({ id: "claude-3-5-haiku", wireFamily: "messages", endpoint: "/v1/messages", ctx: 200000, out: 64000, vision: true, reasoning: true, webSearch: true }),
   defineModel({ id: "claude-3-7-sonnet", wireFamily: "messages", endpoint: "/v1/messages", ctx: 200000, out: 64000, vision: true, reasoning: true, webSearch: true }),
+  // Dated snapshots the published API catalog still lists as their own
+  // dispatchable ids. A client pinned to a snapshot cannot use the undated
+  // alias, so both spellings are registered. Limits stay at `defineModel`'s
+  // documented fallback: the offline billing catalog files these snapshots
+  // under the undated id, and a per-row number here would be a guess.
+  defineModel({ id: "claude-sonnet-4-20250514", wireFamily: "messages", endpoint: "/v1/messages", vision: true, reasoning: true, webSearch: true }),
+  defineModel({ id: "claude-opus-4-20250514", wireFamily: "messages", endpoint: "/v1/messages", vision: true, reasoning: true, webSearch: true }),
+  defineModel({ id: "claude-3-5-sonnet-20241022", wireFamily: "messages", endpoint: "/v1/messages", vision: true, webSearch: true }),
 ];
 

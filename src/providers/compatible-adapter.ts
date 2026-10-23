@@ -61,11 +61,22 @@ export abstract class BaseProviderAdapter implements ProviderAdapter {
       // the deadline surfaces as `deadline_exceeded`, not "cancelled".
       const failure = abortFailure(lifecycle.signal, error);
       if (failure) throw failure;
+      this.onUpstreamFailure(error, transportContext);
       throw error;
     } finally {
       lifecycle.release();
     }
   }
+
+  /**
+   * Observer for one failed attempt, run before the error propagates.
+   *
+   * A provider whose per-request identity is a handle it mints itself has to
+   * learn when upstream says that handle is spent; the failure surfaces here,
+   * where the same `context` that built the headers is still in hand, so the
+   * next attempt can present a different one. Default: nothing to do.
+   */
+  protected onUpstreamFailure(_error: unknown, _context: ProviderDispatchContext): void {}
 
   protected abstract prepareHeaders(
     context: ProviderDispatchContext,
@@ -117,6 +128,15 @@ export interface OpenAICompatibleAdapterConfig {
     request?: CanonicalRequest,
     candidate?: ProviderDispatchTarget,
   ) => Record<string, string> | Promise<Record<string, string>>;
+  /**
+   * Called with each failed attempt before the error propagates, for providers
+   * whose upstream identity is a handle they mint per client: a spent handle
+   * has to be dropped here so the retry presents a fresh one.
+   */
+  readonly onUpstreamFailure?: (
+    error: unknown,
+    context: ProviderDispatchContext,
+  ) => void;
   /**
    * "account" (default) forwards whatever `credential_kind` the dispatched
    * account declares. "never" unconditionally withholds `Authorization`
@@ -200,6 +220,10 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
 
   protected get supportedFamilies(): readonly WireFamily[] {
     return this.config.supported_wire_families;
+  }
+
+  protected override onUpstreamFailure(error: unknown, context: ProviderDispatchContext): void {
+    this.config.onUpstreamFailure?.(error, context);
   }
 
   protected async prepareHeaders(

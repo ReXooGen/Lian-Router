@@ -45,7 +45,11 @@ describe("upstream error contract", () => {
         providerCode: "rate_limit_exceeded",
         providerStatus: 429,
         upstreamRequestId: "provider-123",
-        rateLimitScope: "provider",
+        // `rate_limit_exceeded` names the caller's own request window, so the
+        // limit belongs to the credential: another account may have room, and
+        // cooling the egress pool would sideline healthy egress for every
+        // other request to this provider without changing the limit.
+        rateLimitScope: "account",
       },
     });
   });

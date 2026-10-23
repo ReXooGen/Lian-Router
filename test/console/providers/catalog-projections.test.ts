@@ -73,4 +73,14 @@ describe("mapProviderRow", () => {
     expect(record.isBuiltIn).toBe(true);
     expect(record.supportsModelDiscovery).toBe(false);
   });
+
+  test("flags a global non-bundled row as stale and a tenant-owned row as not stale", () => {
+    // `createProvider` always writes a tenant id, so a global row whose id is
+    // not bundled can only be a leftover from a removed bundle entry.
+    expect(mapProviderRow({ ...base, id: "left-the-bundle", tenantId: null } as never).stale).toBe(
+      true,
+    );
+    expect(mapProviderRow({ ...base, id: "left-the-bundle" } as never).stale).toBe(false);
+    expect(mapProviderRow({ ...base, id: "openai", tenantId: null } as never).stale).toBe(false);
+  });
 });

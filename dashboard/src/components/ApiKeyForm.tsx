@@ -1,8 +1,11 @@
 import { useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Select } from "./ui/select";
 import { ModelPickerModal } from "./ModelPicker";
-import { TENANT_KEY_SCOPES, type ApiKeyResponse, type TenantScope } from "../lib/contracts";
+import { useNetworkPools } from "../lib/hooks/network";
+import { networkPoolLabel } from "../lib/network-pool-label";
+import { TENANT_KEY_SCOPES, type ApiKeyResponse, type NetworkPoolResponse, type TenantScope } from "../lib/contracts";
 
 /**
  * What each assignable scope actually permits, as a tooltip on the checkbox.
@@ -120,6 +123,19 @@ function TokenBudgetField({
   );
 }
 
+/** Picker value meaning "no binding": the key inherits provider routing. */
+const DEFAULT_EGRESS = "default";
+
+/** What each egress choice does, in the operator's terms. */
+function egressHint(value: string, pools: readonly NetworkPoolResponse[]): string {
+  if (value === DEFAULT_EGRESS) {
+    return "Egress follows the provider account's own routing — the account's pool binding, its direct override, or the tenant pool group.";
+  }
+  const pool = pools.find((entry) => entry.id === value);
+  const name = pool ? networkPoolLabel(pool) : "this pool";
+  return `Every request from this key leaves through ${name}. A route whose account cannot use that pool is rejected rather than dialed direct.`;
+}
+
 export interface KeyFormInput {
   label: string;
   keyMode: ApiKeyResponse["keyMode"];
@@ -128,6 +144,11 @@ export interface KeyFormInput {
   modelAllowlist: string[];
   providerAllowlist: string[];
   scopes: string[];
+  /**
+   * Egress binding. `null` clears it, `undefined` leaves it unchanged, and a
+   * pool id narrows this key's traffic to that pool.
+   */
+  networkPoolId?: string | null;
   requestsPerMinute?: number | null;
   maxConcurrentRequests?: number | null;
   dailyTokenLimit?: number | null;
@@ -213,6 +234,20 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
   const [keyMode, setKeyMode] = useState<ApiKeyResponse["keyMode"]>(
     record?.keyMode ?? "personal",
   );
+  // `DEFAULT_EGRESS` is a sentinel rather than the empty string: Radix's
+  // `Select.Value` renders the placeholder for `""`, so a key on default
+  // routing would read "Select…" instead of its actual choice. Pool ids are
+  // uuids, so the sentinel cannot collide with one.
+  const [networkPoolId, setNetworkPoolId] = useState<string>(
+    record?.networkPoolId ?? DEFAULT_EGRESS,
+  );
+  const poolsQuery = useNetworkPools();
+  const activePools = (poolsQuery.data ?? []).filter((pool) => pool.status === "active");
+  const poolsUnavailable = !poolsQuery.isPending && activePools.length === 0;
+  const egressOptions = [
+    { value: DEFAULT_EGRESS, label: "Default (provider routing)" },
+    ...activePools.map((pool) => ({ value: pool.id, label: networkPoolLabel(pool) })),
+  ];
   const isOneTime = budgetMode === "one-time";
   const toggleScope = (scope: string) =>
     setScopes((cur) => (cur.includes(scope) ? cur.filter((s) => s !== scope) : [...cur, scope]));
@@ -227,6 +262,12 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
       scopes,
       modelAllowlist: models,
       providerAllowlist: providers,
+      // On create, "default" is simply no binding. On edit it is an explicit
+      // `null`, because that is what detaches a binding the key already has —
+      // sending `undefined` would leave the old pool in place while the
+      // operator watches the picker say "Default".
+      networkPoolId:
+        networkPoolId === DEFAULT_EGRESS ? (mode === "create" ? undefined : null) : networkPoolId,
       requestsPerMinute: parseLimitOrNull(rpm),
       maxConcurrentRequests: parseLimitOrNull(concurrent),
       dailyTokenLimit: isOneTime ? null : (parseTokenLimit(daily) ?? null),
@@ -439,6 +480,56 @@ export function ApiKeyForm({ mode, record, busy, onDone, onClose }: KeyFormProps
               disabled={busy}
             />
           </div>
+        )}
+      </section>
+      <section
+        className="modal-form-section"
+        style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+      >
+        <div>
+          <h3 style={{ fontSize: "13px", fontWeight: 700, color: "var(--text-primary)" }}>
+            Proxy
+          </h3>
+          <p style={{ marginTop: "2px", fontSize: "11px", color: "var(--text-tertiary)" }}>
+            {keyMode === "share"
+              ? "Forces this template and every child key minted from it through one network pool."
+              : "Forces this key's requests through one network pool."}
+          </p>
+        </div>
+        {poolsUnavailable ? (
+          <>
+            <Select
+              id="api-key-egress"
+              label="Egress pool"
+              size="sm"
+              aria-label="Proxy pool for this key"
+              value={DEFAULT_EGRESS}
+              disabled
+              options={[{ value: DEFAULT_EGRESS, label: "Default (provider routing)" }]}
+              style={{ maxWidth: "320px" }}
+            />
+            <p style={{ fontSize: "10.5px", color: "var(--text-tertiary)" }}>
+              No active proxy pool exists in this tenant yet, so this key uses provider routing. Add
+              a pool under Proxy to pin a key's egress.
+            </p>
+          </>
+        ) : (
+          <>
+            <Select
+              id="api-key-egress"
+              label="Egress pool"
+              size="sm"
+              aria-label="Proxy pool for this key"
+              value={networkPoolId}
+              disabled={busy || poolsQuery.isPending}
+              onValueChange={setNetworkPoolId}
+              options={egressOptions}
+              style={{ maxWidth: "320px" }}
+            />
+            <p style={{ fontSize: "10.5px", color: "var(--text-tertiary)" }}>
+              {egressHint(networkPoolId, activePools)}
+            </p>
+          </>
         )}
       </section>
       <section

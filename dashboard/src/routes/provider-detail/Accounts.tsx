@@ -41,8 +41,9 @@ import {
 } from "../../lib/credential-extract";
 import { formatResetDistance } from "../../lib/quota-formatters";
 import { downloadTextFile } from "../../lib/download";
+import { networkPoolLabel } from "../../lib/network-pool-label";
 import { toast } from "../../lib/toast";
-import type { NetworkPoolResponse, ProviderAccountResponse } from "../../lib/contracts";
+import type { ProviderAccountResponse } from "../../lib/contracts";
 
 
 
@@ -105,17 +106,6 @@ function egressHint(value: string): string {
   return "Pins this account's egress to one pool. If that pool is unavailable the account is skipped rather than dialed direct.";
 }
 
-/**
- * Human-readable pool name: the operator's label when set, else the endpoint
- * with its scheme stripped, else the id. A bare uuid in a picker tells the
- * operator nothing about which egress they are choosing.
- */
-function poolOptionLabel(pool: NetworkPoolResponse): string {
-  if (pool.label) return pool.label;
-  const raw = pool.endpoint ?? "";
-  const withoutScheme = raw.includes("://") ? raw.slice(raw.indexOf("://") + 3) : raw;
-  return withoutScheme || pool.id;
-}
 
 function accountStatusRank(status: string): number {
   if (status === "active") return 0;
@@ -622,7 +612,7 @@ export function AccountsList({
   // account offers the same tenant pools.
   const poolsQuery = useNetworkPools();
   const poolOptions = useMemo<readonly NetworkPoolOption[]>(
-    () => (poolsQuery.data ?? []).map((pool) => ({ id: pool.id, label: poolOptionLabel(pool) })),
+    () => (poolsQuery.data ?? []).map((pool) => ({ id: pool.id, label: networkPoolLabel(pool) })),
     [poolsQuery.data],
   );
   const [query, setQuery] = useState("");
@@ -981,7 +971,7 @@ export function AddAccountModal({
   const [egress, setEgress] = useState(GROUP_EGRESS);
   const poolsQuery = useNetworkPools();
   const poolOptions = useMemo<readonly NetworkPoolOption[]>(
-    () => (poolsQuery.data ?? []).map((pool) => ({ id: pool.id, label: poolOptionLabel(pool) })),
+    () => (poolsQuery.data ?? []).map((pool) => ({ id: pool.id, label: networkPoolLabel(pool) })),
     [poolsQuery.data],
   );
   // Applies to every credential in a batch, so pasting N keys behind one proxy

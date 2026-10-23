@@ -269,6 +269,18 @@ export const CLINE_MODELS: readonly ModelDefinition[] = [
     vision: true,
     free: true,
   }),
+  // Paid-tier ids from the published roster. Every one of these answers on the
+  // live `/api/v1/models` listing, so they are real dispatchable names and not
+  // a rename of the `:free` rows above — those are the free bucket of the same
+  // families. Limits and pricing resolve from the catalog; `free` is
+  // deliberately absent, because these are the billed serving.
+  defineModel({ id: "anthropic/claude-opus-4.7", reasoning: true, vision: true }),
+  defineModel({ id: "anthropic/claude-sonnet-4.6", reasoning: true, vision: true }),
+  defineModel({ id: "anthropic/claude-opus-4.6", reasoning: true, vision: true }),
+  defineModel({ id: "openai/gpt-5.3-codex", reasoning: true, vision: true }),
+  defineModel({ id: "openai/gpt-5.4", reasoning: true, vision: true }),
+  defineModel({ id: "google/gemini-3.1-pro-preview", reasoning: true, vision: true }),
+  defineModel({ id: "google/gemini-3.1-flash-lite-preview", reasoning: true, vision: true }),
 ];
 
 

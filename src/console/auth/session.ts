@@ -223,16 +223,21 @@ export function createConsoleAuthRoutes(
         body,
         passwordGate.enabled ? passwordGate.username : undefined,
       );
+      // Identity and lockout are two different values and must not share a
+      // variable. The lookup takes the username as typed (the store matches it
+      // case-insensitively), while the lockout bucket is case-folded so
+      // `Liaan` and `liaan` from one client land in the same bucket and an
+      // attacker cannot reset the failure counter by changing capitalization.
+      const loginIdentifier = passwordGate.enabled
+        ? passwordGate.username
+        : (input?.username.trim() ?? "<invalid>");
       // In single-password mode the username is not part of the identity, so
       // the lockout key is the client address alone. Keying it on a submitted
       // username would let an attacker rotate usernames to reset the counter
       // while guessing the one shared secret.
-      const loginIdentifier = passwordGate.enabled
-        ? passwordGate.username
-        : (input?.username.trim().toLowerCase() ?? "<invalid>");
       const lockoutKey = passwordGate.enabled
         ? `console:${clientIp}`
-        : `${loginIdentifier}:${clientIp}`;
+        : `${loginIdentifier.toLowerCase()}:${clientIp}`;
       const remainingLock = await lockoutService.remainingLockSeconds(lockoutKey);
       if (remainingLock > 0) {
         set.status = 429;

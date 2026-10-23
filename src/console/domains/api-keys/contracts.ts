@@ -14,6 +14,7 @@ import type { ShareActivityPort } from "../../share/share-usage";
 import { ConsoleDomainError } from "../../shared/errors";
 import type { ConsoleAccessResolver } from "../../auth/access";
 import type { ApiKeyAdmissionService } from "../../../security/admission";
+import type { NetworkPoolStore } from "../../routing/pools/contracts";
 export type {
   SharedKeySummary,
   SharedKeyActivityDetail,
@@ -36,6 +37,12 @@ export interface CreateApiKeyRequest {
   providerAllowlist?: readonly string[];
   modelAllowlist?: readonly string[];
   modelDenylist?: readonly string[];
+  /**
+   * Pool this key's traffic must egress through. Omitted or `null` leaves
+   * egress to per-account/provider routing; a value narrows it, and is
+   * inherited by every child minted from a share template.
+   */
+  networkPoolId?: string | null;
   notesTitle?: string;
   notesSubtitle?: string;
   notesBody?: string;
@@ -57,6 +64,12 @@ export interface ApiKeyResponse {
   readonly providerAllowlist?: readonly string[];
   readonly modelAllowlist?: readonly string[];
   readonly modelDenylist?: readonly string[];
+  /**
+   * The pool this key egresses through, or absent for provider routing. The
+   * dashboard joins it against the pool list it already loads, so a renamed
+   * pool cannot leave a stale label on a key.
+   */
+  readonly networkPoolId?: string;
   readonly maxConcurrentRequests?: number;
   readonly notesTitle?: string;
   readonly notesSubtitle?: string;
@@ -106,6 +119,16 @@ export interface ApiKeyConfig {
   readonly shareStore?: ShareLinkStore;
   readonly shareActivity?: ShareActivityPort;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  /**
+   * Tenant-scoped pool read, used only to validate an egress binding on write.
+   *
+   * Narrowed to `get` rather than taking the whole pool store: the API-key
+   * domain must be able to *check* a pool, never to create, disable, or health-
+   * check one. Because the read is tenant-scoped, a foreign pool simply misses
+   * and is reported as not found — one tenant cannot probe another's pool ids
+   * through this route.
+   */
+  readonly poolLookup: Pick<NetworkPoolStore, "get">;
 }
 
 /** Result of minting a share link. The bearer token is returned exactly once. */
@@ -205,7 +228,54 @@ export function validateApiKeyRequest(request: CreateApiKeyRequest): readonly Ac
       "keyPrefix must be a non-empty string if provided",
     );
   }
+  if (
+    request.networkPoolId !== undefined &&
+    request.networkPoolId !== null &&
+    (typeof request.networkPoolId !== "string" || request.networkPoolId.trim().length === 0)
+  ) {
+    throw new ConsoleDomainError(
+      "invalid_network_pool",
+      400,
+      "networkPoolId must be a non-empty string or null",
+    );
+  }
   return scopes as AccessScope[];
+}
+
+/**
+ * Resolves a requested egress binding against the caller's tenant pools.
+ *
+ * Three rejections, each with its own code because the operator's fix differs:
+ * an unknown id is a typo or a deleted pool, a foreign pool is a scoping
+ * mistake (and must never be accepted, since binding it would route this
+ * tenant's key out through an address another tenant controls), and an
+ * inactive pool is a deliberate state the operator has to change first.
+ *
+ * `null` and `undefined` both mean "no binding": `null` clears one, and
+ * `undefined` leaves the column alone.
+ */
+export async function resolveNetworkPoolBinding(
+  pools: Pick<NetworkPoolStore, "get">,
+  tenantId: string,
+  requested: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (requested === undefined || requested === null) return requested;
+  const pool = await pools.get(tenantId, requested);
+  if (!pool) {
+    throw new ConsoleDomainError(
+      "network_pool_not_found",
+      400,
+      `Proxy pool ${requested} does not exist in this tenant`,
+    );
+  }
+  if (pool.status !== "active") {
+    throw new ConsoleDomainError(
+      "network_pool_inactive",
+      409,
+      `Proxy pool ${requested} is ${pool.status}; only an active pool can be bound to a key`,
+    );
+  }
+  return pool.id;
 }
 
 /** Serializes a persisted record without credential material or IP-key digests. */
@@ -229,6 +299,7 @@ export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
     ...(record.providerAllowlist === undefined ? {} : { providerAllowlist: record.providerAllowlist }),
     ...(record.modelAllowlist === undefined ? {} : { modelAllowlist: record.modelAllowlist }),
     ...(record.modelDenylist === undefined ? {} : { modelDenylist: record.modelDenylist }),
+    ...(record.networkPoolId === undefined ? {} : { networkPoolId: record.networkPoolId }),
     createdAt: record.createdAt.toISOString(),
     ...(record.revokedAt === undefined ? {} : { revokedAt: record.revokedAt.toISOString() }),
     // Whether the secret can be read back, not the secret itself. A consumer

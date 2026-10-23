@@ -12,6 +12,7 @@ import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buff
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
 import { validateCompatibilityProfile, type ByokConnectionTestRequest, type ByokConnectionTestResult, type CreateProviderAccountRequest, type ModelCatalogEntry, type ProbeAllAccountsResult, type ProbeAllModelsResult, type ProbeModelRequest, type ProbeModelResult, type ProviderAccountResponse, type ProviderAccountTokenUsage, type ProviderCatalogStore, type ProviderRecord, type SetModelEnabledRequest, type UpdateProviderAccountRequest, ACCOUNT_MAX_INFLIGHT_BOUNDS } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
+import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import { resolveManualModelMetadata } from "../../../providers/model-definition";
 import { isUniqueViolation } from "../../../persistence/postgres";
 import { DEFAULT_ENDPOINT_BY_WIRE_FAMILY, endpointPathForProviderModel, mapProviderRow } from "./catalog-projections";
@@ -106,6 +107,8 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       readonly providerRegistry: ProviderRegistry;
       readonly outboundFetchFor: ProbeOutboundResolver;
       readonly snapshotInvalidator: { invalidate(): unknown };
+      /** Same selector live dispatch flags; lets a probe retire a burned egress. */
+      readonly poolSelector?: NetworkPoolSelector | undefined;
     },
   ) {
     this.bundledModelCatalog = options.bundledModelCatalog.modelsByProvider;
@@ -118,6 +121,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       outboundFetchFor: options.outboundFetchFor,
       snapshotInvalidator: options.snapshotInvalidator,
       providerRegistry: options.providerRegistry,
+      ...(options.poolSelector ? { poolSelector: options.poolSelector } : {}),
     });
   }
   async list(tenantId: string): Promise<readonly ProviderRecord[]> {
@@ -215,9 +219,18 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     // (models/provider_accounts/provider_oauth_states via provider FK,
     // health_events via account FK, tenant_disabled_models and
     // provider_routing_settings via provider FK) in one atomic DELETE.
+    //
+    // The predicate is the same one `list`/`get` read, so every row this
+    // tenant can see is a row it can remove. A global (`tenant_id IS NULL`)
+    // row cannot belong to another tenant: `createProvider` always writes the
+    // caller's tenant id, so the only way a non-bundled provider ends up
+    // global is a bundled entry that later left the bundle — the seeder
+    // upserts and never prunes. A provider owned by a different tenant stays
+    // outside this predicate and still answers `provider_not_found`, so this
+    // is not a cross-tenant delete. Bundled ids are rejected above.
     const deleted = await this.db
       .delete(providers)
-      .where(and(eq(providers.id, providerId), ownedByOnly(providers.tenantId, tenantId)))
+      .where(and(eq(providers.id, providerId), globalOrOwnedBy(providers.tenantId, tenantId)))
       .returning({ id: providers.id });
     if (deleted.length === 0) return false;
     this.providerRegistry.unregister(providerId);

@@ -5,10 +5,12 @@ import { PROVIDER_COMPATIBILITY_PROFILES } from "../provider-metadata";
 import { defineModel } from "../model-definition";
 import type { ApiKeyProviderSpec } from "./configured-provider";
 import { resolveOpenCodeVersion } from "../operations/client-versions";
+import { GatewayError } from "../../transport/gateway-error";
 import {
   buildOpenCodeFreeHeaders,
   buildOpenCodeHeaders,
   ensureFreeAgentRequest,
+  invalidateOpenCodeSession,
 } from "./opencode-fingerprint";
 /**
  * OpenCode's three API-key tiers, all served from `opencode.ai`:
@@ -51,6 +53,28 @@ async function opencodeFreeHeaders(context: unknown): Promise<Record<string, str
   return buildOpenCodeFreeHeaders(context as never);
 }
 
+/**
+ * Retire the handle upstream says is spent.
+ *
+ * The free tier's allowance is keyed on the source address, so this does not
+ * restore quota: the same egress retried with a new `x-opencode-session` is
+ * still refused. What actually lifts a spent allowance is the pool cooldown
+ * this error triggers upstream of the adapter, which steers the next request
+ * to a different exit. Retiring the handle is separate hygiene — a session the
+ * upstream has just declared spent should not be handed to the next
+ * conversation.
+ *
+ * Gated on the structured flag the failure classifier sets from the upstream
+ * body: a bare 429 is a request window the same handle may pass shortly, and a
+ * 5xx is not about this handle at all — rotating on either would throw away a
+ * healthy conversation's affinity for nothing.
+ */
+function retireSpentFreeSession(error: unknown, context: unknown): void {
+  if (!(error instanceof GatewayError)) return;
+  if (error.details.freeTierAllowanceExhausted !== true) return;
+  invalidateOpenCodeSession(context as never);
+}
+
 
 function completeOpenCodeToolSchemas(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload.tools)) return;
@@ -69,12 +93,20 @@ function completeOpenCodeToolSchemas(payload: Record<string, unknown>): void {
 }
 
 function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
+  // The free tier is the one that lists a Claude-format model (`union-alpha`),
+  // served on `/zen/v1/messages`. That path is a real route on the shared Zen
+  // base (it answers the free-tier gate rather than 404), but only the free
+  // tier's catalog names a model for it, so only the free spec declares it.
+  const servesMessages = providerId === "opencodeft";
   return {
     provider_id: providerId,
     endpoint_paths_by_wire_family: {
       ...PROVIDER_COMPATIBILITY_PROFILES[providerId]?.endpoint_paths_by_wire_family,
+      ...(servesMessages ? { messages: `${ZEN_PATH_PREFIX}/messages` } : {}),
     },
-    supported_wire_families: ["chat", "responses"],
+    supported_wire_families: servesMessages
+      ? ["chat", "responses", "messages"]
+      : ["chat", "responses"],
     promptCache: false,
     extra_headers: { accept: "application/json" },
     // Go is API-key-only: it never receives the desktop fingerprint; Free
@@ -93,7 +125,11 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
     // lowercase quartet fingerprint tools (bash/glob/grep/read) that the
     // upstream gate requires on every free dispatch.
     ...(providerId === "opencodeft"
-      ? { credential_forwarding: "never" as const, prepareRequest: ensureFreeAgentRequest }
+      ? {
+          credential_forwarding: "never" as const,
+          prepareRequest: ensureFreeAgentRequest,
+          onUpstreamFailure: retireSpentFreeSession,
+        }
       : {}),
     prePayload: (payload, request, candidate) => {
       completeOpenCodeToolSchemas(payload);
@@ -162,6 +198,10 @@ const sharedZenChat: readonly ModelDefinition[] = [
   // and fallback combos target this id by name, so dropping the row silently
   // breaks them: `seedBundledModels` prunes any `builtin` row the catalog no
   // longer declares, and routing then reports `model_not_found` for the alias.
+  // The row stays even when the address's free allowance is exhausted: the
+  // allowance is per source address on a rolling daily window, so the same row
+  // serves again from another egress pool or after the reset, and the 429 is
+  // reported as the gate it is (`classifyRateLimitScope` → `network`).
   defineModel({ id: "mimo-v2.6-flash-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 200000, out: 32000, vision: true, document: true, audio: true, reasoning: true, free: true }),
   // The free tier rotates: upstream deprecates old ids and serves new ones
   // under the same `/zen/v1` base (verified live against `GET /zen/v1/models`
@@ -196,6 +236,10 @@ export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true }),
   defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
   defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
+  // Claude-format model: the published roster marks it `targetFormat: claude`,
+  // and `/zen/v1/messages` is a live route on this base (it answers the
+  // free-tier gate, where an unknown path answers 404).
+  defineModel({ id: "union-alpha", providerId: "opencode", wireFamily: "messages", endpoint: `${ZEN_PATH_PREFIX}/messages`, reasoning: true }),
 ];
 
 export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [

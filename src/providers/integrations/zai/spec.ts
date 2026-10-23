@@ -2,10 +2,30 @@ import type { ModelDefinition, ProviderDispatchContext } from "../../provider-re
 import { fetchOpenAICompatibleModels } from "../../discovery/openai-model-discovery";
 import { normalizeBearerToken } from "../../../protocol/primitives";
 import { providerBaseUrl } from "../../provider-metadata";
+import { defineModel } from "../../model-definition";
 import type { ApiKeyProviderSpec } from "../configured-provider";
 import type { DiscoveryInput } from "../../discovery/discovery-types";
 
 const ZAI_PROVIDER_ID = "zai" as const;
+
+/**
+ * Z.AI's published catalog for the `paas/v4` surface.
+ *
+ * Without these rows the provider is empty until a live Sync, which needs a
+ * credential — so an offline, first-run, or probe-only path saw no models.
+ * Every id answers 401 (not 404) on `POST /api/paas/v4/chat/completions` with a
+ * rejected key, which is what distinguishes a served model from an unknown one.
+ */
+export const ZAI_MODELS: readonly ModelDefinition[] = [
+  defineModel({ id: "glm-5.3", providerId: "zai", reasoning: true }),
+  defineModel({ id: "glm-5.3-flash", providerId: "zai", vision: true, reasoning: true }),
+  defineModel({ id: "glm-5.2", providerId: "zai", reasoning: true }),
+  defineModel({ id: "glm-5.1", providerId: "zai", reasoning: true }),
+  defineModel({ id: "glm-5-turbo", providerId: "zai", reasoning: true }),
+  defineModel({ id: "glm-5", providerId: "zai", reasoning: true }),
+  defineModel({ id: "glm-4.7", providerId: "zai", reasoning: true }),
+  defineModel({ id: "glm-4.6v", providerId: "zai", vision: true, reasoning: true }),
+];
 
 /**
  * Extracts the bearer token from a stored credential that may be either a raw

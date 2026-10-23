@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ApiKeysPanel } from "./ApiKeysPanel";
 import { queryKeys } from "../lib/query-keys";
-import type { ApiKeyResponse } from "../lib/contracts";
+import type { ApiKeyResponse, NetworkPoolResponse } from "../lib/contracts";
 
 const ACTIVE_KEY: ApiKeyResponse = {
   id: "key-active-0001",
@@ -45,11 +45,15 @@ const SHARE_TEMPLATE: ApiKeyResponse = {
   tokensConsumed: 0,
 };
 
-function render(keys: readonly ApiKeyResponse[] | undefined): string {
+function render(
+  keys: readonly ApiKeyResponse[] | undefined,
+  pools?: readonly NetworkPoolResponse[],
+): string {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   if (keys) queryClient.setQueryData(queryKeys.apiKeys.all, keys);
+  if (pools) queryClient.setQueryData(queryKeys.network.pools, pools);
   return renderToStaticMarkup(
     createElement(QueryClientProvider, { client: queryClient }, createElement(ApiKeysPanel)),
   );
@@ -87,6 +91,35 @@ describe("API keys panel", () => {
     expect(markup).toContain("Active keys");
     expect(markup).toContain("Total usage");
     expect(markup).toContain("1 / 2");
+  });
+
+  test("shows each key's effective egress, resolved against the pool list", () => {
+    const pool: NetworkPoolResponse = {
+      id: "pool-eu-1",
+      kind: "http",
+      label: "EU egress",
+      endpoint: "http://eu.proxy.example.com:8080",
+      maxInflight: 8,
+      weight: 100,
+      status: "active",
+      inflight: 0,
+      consecutiveFailures: 0,
+      tenantId: "tenant-1",
+    };
+    const markup = render(
+      [
+        { ...ACTIVE_KEY, networkPoolId: pool.id },
+        REVOKED_KEY,
+        // A binding whose pool was deleted still names something, rather than
+        // rendering as if the key had no binding at all.
+        { ...SHARE_TEMPLATE, networkPoolId: "pool-deleted" },
+      ],
+      [pool],
+    );
+    expect(markup).toContain("EU egress");
+    // The unbound key reads as default routing, not as a missing value.
+    expect(markup).toContain("Default");
+    expect(markup).toContain("pool-del…");
   });
 
   test("renders the empty state when no keys exist", () => {

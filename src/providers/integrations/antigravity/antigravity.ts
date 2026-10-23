@@ -114,6 +114,24 @@ export const ANTIGRAVITY_MODELS: readonly ModelDefinition[] = [
   antigravityModel("gemini-3.8-flash-high", 1_048_576, 65_536, true),
   // GPT-OSS
   antigravityModel("gpt-oss-120b", 131_072, 32_768, true),
+  // Current-generation ids the published roster lists as their own names.
+  // Each maps to a live deployment through `antigravityWireModelId`; the
+  // `-high`/`-medium`/`-low` rows are separate upstream ids, not aliases of
+  // one another, so a client pinned to an effort tier gets that tier.
+  antigravityModel("gemini-4-argon-high", 1_048_576, 65_536, true),
+  antigravityModel("gemini-3.1-pro-high", 1_048_576, 65_535, true),
+  antigravityModel("gemini-pro-agent", 1_048_576, 65_535, true),
+  antigravityModel("gemini-3.1-pro-low", 1_048_576, 65_535, true),
+  antigravityModel("claude-sonnet-5-5", 1_000_000, 64_000, true),
+  antigravityModel("claude-sonnet-5-5-high", 1_000_000, 64_000, true),
+  antigravityModel("claude-sonnet-5-5-medium", 1_000_000, 64_000, true),
+  antigravityModel("claude-sonnet-5-5-low", 1_000_000, 64_000, true),
+  antigravityModel("claude-opus-5-5", 1_000_000, 64_000, true),
+  antigravityModel("claude-opus-5-5-high", 1_000_000, 64_000, true),
+  antigravityModel("claude-opus-5-5-medium", 1_000_000, 64_000, true),
+  antigravityModel("claude-opus-5-5-low", 1_000_000, 64_000, true),
+  antigravityModel("claude-opus-4-6-thinking", 1_000_000, 64_000, true),
+  antigravityModel("gpt-oss-120b-medium", 131_072, 32_768, true),
   // Tab preview (short-context)
   antigravityModel("tab_flash_lite_preview", 16_384, 4_096, false),
   antigravityModel("tab_jump_flash_lite_preview", 16_384, 4_096, false),

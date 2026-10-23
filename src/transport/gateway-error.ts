@@ -14,6 +14,7 @@ export type GatewayErrorCode =
   | "proxy_pool_cooldown"
   | "proxy_pool_unavailable"
   | "proxy_pool_unhealthy"
+  | "proxy_pool_not_allowed"
   | "invalid_pool_limits"
   | "admission_unavailable"
   | "slug_reserved"

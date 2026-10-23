@@ -6,10 +6,15 @@ import {
   _resetQoderVersion,
 } from "../../../src/providers/operations/client-versions";
 import {
+  CN_PROFILE,
   MODERN_PROFILE,
+  QODER_CN_MODEL_CONFIGS,
+  QODER_CN_MODELS,
+  QODER_MODEL_CONFIGS,
+  QODER_REGION_PROFILES,
   buildQoderRequest,
   createQoderAdapter,
-  QODER_MODEL_CONFIGS,
+  createQoderCnAdapter,
   type QoderAuth,
 } from "../../../src/providers/integrations/qoder";
 import type { CanonicalEvent, CanonicalRequest } from "../../../src/transport/canonical-model";
@@ -372,5 +377,111 @@ describe("Qoder pre-stream deadline release", () => {
       .map((event) => (event.type === "content_delta" && event.content.kind === "text" ? event.content.text : ""))
       .join("");
     expect(text).toBe("HELLO-FROM-BODY");
+  });
+});
+
+describe("Qoder CN region", () => {
+  test("the CN profile resolves the CN gateway, not the intl host", () => {
+    expect(CN_PROFILE.chatUrl).toContain("https://gateway.qoder.com.cn");
+    expect(CN_PROFILE.chatUrl).not.toContain("qoder.sh");
+    expect(QODER_REGION_PROFILES.cn).toBe(CN_PROFILE);
+    expect(QODER_REGION_PROFILES.intl).toBe(MODERN_PROFILE);
+  });
+
+  test("the CN catalog is the intl tier set with CN frontier keys", () => {
+    const cn = Object.keys(QODER_CN_MODEL_CONFIGS).sort();
+    expect(cn).toEqual(
+      [
+        "auto",
+        "dfmodel",
+        "dmodel",
+        "efficient",
+        "gfmodel",
+        "gmodel",
+        "kmodel",
+        "kmodel_latest",
+        "lite",
+        "mmodel",
+        "performance",
+        "qfmodel",
+        "qmodel",
+        "qmodel_38max",
+        "qmodel_latest",
+        "ultimate",
+      ].sort(),
+    );
+    // Intl-only keys must not leak into the CN catalog: the gateway silently
+    // downgrades an unknown key instead of rejecting it.
+    expect(cn).not.toContain("qmodel_preview");
+    expect(cn).not.toContain("gm51model");
+    expect(QODER_CN_MODELS.map((model) => model.modelId).sort()).toEqual(cn);
+  });
+
+  test("CN dispatch exchanges the PAT and calls the CN host", async () => {
+    const urls: string[] = [];
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("jobToken")) {
+        return new Response(
+          JSON.stringify({
+            id: "u-cn",
+            name: "cn-user",
+            userType: "personal_standard",
+            securityOauthToken: "oauth-cn",
+            refreshToken: "refresh-cn",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const adapter = createQoderCnAdapter({ fetch: fakeFetch });
+    expect(adapter.provider_id).toBe("qoder-cn");
+
+    const request: CanonicalRequest = {
+      model: "gmodel",
+      messages: [{ role: "user", content: [{ kind: "text", text: "hi" }] }],
+      generation_controls: {},
+      stream: true,
+      source_surface: "chat",
+    };
+    const events: CanonicalEvent[] = [];
+    for await (const event of adapter.dispatch(
+      request,
+      {
+        provider_id: "qoder-cn",
+        model_id: "gmodel",
+        wire_family: "chat",
+        endpoint_path: "",
+        capabilities: {},
+      },
+      {
+        credential: {
+          provider_id: "qoder-cn",
+          credential_kind: "api_key",
+          secret: new TextEncoder().encode("pt-cn-secret"),
+        },
+        deadline: Date.now() + 5_000,
+        abort_signal: new AbortController().signal,
+      },
+    )) {
+      events.push(event);
+    }
+
+    const chatUrl = urls.find((url) => url.includes("agent_chat_generation"));
+    expect(chatUrl).toContain("https://gateway.qoder.com.cn");
+    const tokenUrl = urls.find((url) => url.includes("jobToken"));
+    expect(tokenUrl).toContain("https://gateway.qoder.com.cn");
+    expect(events.some((event) => event.type === "terminal")).toBe(true);
   });
 });

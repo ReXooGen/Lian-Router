@@ -525,32 +525,59 @@ class RouteCatalogRepository {
             }
           }
         }
-        const networkPools = providerRequiresAccount
-          ? undefined
-          : resolveNetworkPools(model.providerId, providerTenantId);
-        const candidate: RouteCandidateWithHealth = {
-          provider_id: model.providerId,
-          model_id: model.modelId,
-          wire_family: model.wireFamily as WireFamily,
-          endpoint: model.endpointPath,
-          capability_profile: capabilityProfile,
-          tenant_id: providerTenantId,
-          ...(providerRequiresAccount
-            ? { health_status: "disabled" as const }
-            : { requires_account: false as const }),
-          ...(networkPools
-            ? {
-                network_pool_ids: networkPools.ids,
-                network_pool_required: true,
-                network_pool_limits: networkPools.limits,
-                network_pool_weights: networkPools.weights,
-                ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
-              }
-            : {}),
-          ...withSystemPrompt(resolveSystemPrompt(model.providerId, providerTenantId)),
-        };
-        if (tenantId === undefined || candidate.tenant_id === null || candidate.tenant_id === tenantId) {
-          candidates.push(candidate);
+        /**
+         * Whether this tenant has a pool egress a request could actually use.
+         *
+         * `activePoolsByTenant` is the honest signal for "the tenant has a
+         * working pool", not `resolveNetworkPools(...) !== undefined`: that
+         * function also answers `undefined` for a tenant whose pool rows are all
+         * disabled or cooling, and suppressing on it would take away the only
+         * route such a tenant has. A provider-level `bypassProxy` is the other
+         * side of the same coin — the pools are active but the operator asked
+         * for direct, so the pooled candidate is never emitted and the direct
+         * candidate must stay.
+         */
+        const hasPooledEgress =
+          tenantId !== undefined &&
+          (activePoolsByTenant.get(tenantId)?.length ?? 0) > 0 &&
+          !resolveBypassProxy(model.providerId, tenantId);
+        // The credential-less candidate is the fallback for a tenant with no
+        // working pool, never a second chance at direct egress beside one: a
+        // tenant whose pools are configured must not have the request leave
+        // from its own address when every pool is saturated or cooling. The
+        // global build (`tenantId === undefined`) has no requesting tenant, so
+        // it keeps emitting it for the tenants that own no pool. The disabled
+        // placeholder of a provider that *does* require an account is never
+        // dialed either way, and dropping it would turn `accounts_unavailable`
+        // into `model_not_found`.
+        if (providerRequiresAccount || !hasPooledEgress) {
+          const networkPools = providerRequiresAccount
+            ? undefined
+            : resolveNetworkPools(model.providerId, providerTenantId);
+          const candidate: RouteCandidateWithHealth = {
+            provider_id: model.providerId,
+            model_id: model.modelId,
+            wire_family: model.wireFamily as WireFamily,
+            endpoint: model.endpointPath,
+            capability_profile: capabilityProfile,
+            tenant_id: providerTenantId,
+            ...(providerRequiresAccount
+              ? { health_status: "disabled" as const }
+              : { requires_account: false as const }),
+            ...(networkPools
+              ? {
+                  network_pool_ids: networkPools.ids,
+                  network_pool_required: true,
+                  network_pool_limits: networkPools.limits,
+                  network_pool_weights: networkPools.weights,
+                  ...(networkPools.routing ? { network_pool_routing: networkPools.routing } : {}),
+                }
+              : {}),
+            ...withSystemPrompt(resolveSystemPrompt(model.providerId, providerTenantId)),
+          };
+          if (tenantId === undefined || candidate.tenant_id === null || candidate.tenant_id === tenantId) {
+            candidates.push(candidate);
+          }
         }
         continue;
       }
@@ -694,9 +721,20 @@ class RouteCatalogRepository {
   }
 }
 
-/** Builds a `SnapshotBuilder` reading the live catalog from `db`. */
-export function createDatabaseSnapshotBuilder(db: LianRouterDatabase): SnapshotBuilder {
+/**
+ * Builds a `SnapshotBuilder` reading the live catalog from `db`.
+ *
+ * `tenantId` narrows the build to one tenant's view (`poolRouting`, aliases,
+ * combos, and the credential-less candidates below); production builds the
+ * global snapshot, where every tenant's pooled candidates are emitted beside
+ * the unpooled fallback, and `acquirePoolSlot` refuses the fallback for a
+ * request whose plan also carries a pooled candidate.
+ */
+export function createDatabaseSnapshotBuilder(
+  db: LianRouterDatabase,
+  tenantId?: string,
+): SnapshotBuilder {
   const repository = new RouteCatalogRepository(db);
-  return () => repository.loadRouteCatalogSnapshot(undefined);
+  return () => repository.loadRouteCatalogSnapshot(tenantId);
 }
 

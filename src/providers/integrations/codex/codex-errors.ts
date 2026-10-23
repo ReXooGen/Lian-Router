@@ -5,7 +5,7 @@
  * upstream-request IDs into structured details the router honors.
  */
 import { GatewayError, type GatewayErrorCode } from "../../../transport/gateway-error";
-import { parseRetryAfter, extractUpstreamMessage, statusToGatewayErrorCode, upstreamRequestId } from "../../../transport/failure-policy";
+import { classifyRateLimitScope, parseRetryAfter, extractUpstreamMessage, statusToGatewayErrorCode, upstreamRequestId } from "../../../transport/failure-policy";
 import { tryParseJsonObject } from "../../../protocol/primitives";
 
 function toNumberOrUndefined(value: string | null): number | undefined {
@@ -167,7 +167,11 @@ export async function mapCodexErrorResponse(res: Response): Promise<never> {
   // recorded a client fault for an upstream outage.
   const code: GatewayErrorCode = statusToGatewayErrorCode(status);
   if (status === 401 || status === 403) details["credentialEvidence"] = true;
-  if (status === 429) details["rateLimitScope"] = "provider";
+  if (status === 429)
+    details["rateLimitScope"] = classifyRateLimitScope({
+      status,
+      ...(errorCode === undefined ? {} : { providerCode: errorCode }),
+    });
   const origin = status === 407 ? "network" : "upstream";
   throw new GatewayError(
     code,

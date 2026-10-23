@@ -70,6 +70,15 @@ export interface ApiKeyProviderSpec {
     request: CanonicalRequest,
     candidate: ProviderDispatchTarget,
   ) => void;
+  /**
+   * Observer for one failed dispatch, before the error propagates. A provider
+   * whose upstream identity is a handle it mints per client drops a spent
+   * handle here so the retry presents a fresh one.
+   */
+  readonly onUpstreamFailure?: (
+    error: unknown,
+    context: ProviderDispatchContext,
+  ) => void;
 }
 
 /** Builds the adapter for one spec; `fetchImpl` is the transport seam. */
@@ -89,6 +98,7 @@ export function createApiKeyAdapter(
       ...(spec.promptCache === false ? { supports_prompt_caching: false } : {}),
       ...(spec.prepareRequest ? { prepareRequest: spec.prepareRequest } : {}),
       ...(spec.prePayload ? { prePayload: spec.prePayload } : {}),
+      ...(spec.onUpstreamFailure ? { onUpstreamFailure: spec.onUpstreamFailure } : {}),
       ...(fetchImpl ? { fetchImpl } : {}),
       ...(spec.gatewayUserAgent === true ? { gateway_user_agent: true } : {}),
     }),

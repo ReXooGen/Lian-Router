@@ -65,6 +65,9 @@ export const queryKeys = {
 
     runtime: ["console", "settings", "runtime"] as const,
   },
+  tunnel: {
+    status: ["console", "tunnel"] as const,
+  },
   cliTools: {
     registry: ["console", "cli-tools", "registry"] as const,
     statuses: ["console", "cli-tools", "statuses"] as const,

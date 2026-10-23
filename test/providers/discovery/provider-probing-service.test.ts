@@ -6,6 +6,7 @@ import { createProviderProbingServiceForTests } from "../../../src/providers/dis
 import { applyDiscoveredWire, constrainWireFamily, resolveDiscoveredWire, staticEndpointForWire, supportedWireFamiliesForProvider } from "../../../src/providers/discovery/probe-wire";
 import { CLINE_MODELS } from "../../../src/providers/integrations/cline/cline";
 import { createDefaultProviderRegistry } from "../../../src/providers/default-registry";
+import { NetworkPoolSelector } from "../../../src/network/pool/selector";
 
 function probingDb(options: {
   accounts: Array<{
@@ -438,6 +439,122 @@ describe("ProviderProbingService discovery hardening", () => {
     expect(outboundBody).not.toContain("LianRouter-Probe");
   });
 
+  /** A probe that burns a pool must retire it exactly as live dispatch does. */
+  function pooledProbe(options: {
+    readonly status: number;
+    readonly body: unknown;
+    readonly contentType?: string;
+    readonly poolId?: string;
+  }) {
+    const accountRow = {
+      id: "a-probe-pool",
+      tenantId: "tenant-1",
+      providerId: "opencodeft",
+      status: "active",
+      cooldownUntil: null,
+      credentialKind: "api_key",
+      credentialCiphertext: null,
+      modelCooldowns: null,
+      consecutiveFailures: 0,
+    };
+    const db = {
+      select: (_columns?: unknown) => ({
+        from: (table: unknown) => ({
+          where: (_condition?: unknown) => {
+            const rows =
+              table === providers
+                ? [{ requiresAccount: false, compatibilityProfile: null }]
+                : table === providerAccounts
+                  ? [accountRow]
+                  : [];
+            return Object.assign(Promise.resolve(rows), {
+              limit: async (_n?: number) => rows,
+            });
+          },
+        }),
+      }),
+      update: (_table: unknown) => ({
+        set: (_values: unknown) => ({
+          where: async (_condition?: unknown) => [],
+        }),
+      }),
+      insert: (_table: unknown) => ({
+        values: async (_values: unknown) => [],
+      }),
+    };
+    const selector = new NetworkPoolSelector();
+    const probing = probingService(db, {
+      poolSelector: selector,
+      outboundFetchFor: () => ({
+        fetch: (async () =>
+          new Response(
+            typeof options.body === "string" ? options.body : JSON.stringify(options.body),
+            {
+              status: options.status,
+              headers: { "content-type": options.contentType ?? "application/json" },
+            },
+          )) as unknown as typeof fetch,
+        networkPoolId: options.poolId ?? "pool-burned",
+        release: () => {},
+      }),
+    });
+    return { probing, selector };
+  }
+
+  test("a probe that hits the free-tier limit cools that (pool, provider) pair", async () => {
+    const { probing, selector } = pooledProbe({
+      status: 429,
+      body: {
+        type: "error",
+        error: {
+          type: "FreeUsageLimitError",
+          message: "Free usage limit reached. Subscribe to OpenCode Go to keep going.",
+        },
+      },
+    });
+
+    await probing.probeModel("tenant-1", "opencodeft", { modelId: "mimo-v2.6-flash-free" });
+
+    const cooldown = await selector.isProviderCooldown("pool-burned", "opencodeft");
+    expect(cooldown.inCooldown).toBe(true);
+    // The remedy is per (pool, provider): a sibling provider on the same egress
+    // is untouched, and a sibling pool on the same provider is untouched.
+    expect((await selector.isProviderCooldown("pool-burned", "openai")).inCooldown).toBe(false);
+    expect((await selector.isProviderCooldown("pool-other", "opencodeft")).inCooldown).toBe(false);
+  });
+
+  test("a probe that fails for a non-egress reason leaves the pool alone", async () => {
+    // A 400 is the request's fault and identical on every exit; an empty 200 is
+    // the model's. Neither is evidence about the pool, so neither may sideline it.
+    for (const failure of [
+      { status: 400, body: { error: { message: "bad model id" } } },
+      { status: 200, body: { choices: [] } },
+    ] as const) {
+      const { probing, selector } = pooledProbe(failure);
+      await probing.probeModel("tenant-1", "opencodeft", { modelId: "mimo-v2.6-flash-free" });
+      const cooldown = await selector.isProviderCooldown("pool-burned", "opencodeft");
+      expect(cooldown.inCooldown).toBe(false);
+    }
+  });
+
+  test("a probe that succeeds leaves the pool alone", async () => {
+    const { probing, selector } = pooledProbe({
+      status: 200,
+      body: {
+        id: "chatcmpl-1",
+        choices: [{ message: { content: "pong" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      },
+    });
+
+    const result = await probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+    });
+
+    expect(result.ok).toBe(true);
+    expect((await selector.isProviderCooldown("pool-burned", "opencodeft")).inCooldown).toBe(false);
+  });
+
   test("registry exposes discovery capabilities for wired providers", async () => {
     const registry = createDefaultProviderRegistry();
     for (const providerId of ["openai", "cloudflare", "gemini", "openrouter", "zai"]) {
@@ -555,7 +672,7 @@ describe("applyDiscoveredWire", () => {
         resolvedEndpointPath: "/v1/chat/completions",
         discoveredWireFamily: "chat",
         discoveredEndpointPath: "/v1/chat/completions",
-        baseUrl: "https://api.inferhub.dev/v1",
+        baseUrl: "https://api.example.test/v1",
       }),
     ).toEqual({ wireFamily: "chat", endpointPath: "/chat/completions" });
     expect(
@@ -564,7 +681,7 @@ describe("applyDiscoveredWire", () => {
         resolvedEndpointPath: "/v1/responses",
         discoveredWireFamily: "responses",
         discoveredEndpointPath: "/v1/responses",
-        baseUrl: "https://api.inferhub.dev/v1",
+        baseUrl: "https://api.example.test/v1",
       }),
     ).toEqual({ wireFamily: "responses", endpointPath: "/responses" });
   });
@@ -1345,4 +1462,106 @@ describe("probe error attribution", () => {
       else process.env.LIANROUTER_UPSTREAM_TIMEOUT_MS = previous;
     }
   }, 30_000);
+});
+
+/**
+ * A probe has no client response of its own, so its recorded `http_status` and
+ * its returned `httpStatus` ARE the answer. Both used to be absent, and the
+ * console projection fills a missing `http_status` with 500 for a `failed`
+ * row — so an upstream 429 ("Free usage limit reached … Subscribe to OpenCode
+ * Go") surfaced as `Error 500`, telling the caller the gateway broke and
+ * inviting blind retries against an allowance that was simply spent.
+ */
+describe("probeModel preserves the failing status", () => {
+  const accountRow = {
+    id: "a-status",
+    tenantId: "tenant-1",
+    providerId: "openai",
+    status: "active",
+    cooldownUntil: null,
+    credentialKind: "api_key",
+    credentialCiphertext: encryptCredential("sk-test"),
+    modelCooldowns: null,
+    consecutiveFailures: 0,
+  };
+
+  /** DB double: one provider row, one usable account, no stored model row. */
+  function statusDb() {
+    return {
+      select: (_columns?: unknown) => ({
+        from: (table: unknown) => ({
+          where: (_condition?: unknown) => {
+            const rows =
+              table === providers
+                ? [{ requiresAccount: true, compatibilityProfile: null }]
+                : table === providerAccounts
+                  ? [accountRow]
+                  : [];
+            return Object.assign(Promise.resolve(rows), {
+              limit: async (_n?: number) => rows,
+            });
+          },
+        }),
+      }),
+      update: (_table: unknown) => ({ set: () => ({ where: async () => [] }) }),
+      insert: (_table: unknown) => ({ values: async () => [] }),
+    };
+  }
+
+  test("records and returns 429 for an upstream rate limit, never 500", async () => {
+    const recorded: Array<{ httpStatus?: number; status?: string; errorCategory?: string; errorOrigin?: string }> = [];
+    const probing = probingService(statusDb(), {
+      telemetryBuffer: { enqueue: (event: { httpStatus?: number; status?: string; errorCategory?: string; errorOrigin?: string }) => recorded.push(event) },
+      outboundFetchFor: () =>
+        (async () =>
+          new Response(
+            JSON.stringify({ error: { code: "FreeUsageLimitError", message: "Free usage limit reached. Subscribe to OpenCode Go to keep going" } }),
+            { status: 429, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch as never,
+    });
+
+    const result = await probing.probeModel("tenant-1", "openai", {
+      modelId: "deepseek-v4.1-flash-free",
+      wireFamily: "chat",
+    });
+
+    // The response the caller sees.
+    expect(result.ok).toBe(false);
+    expect(result.httpStatus).toBe(429);
+    expect(result.code).toBe("quota_exceeded");
+    expect(result.error ?? "").toContain("(upstream 429)");
+
+    // The telemetry row the console Request Detail reads.
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.httpStatus).toBe(429);
+    expect(recorded[0]?.status).toBe("failed");
+    expect(recorded[0]?.errorCategory).toBe("quota_exceeded");
+    expect(recorded[0]?.errorOrigin).toBe("upstream");
+  });
+
+  test("an unexpected throw still records 500 unknown_error", async () => {
+    const recorded: Array<{ httpStatus?: number; errorCategory?: string; errorOrigin?: string }> = [];
+    // A dispatch that rejects with a plain Error is a gateway-side bug, not an
+    // upstream answer: it must stay a 500 so real defects cannot masquerade as
+    // provider failures.
+    const probing = probingService(statusDb(), {
+      telemetryBuffer: { enqueue: (event: { httpStatus?: number; errorCategory?: string; errorOrigin?: string }) => recorded.push(event) },
+      outboundFetchFor: () =>
+        (async () => {
+          throw new Error("adapter exploded");
+        }) as unknown as typeof fetch as never,
+    });
+
+    const result = await probing.probeModel("tenant-1", "openai", {
+      modelId: "gpt-4o-mini",
+      wireFamily: "chat",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.httpStatus).toBe(500);
+    expect(result.code).toBe("unknown_error");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.httpStatus).toBe(500);
+    expect(recorded[0]?.errorCategory).toBe("unknown_error");
+  });
 });

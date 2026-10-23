@@ -47,16 +47,17 @@ export function isOAuthCredentialInvalidated(error: unknown): error is GatewayEr
 }
 
 /**
- * A provider-scoped 429: the pool this request dialed through is being rate
- * limited *by the upstream provider*, so the pool should cool down for that
- * provider. A bare 429 without provider scope is a request-level limit and
- * must not sideline the whole pool.
+ * A 429 whose evidence says the *egress* was limited: the provider's own
+ * capacity (`provider`) or an allowance keyed on the source address
+ * (`network`). Only then is the pool the thing to sideline — a limit attached
+ * to the credential, the account's allowance, or a model tier is not evidence
+ * about the pool at all, and cooling it sidelines healthy egress for every
+ * other request to that provider while changing nothing about the limit.
  */
 export function shouldCooldownPool(error: unknown): error is GatewayError {
-  return (
-    error instanceof GatewayError &&
-    error.origin === "upstream" &&
-    error.status === 429 &&
-    error.details.rateLimitScope === "provider"
-  );
+  if (!(error instanceof GatewayError) || error.origin !== "upstream" || error.status !== 429) {
+    return false;
+  }
+  const scope = error.details.rateLimitScope;
+  return scope === "provider" || scope === "network";
 }

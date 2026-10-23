@@ -194,6 +194,13 @@ export const CONFIG_SPEC = {
   LIANROUTER_AUTOMATION_UPSTREAM: { kind: "optional-text" },
 
   /**
+   * `cloudflared` executable used by the console's Tunnel mode. A bare name is
+   * resolved on PATH; an absolute path is used as-is, which is how a Windows
+   * install outside PATH is pointed at without editing the machine PATH.
+   */
+  LIANROUTER_CLOUDFLARED_BIN: { kind: "text", default: "cloudflared" },
+
+  /**
    * Upstream origin override for the bundled `opencodeft` provider. Unset (or
    * empty) keeps the hardcoded `https://opencode.ai` origin, which is the
    * supported path: the free gate is satisfied by the request-side fingerprint
@@ -688,4 +695,15 @@ export function resolveOpenCodeFtBaseUrl(): string | undefined {
     throw new Error("LIANROUTER_OPENCODEFT_BASE_URL must use http or https");
   }
   return parsed.toString().replace(/\/$/, "");
+}
+
+/**
+ * Resolves the `cloudflared` executable the console's Tunnel mode spawns.
+ *
+ * A bare name is looked up on PATH by the spawner; an absolute path is used
+ * verbatim, which is the supported way to point a Windows install that lives
+ * outside PATH at its binary.
+ */
+export function resolveCloudflaredBinary(): string {
+  return readText("LIANROUTER_CLOUDFLARED_BIN", CONFIG_SPEC.LIANROUTER_CLOUDFLARED_BIN);
 }

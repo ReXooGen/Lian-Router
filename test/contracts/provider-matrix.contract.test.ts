@@ -16,7 +16,6 @@ import { OPENROUTER_SPEC } from "../../src/providers/integrations/openrouter";
 import { XIAOMIPG_SPEC, XIAOMITP_SPEC } from "../../src/providers/integrations/xiaomi";
 import { ZAI_SPEC } from "../../src/providers/integrations/zai/spec";
 import { CEREBRAS_SPEC } from "../../src/providers/integrations/cerebras";
-import { createInferhubAdapter } from "../../src/providers/integrations/inferhub";
 import { createApiKeyAdapter, type ApiKeyProviderSpec } from "../../src/providers/integrations/configured-provider";
 import { GENERIC_API_KEY_SPECS } from "../../src/providers/integrations/configured-openai-providers";
 import { ClaudeAdapter } from "../../src/providers/integrations/claude-code/claude";
@@ -141,7 +140,16 @@ describe("provider matrix composition", () => {
     }
 
     for (const kind of ["api_key", "none"] as const) {
-      const adapter = createCodexAdapter({ provider_id: "codex" });
+      // Constructing a codex adapter warms the process-wide client-version
+      // cache through its transport. Inject one that fails the probe so this
+      // contract test never reaches the npm registry; the pinned fallback
+      // covers the version, and this row only asserts the credential gate.
+      const adapter = createCodexAdapter({
+        provider_id: "codex",
+        fetch: (async () => {
+          throw new Error("no transport in the credential-gate row");
+        }) as unknown as typeof fetch,
+      });
       const req = canonicalFor("responses");
       const cand = candidateFor("codex", "responses", "/backend-api/codex/responses");
       const ctx = dispatchContext("codex", {
@@ -178,8 +186,8 @@ describe("provider matrix composition", () => {
     // actually serialize (chat/responses — "messages" is intentionally not
     // declared: the shared OpenAI-compatible factory cannot build an
     // Anthropic Messages-shaped payload). The session id is stable per
-    // credential identity (the upstream accounts quota per session; minting a
-    // fresh one per dispatch burns through it); request ids stay fresh.
+    // (credential, egress) pair — it is the client handle upstream keys both
+    // cache affinity and the free allowance on — while request ids stay fresh.
     {
       _resetStableOpenCodeSessionsForTesting();
       const seenSessionIds = new Set<string>();
@@ -381,15 +389,6 @@ describe("spec-driven api-key matrix", () => {
       wire: "responses",
       path: "/responses",
       host: "api.b.ai",
-      auth: "Bearer test-secret-token",
-    },
-    {
-      name: "inferhub chat leg",
-      create: createInferhubAdapter,
-      provider: "inferhub",
-      wire: "chat",
-      path: "/chat/completions",
-      host: "api.inferhub.dev",
       auth: "Bearer test-secret-token",
     },
     {

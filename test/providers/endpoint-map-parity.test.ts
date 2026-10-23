@@ -26,7 +26,23 @@ describe("registry endpoint map ↔ model catalog parity", () => {
     // A new entry here is a deliberate act: it means the provider declares its
     // paths twice and this test now guards the pair.
     expect(entries.map(([id]) => id).sort()).toEqual(
-      ["anthropic", "browseruse", "cerebras", "ollamacloud", "openai", "opencodeft", "opencodego", "opencodezen"].sort(),
+      [
+        "anthropic",
+        "browseruse",
+        "cerebras",
+        "cloudflare",
+        "minimax",
+        "minimax-cn",
+        "minimax-code",
+        "minimax-code-global",
+        "ollamacloud",
+        "openai",
+        "opencodeft",
+        "opencodego",
+        "opencodezen",
+        "perplexity",
+        "perplexity-agent",
+      ].sort(),
     );
   });
 

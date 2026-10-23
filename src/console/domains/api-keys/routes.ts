@@ -9,7 +9,7 @@ import { hashShareToken } from "../../../persistence/share-store";
 import type { AccessDecision } from "../../../security/access-control";
 import { ConsoleDomainError, errorResponse, requireTenantScope } from "../../shared/errors";
 import { literalUnion } from "../../shared/elysia-schema";
-import { resolvePublicBaseUrl } from "../../../config";
+import { resolveEffectivePublicBaseUrl } from "../../../runtime/public-base-url";
 import { API_KEY_MODES } from "../../../persistence/schema";
 import type { ApiKeyConfig, ApiKeyResponse, RevealApiKeyResponse, UpdateApiKeyResponse } from "./contracts";
 import type { ApiKeyPatch, ApiKeyRecord } from "../../../persistence/api-key-store";
@@ -24,6 +24,7 @@ import {
   resolveKeyPrefix,
   prepareCustomKey,
   mapShareLinkResponse,
+  resolveNetworkPoolBinding,
   type ShareKeyResponse,
   type ShareLinkResponse,
 } from "./contracts";
@@ -92,6 +93,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       const authorized = requireTenantScope(access, "dashboard:write");
       const scopes = validateApiKeyRequest(request);
       const keyMode = request.keyMode ?? "personal";
+      const networkPoolId = await resolveNetworkPoolBinding(
+        config.poolLookup,
+        authorized.tenantId,
+        request.networkPoolId,
+      );
       const generated =
         keyMode === "personal"
           ? request.key === undefined
@@ -119,6 +125,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(request.providerAllowlist === undefined ? {} : { providerAllowlist: request.providerAllowlist }),
         ...(request.modelAllowlist === undefined ? {} : { modelAllowlist: request.modelAllowlist }),
         ...(request.modelDenylist === undefined ? {} : { modelDenylist: request.modelDenylist }),
+        ...(typeof networkPoolId === "string" ? { networkPoolId } : {}),
         createdAt: new Date(),
         tokensConsumed: 0,
       };
@@ -157,6 +164,11 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       finitePositive(patchRequest.monthlyTokenLimit, "monthlyTokenLimit");
       finitePositive(patchRequest.lifetimeTokenBudget, "lifetimeTokenBudget");
       finitePositive(patchRequest.maxConcurrentRequests, "maxConcurrentRequests");
+      const networkPoolId = await resolveNetworkPoolBinding(
+        config.poolLookup,
+        authorized.tenantId,
+        patchRequest.networkPoolId,
+      );
 
       const nextMode = patchRequest.keyMode ?? current.keyMode;
       const modeChanged = nextMode !== current.keyMode;
@@ -220,6 +232,7 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
         ...(patchRequest.providerAllowlist === undefined ? {} : { providerAllowlist: patchRequest.providerAllowlist }),
         ...(patchRequest.modelAllowlist === undefined ? {} : { modelAllowlist: patchRequest.modelAllowlist }),
         ...(patchRequest.modelDenylist === undefined ? {} : { modelDenylist: patchRequest.modelDenylist }),
+        ...(networkPoolId === undefined ? {} : { networkPoolId }),
       });
       if (!updated) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
 
@@ -297,9 +310,10 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       });
       // A gateway behind a tunnel or reverse proxy sees the proxy's own
       // address in `request.url`, so a link built from it points at
-      // `http://127.0.0.1:12800` and works for nobody. The configured public
-      // base URL wins when present; otherwise the request origin is used.
-      const origin = (resolvePublicBaseUrl() ?? options.origin ?? "").replace(/\/$/, "");
+      // `http://127.0.0.1:12800` and works for nobody. A tunnel started from
+      // the console wins, then the configured public base URL, then the
+      // request origin.
+      const origin = (resolveEffectivePublicBaseUrl() ?? options.origin ?? "").replace(/\/$/, "");
       return {
         id: link.id,
         url: `${origin}/share/${token}`,
@@ -396,6 +410,8 @@ const apiKeyBody = t.Object({
   providerAllowlist: t.Optional(t.Array(t.String())),
   modelAllowlist: t.Optional(t.Array(t.String())),
   modelDenylist: t.Optional(t.Array(t.String())),
+  // Nullable so a PATCH can detach the binding; omitted leaves it alone.
+  networkPoolId: t.Optional(t.Union([t.String(), t.Null()])),
   notesTitle: t.Optional(t.String()),
   notesSubtitle: t.Optional(t.String()),
   notesBody: t.Optional(t.String()),

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createApiKeyOperations } from "../../../src/console/domains/api-keys/routes";
 import { ConsoleDomainError } from "../../../src/console/shared/errors";
 import type { ApiKeyRecord, ApiKeyStore } from "../../../src/persistence/api-key-store";
@@ -6,6 +6,8 @@ import type { ShareLinkStore, ShareLinkSummary } from "../../../src/persistence/
 import { decryptCredentialToString, setCredentialEncryptionKeyForTesting } from "../../../src/security/crypto";
 import { createAccessDecision } from "../../../src/security/access-control";
 import type { ShareActivityPort } from "../../../src/console/share/share-usage";
+import type { NetworkPoolRecord } from "../../../src/console/routing/pools/contracts";
+import { getRuntimePublicBaseUrl, setRuntimePublicBaseUrl } from "../../../src/runtime/public-base-url";
 
 /** In-memory API-key store covering only what these operations exercise. */
 function fakeKeyStore() {
@@ -94,6 +96,35 @@ function fakeAdmission() {
   return { purgeKey: async () => {} };
 }
 
+/** One tenant pool as the key domain sees it: enough to validate a binding. */
+function poolRecord(
+  id: string,
+  tenantId: string,
+  status: NetworkPoolRecord["status"] = "active",
+): NetworkPoolRecord {
+  return {
+    id,
+    tenantId,
+    kind: "http",
+    endpoint: "http://127.0.0.1:8080",
+    maxInflight: 10,
+    weight: 100,
+    status,
+    inflight: 0,
+    consecutiveFailures: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+/** Tenant-scoped pool read, so a foreign id misses exactly as the real store does. */
+function fakePoolLookup(pools: readonly NetworkPoolRecord[] = []) {
+  return {
+    async get(tenantId: string, poolId: string): Promise<NetworkPoolRecord | undefined> {
+      return pools.find((pool) => pool.id === poolId && pool.tenantId === tenantId);
+    },
+  };
+}
+
 const writer = createAccessDecision({
   id: "user-1",
   tenantId: "tenant-1",
@@ -117,7 +148,7 @@ afterAll(() => {
 describe("api-key operations", () => {
   test("stores the issued key encrypted so it can be shared later", async () => {
     const { store, records } = fakeKeyStore();
-    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission(), poolLookup: fakePoolLookup() });
 
     const created = await operations.createKey(writer, { label: "ci-key", keyPrefix: "ctk_" });
     const secret = created.secret;
@@ -134,7 +165,7 @@ describe("api-key operations", () => {
 
   test("reveals a personal key's stored secret to a writer", async () => {
     const { store } = fakeKeyStore();
-    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission(), poolLookup: fakePoolLookup() });
 
     const created = await operations.createKey(writer, { label: "revealable", keyPrefix: "ctk_" });
     const secret = created.secret;
@@ -148,7 +179,7 @@ describe("api-key operations", () => {
 
   test("refuses to reveal for a read-only scope", async () => {
     const { store } = fakeKeyStore();
-    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission(), poolLookup: fakePoolLookup() });
     const created = await operations.createKey(writer, { label: "scope-check" });
 
     // Reading a credential back is a privileged act; listing is not enough.
@@ -157,7 +188,7 @@ describe("api-key operations", () => {
 
   test("refuses to reveal a share template, which has no recoverable copy", async () => {
     const { store } = fakeKeyStore();
-    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission(), poolLookup: fakePoolLookup() });
     const template = await operations.createKey(writer, { label: "template", keyMode: "share" });
 
     await expect(operations.revealKey(writer, template.id)).rejects.toThrow(
@@ -167,7 +198,7 @@ describe("api-key operations", () => {
 
   test("reports a missing recoverable copy instead of an empty secret", async () => {
     const { store, records } = fakeKeyStore();
-    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission(), poolLookup: fakePoolLookup() });
     const created = await operations.createKey(writer, { label: "legacy" });
     // Simulate a row written before `key_encrypted` existed.
     const row = records.get(created.id);
@@ -184,7 +215,7 @@ describe("api-key operations", () => {
     const operations = createApiKeyOperations({
       store,
       accessResolver: () => writer,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const created = await operations.createKey(writer, { label: "prefix-rotation" });
     const oldHash = records.get(created.id)?.keyHash;
@@ -200,7 +231,7 @@ describe("api-key operations", () => {
     const operations = createApiKeyOperations({
       store,
       accessResolver: () => writer,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
 
     const created = await operations.createKey(writer, { label: "shared", keyMode: "share" });
@@ -251,7 +282,7 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareActivity,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const selectedParent = await operations.createKey(writer, { keyMode: "share" });
     const otherParent = await operations.createKey(writer, { keyMode: "share" });
@@ -277,26 +308,69 @@ describe("api-key operations", () => {
     expect(detailReads).toBe(0);
   });
 
-  test("mints an enrollment link only for a share template", async () => {
-    const { store, records } = fakeKeyStore();
-    const { shareStore, created } = fakeShareStore();
-    const operations = createApiKeyOperations({
-      store,
-      accessResolver: () => writer,
-      shareStore,
-      admissionService: fakeAdmission(),
+  describe("enrollment link origin", () => {
+    const ENV = "LIANROUTER_PUBLIC_BASE_URL";
+    let ambientEnv: string | undefined;
+    let ambientRuntime: string | null;
+
+    // The minted link reads process.env at call time, so `.env` autoloading
+    // would silently outrank the request origin. Pin both inputs to a known
+    // state and hand the ambient values back so this file leaks nothing.
+    beforeEach(() => {
+      ambientEnv = process.env[ENV];
+      ambientRuntime = getRuntimePublicBaseUrl();
+      delete process.env[ENV];
+      setRuntimePublicBaseUrl(null);
     });
 
-    const key = await operations.createKey(writer, { label: "shared", keyMode: "share" });
-    expect(records.has(key.id)).toBe(true);
-    const link = await operations.shareKey(writer, key.id, {
-      origin: "https://gateway.test/",
+    afterEach(() => {
+      if (ambientEnv === undefined) delete process.env[ENV];
+      else process.env[ENV] = ambientEnv;
+      setRuntimePublicBaseUrl(ambientRuntime);
     });
-    expect(link.url).toBe(`https://gateway.test/share/${link.token}`);
-    expect(link.kind).toBe("enroll");
-    expect(created).toHaveLength(1);
-    expect(created[0]?.tokenHash).not.toBe(link.token);
-    expect(created[0]?.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+
+    test("mints an enrollment link on the configured public base URL", async () => {
+      process.env[ENV] = "https://configured.example.com/";
+      const { store, records } = fakeKeyStore();
+      const { shareStore, created } = fakeShareStore();
+      const operations = createApiKeyOperations({
+        store,
+        accessResolver: () => writer,
+        shareStore,
+        admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
+      });
+
+      const key = await operations.createKey(writer, { label: "shared", keyMode: "share" });
+      expect(records.has(key.id)).toBe(true);
+      const link = await operations.shareKey(writer, key.id, {
+        origin: "https://gateway.test/",
+      });
+      expect(link.url).toBe(`https://configured.example.com/share/${link.token}`);
+      expect(link.kind).toBe("enroll");
+      expect(created).toHaveLength(1);
+    });
+
+    test("mints an enrollment link on the request origin when no base URL is configured", async () => {
+      const { store, records } = fakeKeyStore();
+      const { shareStore, created } = fakeShareStore();
+      const operations = createApiKeyOperations({
+        store,
+        accessResolver: () => writer,
+        shareStore,
+        admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
+      });
+
+      const key = await operations.createKey(writer, { label: "shared", keyMode: "share" });
+      expect(records.has(key.id)).toBe(true);
+      const link = await operations.shareKey(writer, key.id, {
+        origin: "https://gateway.test/",
+      });
+      expect(link.url).toBe(`https://gateway.test/share/${link.token}`);
+      expect(link.kind).toBe("enroll");
+      expect(created).toHaveLength(1);
+      expect(created[0]?.tokenHash).not.toBe(link.token);
+      expect(created[0]?.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+    });
   });
 
   test("does not allow personal authentication keys to create enrollment links", async () => {
@@ -305,7 +379,7 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareStore: fakeShareStore().shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const personal = await operations.createKey(writer, { label: "personal" });
     await expect(operations.shareKey(writer, personal.id)).rejects.toMatchObject({
@@ -319,7 +393,7 @@ describe("api-key operations", () => {
     const operations = createApiKeyOperations({
       store,
       accessResolver: () => writer,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const personal = await operations.createKey(writer, { label: "convertible" });
     const template = await operations.updateKey(writer, personal.id, { keyMode: "share" });
@@ -343,14 +417,14 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => reader,
       shareStore: fakeShareStore().shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     await expect(operations.shareKey(reader, "key-1")).rejects.toBeInstanceOf(ConsoleDomainError);
   });
 
   test("reports 501 when share persistence is not configured", async () => {
     const { store } = fakeKeyStore();
-    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission() });
+    const operations = createApiKeyOperations({ store, accessResolver: () => writer, admissionService: fakeAdmission(), poolLookup: fakePoolLookup() });
 
     await expect(operations.shareKey(writer, "key-1")).rejects.toMatchObject({ status: 501 });
   });
@@ -361,7 +435,7 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareStore: fakeShareStore().shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
 
     await expect(operations.shareKey(writer, "missing")).rejects.toMatchObject({ status: 404 });
@@ -374,7 +448,7 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareStore: share.shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const key = await operations.createKey(writer, { label: "shared", keyMode: "share" });
     share.setLinks([
@@ -408,7 +482,7 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareStore: fakeShareStore().shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     await expect(operations.listShares(writer, "missing")).rejects.toMatchObject({ status: 404 });
   });
@@ -420,7 +494,7 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareStore: share.shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const key = await operations.createKey(writer, { label: "shared", keyMode: "share" });
     share.setLinks([
@@ -448,11 +522,97 @@ describe("api-key operations", () => {
       store,
       accessResolver: () => writer,
       shareStore: fakeShareStore().shareStore,
-      admissionService: fakeAdmission(),
+      admissionService: fakeAdmission(), poolLookup: fakePoolLookup(),
     });
     const key = await operations.createKey(writer, { label: "shared" });
     await expect(operations.revokeShare(writer, key.id, "missing")).rejects.toMatchObject({
       status: 404,
     });
+  });
+});
+
+describe("api-key egress binding", () => {
+  const ownPool = poolRecord("pool-own", "tenant-1");
+  const foreignPool = poolRecord("pool-foreign", "tenant-2");
+  const disabledPool = poolRecord("pool-disabled", "tenant-1", "disabled");
+
+  function operationsWith(pools: readonly NetworkPoolRecord[]) {
+    const { store, records } = fakeKeyStore();
+    return {
+      records,
+      operations: createApiKeyOperations({
+        store,
+        accessResolver: () => writer,
+        admissionService: fakeAdmission(),
+        poolLookup: fakePoolLookup(pools),
+      }),
+    };
+  }
+
+  test("persists a pool the caller's tenant owns and reports it back", async () => {
+    const { operations, records } = operationsWith([ownPool]);
+    const created = await operations.createKey(writer, { label: "pinned", networkPoolId: ownPool.id });
+
+    expect(created.networkPoolId).toBe(ownPool.id);
+    expect(records.get(created.id)?.networkPoolId).toBe(ownPool.id);
+  });
+
+  test("rejects an unknown pool id", async () => {
+    const { operations, records } = operationsWith([ownPool]);
+    await expect(
+      operations.createKey(writer, { label: "typo", networkPoolId: "pool-does-not-exist" }),
+    ).rejects.toMatchObject({ code: "network_pool_not_found", status: 400 });
+    expect(records.size).toBe(0);
+  });
+
+  test("rejects another tenant's pool rather than binding to it", async () => {
+    // The lookup is tenant-scoped, so a foreign id misses exactly like an
+    // unknown one. Binding it would route this tenant's key out through an
+    // address another tenant controls.
+    const { operations, records } = operationsWith([ownPool, foreignPool]);
+    await expect(
+      operations.createKey(writer, { label: "foreign", networkPoolId: foreignPool.id }),
+    ).rejects.toMatchObject({ code: "network_pool_not_found", status: 400 });
+    expect(records.size).toBe(0);
+  });
+
+  test("rejects a pool that is not active", async () => {
+    const { operations, records } = operationsWith([disabledPool]);
+    await expect(
+      operations.createKey(writer, { label: "inactive", networkPoolId: disabledPool.id }),
+    ).rejects.toMatchObject({ code: "network_pool_inactive", status: 409 });
+    expect(records.size).toBe(0);
+  });
+
+  test("clearing with null detaches the binding and leaves it alone when omitted", async () => {
+    const { operations, records } = operationsWith([ownPool]);
+    const created = await operations.createKey(writer, { label: "pinned", networkPoolId: ownPool.id });
+
+    // Omitting the field on a patch must not silently drop the binding.
+    const relabelled = await operations.updateKey(writer, created.id, { label: "renamed" });
+    expect(relabelled.networkPoolId).toBe(ownPool.id);
+
+    const cleared = await operations.updateKey(writer, created.id, { networkPoolId: null });
+    expect(cleared.networkPoolId).toBeUndefined();
+    expect(records.get(created.id)?.networkPoolId).toBeUndefined();
+  });
+
+  test("a share template carries its pool so children inherit it", async () => {
+    const { operations, records } = operationsWith([ownPool]);
+    const template = await operations.createKey(writer, {
+      label: "template",
+      keyMode: "share",
+      networkPoolId: ownPool.id,
+    });
+
+    expect(template.keyMode).toBe("share");
+    expect(records.get(template.id)?.networkPoolId).toBe(ownPool.id);
+  });
+
+  test("rejects a non-string pool id before it reaches the lookup", async () => {
+    const { operations } = operationsWith([ownPool]);
+    await expect(
+      operations.createKey(writer, { label: "bad", networkPoolId: "  " }),
+    ).rejects.toMatchObject({ code: "invalid_network_pool", status: 400 });
   });
 });

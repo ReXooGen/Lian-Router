@@ -13,6 +13,7 @@ import { mapChatStopReason } from "../../protocol/response/chat";
 import type { ProviderDispatchTarget, ModelDefinition, ProviderAdapter, ProviderDispatchContext } from "../provider-registry";
 import { fetchOpenAICompatibleModels } from "../discovery/openai-model-discovery";
 import { providerBaseUrl } from "../provider-metadata";
+import { defineModel } from "../model-definition";
 import type { DiscoveryInput } from "../discovery/discovery-types";
 
 export const CLOUDFLARE_PROVIDER_ID = "cloudflare" as const;
@@ -192,7 +193,38 @@ export async function discoverCloudflareModels(input: DiscoveryInput): Promise<r
   if (!accountId || !apiKey) return null;
   return fetchOpenAICompatibleModels({
     baseUrl: `${providerBaseUrl("cloudflare")}/${accountId}/ai/v1`,
+    providerId: "cloudflare",
     headers: { authorization: `Bearer ${apiKey}` },
     ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.fetcher ? { fetcher: input.fetcher } : {}),
   });
 }
+
+/**
+ * Cloudflare Workers AI static catalog.
+ *
+ * These rows are what keep the provider usable before a live Sync: discovery
+ * needs a `{apiKey, accountId}` credential, so an offline, first-run, or
+ * probe-only path previously saw an empty provider. Paths are root-relative
+ * because the adapter builds `…/accounts/{accountId}/ai/v1` itself.
+ *
+ * The upstream roster also lists one `systemone` id (`@cf/cloudflare/clef-flash`,
+ * a routing decision model) and eleven image-generation ids; this gateway has
+ * no wire family for either, so they are absent rather than registered as
+ * `chat` rows dispatch would reject.
+ */
+export const CLOUDFLARE_MODELS: readonly ModelDefinition[] = [
+  defineModel({ id: "@cf/meta/llama-3.2-1b-instruct", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/meta/llama-3.2-3b-instruct", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/meta/llama-3.1-8b-instruct-awq", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/mistralai/mistral-small-3.1-24b-instruct", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/meta/llama-3.1-70b-instruct-fp8-fast", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", providerId: "cloudflare", endpoint: "/chat/completions" }),
+  defineModel({ id: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", providerId: "cloudflare", endpoint: "/chat/completions", reasoning: true }),
+  defineModel({ id: "@cf/moonshotai/kimi-k2.5", providerId: "cloudflare", endpoint: "/chat/completions", vision: true, reasoning: true }),
+  defineModel({ id: "@cf/moonshotai/kimi-k2.6", providerId: "cloudflare", endpoint: "/chat/completions", vision: true, reasoning: true }),
+  defineModel({ id: "@cf/zai-org/glm-4.7-flash", providerId: "cloudflare", endpoint: "/chat/completions", reasoning: true }),
+  defineModel({ id: "@cf/qwen/qwq-32b", providerId: "cloudflare", endpoint: "/chat/completions", reasoning: true }),
+  defineModel({ id: "@cf/qwen/qwen2.5-coder-32b-instruct", providerId: "cloudflare", endpoint: "/chat/completions" }),
+];

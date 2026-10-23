@@ -65,6 +65,14 @@ export interface ProbeModelResult {
   ttfbMs?: number;
   sample?: string;
   statusCode?: number;
+  /**
+   * HTTP status this probe outcome stands for: 200 on success, otherwise the
+   * failing error's own status (an upstream 429 stays 429). The single-probe
+   * route answers with it so the caller is never told "500" for a rate limit.
+   */
+  httpStatus: number;
+  /** Failure category (`GatewayError` code); absent on success. */
+  code?: string;
   error?: string;
 }
 

@@ -12,6 +12,10 @@ export const TOKENHARBOR_FALLBACK_MODELS: readonly ModelDefinition[] = [
   defineModel({ id: "th-orchestra", providerId: "tokenharbor", reasoning: true, vision: true }),
   defineModel({ id: "claude-sonnet-4.6", providerId: "tokenharbor", reasoning: true, vision: true }),
   defineModel({ id: "claude-opus-5", providerId: "tokenharbor", ctx: 1_000_000, reasoning: true, vision: true }),
+  // Upstream lists this as its own id alongside `claude-opus-5`; limits are
+  // left to the catalog fallback because the published list states ids only.
+  defineModel({ id: "claude-opus-5.5", providerId: "tokenharbor", reasoning: true, vision: true }),
+  defineModel({ id: "gpt-6-sol", providerId: "tokenharbor", reasoning: true, vision: true }),
   defineModel({ id: "claude-sonnet-5", providerId: "tokenharbor", ctx: 1_000_000, reasoning: true, vision: true }),
   defineModel({ id: "grok-4.6", providerId: "tokenharbor", ctx: 500_000, reasoning: true, vision: true }),
   defineModel({ id: "glm-5.3", providerId: "tokenharbor", ctx: 200_000, reasoning: true }),

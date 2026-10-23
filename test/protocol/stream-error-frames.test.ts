@@ -29,8 +29,9 @@ describe("gatewayErrorFromStreamError", () => {
     for (const type of ["rate_limit_exceeded", "rate_limit_error", "insufficient_quota", "usage_limit_reached"]) {
       const error = classify({ type, message: "slow down" });
       expect(error).toMatchObject({ code: "quota_exceeded", status: 429, origin: "upstream" });
-      // A provider-scoped limit is what cools the pool down.
-      expect(error.details["rateLimitScope"]).toBe("provider");
+      // These identifiers name the caller's allowance, so they must not sideline
+      // the egress pool: another account can have room, another address cannot.
+      expect(error.details["rateLimitScope"]).toBe("account");
     }
   });
 

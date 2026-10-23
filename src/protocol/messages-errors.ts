@@ -8,12 +8,14 @@
  * credential evidence.
  */
 import { GatewayError } from "../transport/gateway-error";
-import { extractUpstreamMessage, statusToGatewayErrorCode, upstreamRequestId } from "../transport/failure-policy";
+import { classifyRateLimitScope, extractUpstreamMessage, statusToGatewayErrorCode, upstreamRequestId } from "../transport/failure-policy";
 import { isRecord } from "./primitives";
 
 interface ClaudeErrorExtras {
   readonly providerCode?: string;
   readonly requestId?: string;
+  /** Parsed error envelope, read for structured identifiers only. */
+  readonly body?: unknown;
 }
 
 /** Shared status→code classification for both the HTTP and SSE error paths. */
@@ -27,7 +29,19 @@ function claudeErrorFromStatus(
     ...(extras.providerCode ? { providerCode: extras.providerCode } : {}),
     ...(extras.requestId ? { upstreamRequestId: extras.requestId } : {}),
     raw: message,
-    ...(status === 429 ? { rateLimitScope: "provider" } : {}),
+    // A Claude-wire 429 names the account's own allowance in `error.type`
+    // (`rate_limit_error`, `insufficient_quota`) far more often than it names
+    // provider capacity, so the scope comes from the same evidence rule the
+    // HTTP mapper uses rather than a blanket "provider".
+    ...(status === 429
+      ? {
+          rateLimitScope: classifyRateLimitScope({
+            status,
+            ...(extras.providerCode === undefined ? {} : { providerCode: extras.providerCode }),
+            ...(extras.body === undefined ? {} : { body: extras.body }),
+          }),
+        }
+      : {}),
     ...(status === 401 || status === 403 ? { credentialEvidence: true } : {}),
   };
   const code = statusToGatewayErrorCode(status);
@@ -70,6 +84,7 @@ export function mapClaudeHttpError(status: number, body: string, headers?: Heade
   return claudeErrorFromStatus(status, message, {
     ...(providerCode ? { providerCode } : {}),
     ...(requestId ? { requestId } : {}),
+    ...(parsedBody === undefined ? {} : { body: parsedBody }),
   });
 }
 
@@ -91,5 +106,6 @@ export function mapClaudeStreamError(error: unknown, headers?: Headers): Gateway
   return claudeErrorFromStatus(status, message.slice(0, 500), {
     ...(providerCode ? { providerCode } : {}),
     ...(requestId ? { requestId } : {}),
+    ...(isRecord(error) ? { body: error } : {}),
   });
 }

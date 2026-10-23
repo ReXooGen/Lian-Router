@@ -102,6 +102,7 @@ export type {
   RuntimeSettingsResponse,
   UpdateRuntimeSettingsRequest,
 } from "../../../src/console/settings/contracts";
+export type { TunnelStatus } from "../../../src/console/tunnel/contracts";
 
 export type { RedisMode } from "../../../src/persistence/readiness";
 

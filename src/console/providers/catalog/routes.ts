@@ -207,12 +207,17 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
     .post(
       "/:providerId/models/probe",
       { body: probeModelBody },
-      async ({ request, params, body }) => {
-        return await modelFactory.probeModel(
+      async ({ request, params, body, set }) => {
+        const result = await modelFactory.probeModel(
           config.accessResolver(request),
           params.providerId,
           body as ProbeModelRequest,
         );
+        // The probe result IS this endpoint's response body, so its status is
+        // the honest answer: an upstream 429 must reach the caller as a 429,
+        // not as a generic 500 that blames the gateway.
+        set.status = result.httpStatus;
+        return result;
 },
     )
     .post("/:providerId/models/test-models", async ({ request, params }) => {

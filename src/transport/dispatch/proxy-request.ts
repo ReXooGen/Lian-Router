@@ -138,6 +138,7 @@ export async function handleProviderProxyRequest(
       estimatedInputTokens: prepared.estimatedInputTokens,
       estimatedOutputTokens: prepared.estimatedOutputTokens,
       authorizationSnapshot: prepared.authorization.snapshot,
+      networkPoolId: prepared.authorization.snapshot.network_pool_id ?? undefined,
     },
     candidates,
     tenantId: prepared.authorization.tenantId,
@@ -216,6 +217,7 @@ export async function handleProviderProxyRequest(
           deadline: state.deadlineMs,
           signal: state.abortController.signal,
           headers: inboundHeaders,
+          ...(networkPoolId ? { networkPoolId } : {}),
           ...(wrappedOutboundFetch ? { outboundFetch: wrappedOutboundFetch } : {}),
         });
         // `ProviderAdapter.dispatch` is declared to return a non-nullable
@@ -746,6 +748,7 @@ export async function handleProviderProxyRequest(
         deadline: state.deadlineMs,
         signal: state.abortController.signal,
         headers: inboundHeaders,
+        ...(networkPoolId ? { networkPoolId } : {}),
         ...(deps.networkBindingFactory
           ? {
               outboundFetch: captureProviderExchange(

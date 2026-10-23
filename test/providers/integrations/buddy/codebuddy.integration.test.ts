@@ -306,9 +306,8 @@ describe("CodeBuddy adapter contracts", () => {
   });
 
   test("catalogs match the current CodeBuddy provider split", () => {
-    expect(CODEBUDDY_MODELS).toHaveLength(26);
-    expect(CODEBUDDY_MODELS).toHaveLength(26);
-    expect(CODEBUDDY_CN_MODELS).toHaveLength(12);
+    expect(CODEBUDDY_MODELS).toHaveLength(35);
+    expect(CODEBUDDY_CN_MODELS).toHaveLength(14);
     expect(CODEBUDDY_MODELS.some((model) => model.modelId === "deepseek-v4.1-flash")).toBe(true);
     expect(CODEBUDDY_MODELS.some((model) => model.modelId === "glm-5.3")).toBe(true);
     expect(CODEBUDDY_CN_MODELS.some((model) => model.modelId === "glm-5.3-flash")).toBe(true);

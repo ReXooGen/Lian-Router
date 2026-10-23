@@ -56,6 +56,9 @@ import { resolveCredentialForAccount } from "../operations/provider-credential-s
 import { decryptCredentialToString } from "../../security/crypto";
 import { GatewayError } from "../../transport/gateway-error";
 import { classifyUpstreamFailure } from "../../transport/failure-policy";
+import { shouldCooldownPool, isPoolConnectFailure } from "../../transport/dispatch/retry-policy";
+import { flagPoolCooldown } from "../../network/pool-health";
+import type { NetworkPoolSelector } from "../../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { computeTokensPerSec } from "../../observability/token-speed";
 import { resolveUpstreamTimeoutMs } from "../../config";
@@ -91,6 +94,12 @@ interface ProviderProbingDeps {
   readonly outboundFetchFor: ProbeOutboundResolver;
   readonly snapshotInvalidator: { invalidate(): unknown };
   readonly providerRegistry: ProviderRegistry;
+  /**
+   * The same selector live dispatch flags, so a probe that burns an egress
+   * retires it instead of leaving it selectable. Absent only where no pool can
+   * be acquired at all (a service constructed without pooling).
+   */
+  readonly poolSelector?: NetworkPoolSelector | undefined;
 }
 
 interface ProviderProbingTestDeps {
@@ -101,6 +110,7 @@ interface ProviderProbingTestDeps {
   readonly outboundFetchFor?: ProbeOutboundResolver;
   readonly snapshotInvalidator?: { invalidate(): unknown };
   readonly providerRegistry?: ProviderRegistry;
+  readonly poolSelector?: NetworkPoolSelector;
 }
 
 export function createProviderProbingServiceForTests(deps: ProviderProbingTestDeps): ProviderProbingService {
@@ -120,6 +130,7 @@ export function createProviderProbingServiceForTests(deps: ProviderProbingTestDe
       (() => ({ fetch: (async () => new Response("{}", { status: 500 })) as ValidatedOutboundFetch })),
     snapshotInvalidator: deps.snapshotInvalidator ?? { invalidate: () => 0 },
     providerRegistry: deps.providerRegistry ?? createDefaultProviderRegistry(),
+    ...(deps.poolSelector ? { poolSelector: deps.poolSelector } : {}),
   });
 }
 
@@ -147,6 +158,7 @@ export class ProviderProbingService {
   private readonly outboundFetchFor: ProbeOutboundResolver;
   private readonly snapshotInvalidator: { invalidate(): unknown };
   private readonly providerRegistry: ProviderRegistry;
+  private readonly poolSelector: NetworkPoolSelector | undefined;
 
   constructor(deps: ProviderProbingDeps) {
     this.db = deps.db;
@@ -157,6 +169,7 @@ export class ProviderProbingService {
     this.outboundFetchFor = deps.outboundFetchFor;
     this.snapshotInvalidator = deps.snapshotInvalidator;
     this.providerRegistry = deps.providerRegistry;
+    this.poolSelector = deps.poolSelector;
   }
 
   /**
@@ -225,7 +238,16 @@ export class ProviderProbingService {
       requiresAccount,
     });
     if (!account.ok) {
-      return { ok: false, latencyMs: Date.now() - startedAt, error: account.error };
+      // No usable credential is the catalog's `accounts_unavailable` (503), not
+      // a gateway fault: nothing was dispatched and the caller can fix it by
+      // adding or recovering an account.
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        httpStatus: 503,
+        code: "accounts_unavailable",
+        error: account.error,
+      };
     }
 
     const adapter = await resolveProbeAdapter({
@@ -234,9 +256,13 @@ export class ProviderProbingService {
       providerWireRow,
     });
     if (!adapter) {
+      // A provider with no registered adapter is our own wiring gap, so this
+      // stays a 500 — the one class of probe failure that should.
       return {
         ok: false,
         latencyMs: Date.now() - startedAt,
+        httpStatus: 500,
+        code: "internal_error",
         error: `No adapter registered for provider ${providerId}`,
       };
     }
@@ -312,6 +338,7 @@ export class ProviderProbingService {
               abort_signal: probeSignal,
               outbound_fetch: probeFetch,
               probe_marker: LIANROUTER_PROBE_MARKER,
+              ...(attemptPoolId ? { network_pool_id: attemptPoolId } : {}),
             })) {
               if (ttfbMs === undefined) ttfbMs = Date.now() - startedAt;
               events.push(event);
@@ -349,6 +376,28 @@ export class ProviderProbingService {
       }
       networkPoolId = attemptPoolId;
 
+      // A probe that burned this egress must retire it exactly as live dispatch
+      // does, or the (pool, provider) pair stays marked healthy and keeps being
+      // handed out — which is how probe traffic spent a set of addresses while
+      // client traffic never saw a 429. Same predicate set as the attempt loop:
+      // an egress-scoped or provider-capacity 429, or a failed CONNECT tunnel.
+      // A bad model id, empty content, deadline, or 400 says nothing about the
+      // pool and must not sideline it.
+      if (
+        this.poolSelector &&
+        attemptPoolId &&
+        dispatchError !== undefined &&
+        (shouldCooldownPool(dispatchError) || isPoolConnectFailure(dispatchError))
+      ) {
+        flagPoolCooldown(
+          this.poolSelector,
+          this.db,
+          attemptPoolId,
+          providerId,
+          dispatchError,
+        );
+      }
+
       const attemptStatus =
         dispatchError instanceof GatewayError && typeof dispatchError.details.upstreamStatus === "number"
           ? dispatchError.details.upstreamStatus
@@ -374,7 +423,7 @@ export class ProviderProbingService {
         : undefined;
 
     const latencyMs = Date.now() - startedAt;
-    const { ok, errorMessage, usage } = computeProbeVerdict({
+    const { ok, errorMessage, usage, httpStatus, code, origin } = computeProbeVerdict({
       events,
       dispatchError,
       providerId,
@@ -408,8 +457,12 @@ export class ProviderProbingService {
       latencyMs,
       ...(ttfbMs !== undefined ? { ttfbMs } : {}),
       stream: capturedRequest.stream,
+      // The probe's outcome IS the response: a 429 from upstream stays a 429 in
+      // the console instead of the `failed`→500 default. Without this column a
+      // rate limit read as "the gateway broke" and invited blind retries.
+      httpStatus,
       status: ok ? "completed" : "failed",
-      ...(ok ? {} : { errorCategory: errorMessage ?? "probe_failed" }),
+      ...(ok ? {} : { errorCategory: code ?? "unknown_error", errorOrigin: origin ?? "gateway" }),
       ...(usage ? { usage } : {}),
       ...(tokensPerSec !== undefined ? { tokensPerSec } : {}),
     });
@@ -431,6 +484,8 @@ export class ProviderProbingService {
       ...(accountId ? { accountId } : {}),
       ok,
       latencyMs,
+      httpStatus,
+      ...(code === undefined ? {} : { code }),
       ...(ttfbMs !== undefined ? { ttfbMs } : {}),
       ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
       ...(sample ? { sample } : {}),

@@ -219,6 +219,7 @@ CREATE TABLE "api_keys" (
   "model_allowlist" jsonb,
   "model_denylist" jsonb,
   "model_prefix" text,
+  "network_pool_id" uuid,
   "created_at" timestamptz DEFAULT now() NOT NULL,
   "revoked_at" timestamptz,
   "key_prefix" text,
@@ -228,6 +229,7 @@ CREATE TABLE "api_keys" (
   "notes_body" text,
   CONSTRAINT "api_keys_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade,
   CONSTRAINT "api_keys_parent_key_id_api_keys_id_fk" FOREIGN KEY ("parent_key_id") REFERENCES "api_keys"("id") ON DELETE cascade,
+  CONSTRAINT "api_keys_network_pool_id_network_pools_id_fk" FOREIGN KEY ("network_pool_id") REFERENCES "network_pools"("id") ON DELETE set null,
   CONSTRAINT "api_keys_mode_shape_check" CHECK (
     ("key_mode" = 'personal' AND "key_hash" IS NOT NULL AND "parent_key_id" IS NULL
       AND "issued_client_ip" IS NULL AND "issued_client_ip_key" IS NULL)
