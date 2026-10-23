@@ -81,6 +81,13 @@ export function redactTelemetryValue(value: unknown): unknown {
     return value;
   }
   if (Array.isArray(value)) return value.map(redactTelemetryValue);
+  // A byte buffer is not a record: iterating it yields `{"0":123,"1":34,...}`,
+  // which is what the request drawer would render instead of the body. Decode
+  // it — a captured body is always UTF-8 JSON or text — and recurse so the
+  // decoded body is still redacted field by field.
+  if (value instanceof Uint8Array) {
+    return redactTelemetryValue(new TextDecoder().decode(value));
+  }
   if (typeof value === "object") {
     const obj = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};

@@ -100,4 +100,19 @@ describe("redactTelemetryValue", () => {
     expect(redactTelemetryValue(42)).toBe(42);
     expect(redactTelemetryValue("plain text")).toBe("plain text");
   });
+
+  /**
+   * A non-stream dispatch captures the encoded wire bytes, so the body reaches
+   * this function as a `Uint8Array`. Enumerating it as a record produced
+   * `{"0":123,"1":34,...}` in the request drawer — a byte table where the JSON
+   * body belonged. The buffer decodes to its text; the string policy then
+   * applies (secrets are redacted by the caller parsing the body first).
+   */
+  test("decodes a byte buffer instead of enumerating its indices", () => {
+    const body = '{"model":"m","messages":[{"role":"user","content":"hi"}]}';
+    const bytes = new TextEncoder().encode(body);
+    const redacted = redactTelemetryValue(bytes);
+    expect(typeof redacted).toBe("string");
+    expect(redacted).toBe(body);
+  });
 });

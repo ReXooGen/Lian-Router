@@ -50,6 +50,14 @@ async function isPayloadCaptureEnabled(db: LianRouterDatabase, tenantId: string 
 }
 
 export function parseCapturedBody(value: unknown): unknown {
+  // Non-stream dispatch captures the encoded wire bytes, not a string: the
+  // response the client receives is the exact byte buffer. Without this branch
+  // the buffer reached the redactor as a plain object and every byte was stored
+  // as a numeric key (`{"0":123,"1":34,...}`), so the request drawer rendered a
+  // byte table instead of the JSON body.
+  if (value instanceof Uint8Array) {
+    return parseCapturedBody(new TextDecoder().decode(value));
+  }
   if (typeof value !== "string") return value ?? null;
   try {
     return JSON.parse(value) as unknown;
