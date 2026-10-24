@@ -14,6 +14,8 @@
  */
 import { join } from "node:path";
 
+import { normalizeVersion } from "./contracts";
+
 export interface InstalledVersionRecord {
   readonly version: string;
   readonly installedAt: string;
@@ -58,8 +60,16 @@ export async function readInstalledVersion(
   if (typeof version !== "string" || version.trim().length === 0) {
     return undefined;
   }
+  // Records written before the version seam existed hold the release tag with
+  // its `v` (`v2.0.0`). Normalizing on read makes such a record comparable and
+  // displayable without a second normalization convention elsewhere; a record
+  // that normalizes to nothing is as unusable as one with no version at all.
+  const normalized = normalizeVersion(version);
+  if (normalized.length === 0) {
+    return undefined;
+  }
   return {
-    version: version.trim(),
+    version: normalized,
     installedAt: typeof installedAt === "string" ? installedAt : "",
     assetName: typeof assetName === "string" ? assetName : "",
   };
@@ -77,8 +87,12 @@ export async function writeInstalledVersion(
   installRoot: string,
   record: InstalledVersionRecord,
 ): Promise<void> {
+  // Stored bare so the file, the comparator, and the display site agree: the
+  // `v` is presentation, added by whoever renders the number. A caller handing
+  // in a tag (`v2.1.0`) gets `2.1.0` on disk, which is what keeps a legacy or
+  // hand-edited record from producing `vv` after the next read.
   const payload: InstalledVersionRecord = {
-    version: record.version,
+    version: normalizeVersion(record.version),
     installedAt: record.installedAt,
     assetName: record.assetName,
   };

@@ -19,16 +19,39 @@
  * destination, and renames the original back. A rollback that stops at the first
  * error would leave the installation in a state that is neither old nor new.
  *
+ * **The transaction ends when the last copy lands.** Deleting the backup is not
+ * part of it. Once every `replace` target has been copied the new tree is the
+ * installation, and a failure in cleanup must not report the install as failed:
+ * the caller would skip recording the installed version, the tree would be new
+ * and the record stale, and every launch would offer the same update again.
+ * Cleanup is therefore garbage collection — {@link sweepBackups} walks
+ * `<root>/.backup` and removes what it can, swallowing per-entry failures.
+ *
+ * The sweep is deferred rather than retried because the one entry that reliably
+ * refuses to go is the image of the *running* process: the previous install's
+ * `lianrouter.exe` moved aside by this very function. Windows keeps a mapped
+ * executable image undeletable until the process exits, and no amount of retrying
+ * changes that inside this process's lifetime. The next run — started from the
+ * new binary, with the old one unmapped — removes it. Deferral is the correct
+ * behaviour, not a concession: the leftover is dead bytes in a directory nothing
+ * reads, and it is collected the moment collection is possible.
+ *
  * **A source checkout is not an installation.** Installing over the repository
  * would replace `src/` and the working tree with release artifacts, destroying
  * uncommitted work and leaving a tree that no longer builds. `assertNotDevCheckout`
  * refuses that case by name.
  */
-import { cp, mkdir, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 /** Directory (under the install root) holding rollback copies. */
 const BACKUP_DIR_NAME = ".backup";
+
+/**
+ * How {@link sweepBackups} deletes a directory. Injectable so a test can prove
+ * the failure policy without needing a real locked file.
+ */
+export type RemoveFn = (path: string, options: { recursive: true; force: true }) => Promise<void>;
 
 export interface InstallOptions {
   readonly installRoot: string;
@@ -36,6 +59,13 @@ export interface InstallOptions {
   /** Relative paths to replace, e.g. ["lianrouter.exe", "migrations", "dist/dashboard"] */
   readonly replace: readonly string[];
   readonly onProgress?: (p: { percent: number; message: string }) => void;
+  /**
+   * Remover used by the post-commit backup sweep. A seam, not a policy knob:
+   * the EPERM this sweep has to survive is a platform behaviour (a mapped
+   * executable image), and the only way to exercise that path on a host where
+   * nothing is locked is to hand it a remover that fails the same way.
+   */
+  readonly remove?: RemoveFn;
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -85,6 +115,41 @@ export async function assertNotDevCheckout(installRoot: string): Promise<void> {
 }
 
 /**
+ * Removes every timestamped directory under `<root>/.backup`, best effort.
+ *
+ * Garbage collection, not part of any transaction: a directory that cannot be
+ * removed now is one this process must not be blamed for. The usual case is the
+ * previous run's `lianrouter.exe`, which Windows keeps mapped while the process
+ * that was replaced is still the one doing the sweeping — the next run collects
+ * it, because by then the old image is gone. Returning normally on a failed
+ * entry is what keeps that from being reported as an update failure.
+ *
+ * Every entry is attempted even after one fails: a single undeletable binary
+ * must not strand the other runs' directories alongside it.
+ */
+export async function sweepBackups(root: string, remove: RemoveFn = rm): Promise<void> {
+  const backupDir = join(resolve(root), BACKUP_DIR_NAME);
+  let entries: string[];
+  try {
+    entries = await readdir(backupDir);
+  } catch {
+    // No backup directory is the steady state after a clean sweep.
+    return;
+  }
+  let failed = false;
+  for (const entry of entries) {
+    await remove(join(backupDir, entry), { recursive: true, force: true }).catch(() => {
+      failed = true;
+    });
+  }
+  // Only when the sweep emptied it. A directory that still holds an entry this
+  // run could not delete cannot be removed either, so trying would be noise.
+  if (!failed) {
+    await remove(backupDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
  * Replaces `options.replace` inside `installRoot` with the matching entries from
  * `stagedDir`, atomically per the module comment.
  */
@@ -99,8 +164,8 @@ export async function installAtomically(options: InstallOptions): Promise<void> 
   await assertNotDevCheckout(root);
 
   // Timestamped rather than fixed so a previous crashed run's backup is never
-  // overwritten by the next attempt; the stale one is left for the user to
-  // inspect and is not deleted by this function.
+  // overwritten by the next attempt; anything left behind is collected by the
+  // sweep at the end of this run or by a later one.
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupRoot = join(root, BACKUP_DIR_NAME, stamp);
 
@@ -156,8 +221,10 @@ export async function installAtomically(options: InstallOptions): Promise<void> 
     throw error;
   }
 
+  // Committed. Everything below is garbage collection and must not be able to
+  // fail this call: the caller records the installed version only after this
+  // returns, so a throw here would leave a new tree with a stale record and the
+  // same update offered forever.
   onProgress?.({ percent: 100, message: "install complete" });
-  // Only after every target landed. Deleting the backup earlier would remove the
-  // rollback source while a later target could still fail.
-  await rm(backupRoot, { recursive: true, force: true });
+  await sweepBackups(root, options.remove ?? rm);
 }

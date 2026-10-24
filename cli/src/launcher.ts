@@ -559,7 +559,12 @@ async function runInteractive(
   const action = await promptMenu({
     version: CLI_VERSION,
     port: supervisor.status.port,
-    update: update !== null && update.available ? { latest: update.latest } : undefined,
+    // `current` is the gateway's recorded version, not `CLI_VERSION`: the row
+    // offers a gateway archive, so it must name the gateway that is installed.
+    update:
+      update !== null && update.available
+        ? { latest: update.latest, current: update.current }
+        : undefined,
   });
 
   return await dispatch(action, supervisor, session, options, runtime);

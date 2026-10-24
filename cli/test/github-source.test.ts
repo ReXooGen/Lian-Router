@@ -125,7 +125,7 @@ describe("GitHubReleaseSource", () => {
     // Compared as a whole object: this pins the mapping (notes URL, timestamp,
     // digest stripped of its `sha256:` prefix) rather than one field of it.
     expect(result.value).toEqual({
-      version: "v2.5.0",
+      version: "2.5.0",
       notesUrl: "https://example.invalid/releases/2.5.0",
       publishedAt: "2026-02-01T00:00:00Z",
       assets: [
@@ -139,25 +139,38 @@ describe("GitHubReleaseSource", () => {
     });
   });
 
+  it("strips the tag prefix so the version is stored bare", async () => {
+    // GitHub tags carry `v`; every display site adds it back. Returning the tag
+    // verbatim made the menu print `vv2.1.0` and wrote `v2.0.0` into
+    // version.json, where the next read added a second `v`.
+    const tagged = {
+      ...STABLE,
+      tag_name: "v2.1.0",
+      html_url: "https://example.invalid/releases/tag/v2.1.0",
+    };
+    const result = await callSource(serveJson([tagged]), "stable");
+    expect(readVersion(result.value)).toBe("2.1.0");
+  });
+
   it("excludes prereleases from the stable channel but includes them on beta", async () => {
     const url = serveJson([STABLE, PRERELEASE]);
 
     const stable = await callSource(url, "stable");
-    expect(readVersion(stable.value)).toBe("v2.5.0");
+    expect(readVersion(stable.value)).toBe("2.5.0");
 
     const beta = await callSource(url, "beta");
-    expect(readVersion(beta.value)).toBe("v3.0.0-beta.1");
+    expect(readVersion(beta.value)).toBe("3.0.0-beta.1");
   });
 
   it("picks the newest release regardless of feed order", async () => {
     const older = { ...STABLE, tag_name: "v2.4.0", html_url: "https://example.invalid/r/2.4.0" };
     const result = await callSource(serveJson([STABLE, older]), "stable");
-    expect(readVersion(result.value)).toBe("v2.5.0");
+    expect(readVersion(result.value)).toBe("2.5.0");
   });
 
   it("ignores drafts", async () => {
     const result = await callSource(serveJson([DRAFT, STABLE]), "stable");
-    expect(readVersion(result.value)).toBe("v2.5.0");
+    expect(readVersion(result.value)).toBe("2.5.0");
   });
 
   it("returns null when the channel has no releases", async () => {

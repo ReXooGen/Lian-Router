@@ -198,7 +198,8 @@ silently move the install.
   lianrouter            gateway executable (lianrouter.exe on Windows)
   migrations/           applied by the gateway at boot
   dist/dashboard/       console assets the gateway serves
-  version.json          version + install timestamp recorded after an update
+  version.json          bare version + install timestamp recorded after an update
+  .backup/<stamp>/      rollback copies; swept after commit, best effort
   logs/lianrouter.log   append-only child stdout/stderr
   run/lianrouter.pid    gateway pid; presence means "this root has a gateway"
   run/control.json      { port, pid, startedAt, token } control handshake
@@ -464,6 +465,22 @@ this itself, so no call site can pass the wrong version by mistake. The
 launcher's version is only the fallback for an installation that recorded none
 (a fresh install, or a record the reader rejected as corrupt).
 
+**Versions are bare internally; only display adds `v`.** GitHub tags carry the
+prefix (`v2.1.0`) and `GitHubReleaseSource` strips it with `normalizeVersion()`,
+so `RawRelease.version`, `UpdateInfo.latest`, `UpdateSnapshot.current/latest`,
+and the `version.json` record all hold `2.1.0`. `writeInstalledVersion()`
+normalizes on write and `readInstalledVersion()` normalizes on read, which is
+what makes a legacy record (`{"version":"v2.0.0"}`) compare and display
+correctly instead of producing `vv2.0.0`. That pair is the only normalization
+seam; a display site adds `v` and nothing else touches the string.
+
+**The menu row carries the gateway version, the header the launcher's.**
+`MenuInput.version` is `CLI_VERSION` and renders the header only.
+`MenuInput.update` is `{ latest, current }` where both describe the gateway
+archive: `current` comes from `resolveGatewayVersion()`. Reusing the launcher's
+number in the row made a 2.2.0 launcher with a 2.0.0 gateway print
+`Update to v2.1.0 (current: v2.2.0)`.
+
 `resolveCurrentVersion()` keeps its own policy — the compiled version wins when
 it is real — because that answers a different question: which version this
 *launcher* is. `--version` and the menu header must keep reporting the artifact
@@ -541,15 +558,31 @@ executes what it downloads, so an artifact that cannot be distinguished from a
 tampered one is not installed. There is no code-signature check; sha256 is the
 whole integrity story.
 
-**Atomic install with rollback.** Each target is renamed into a timestamped
-`.backup/<stamp>/` directory first — a rename on the same volume is metadata,
-fast, and leaves the old bytes intact while the new ones are written. Staged
-files are then copied in. Any failure inside that window restores every moved
-path from the backup in reverse order and removes whatever partial content the
-failed copy left, so the install is indistinguishable from never having run.
-`assertRelativeTarget()` rejects a replace entry that resolves outside the
-install root, because the replace list names files to delete and overwrite and a
-`..` in it must fail loudly rather than reach the filesystem.
+**Atomic install with rollback, and a commit boundary.** Each target is renamed
+into a timestamped `.backup/<stamp>/` directory first — a rename on the same
+volume is metadata, fast, and leaves the old bytes intact while the new ones are
+written. Staged files are then copied in. Any failure inside that window restores
+every moved path from the backup in reverse order and removes whatever partial
+content the failed copy left, so the install is indistinguishable from never
+having run. `assertRelativeTarget()` rejects a replace entry that resolves
+outside the install root, because the replace list names files to delete and
+overwrite and a `..` in it must fail loudly rather than reach the filesystem.
+
+The transaction ends when the last copy lands. Deleting the backup is *not* part
+of it: `sweepBackups()` runs after the commit and cannot fail the call. That
+matters because `runUpdate()` records the installed version only after
+`installAtomically()` returns — a cleanup throw there used to skip the record,
+leaving a new tree with a stale `version.json`, so every launch offered the same
+update and every attempt failed the same way.
+
+The sweep is deferred rather than retried because the entry that refuses to go is
+the image of the *running* process: the previous `lianrouter.exe`, moved aside by
+this very function. Windows keeps a mapped executable image undeletable until the
+process exits. `sweepBackups(root, remove = rm)` walks every timestamped directory
+under `<root>/.backup`, attempts each one, and swallows per-entry failures — so a
+locked binary does not strand the other runs' directories. A directory that
+survives is collected on the next run, when that process is gone. The `remove`
+parameter is a test seam for exactly that EPERM.
 
 **Extraction is bounded to staging.** The archive is remote input. It is listed
 first and every entry name is normalized and checked against the staging root,

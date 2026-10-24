@@ -269,16 +269,17 @@ describe("update sequence version comparison", () => {
     });
 
     // The launcher's own 2.1.0 must not satisfy the comparison; the gateway's
-    // recorded v2.0.0 is what makes 2.1.0 an update. The record is echoed
-    // verbatim, and the comparator strips the `v` when deciding newer.
+    // recorded v2.0.0 is what makes 2.1.0 an update. The record on disk still
+    // carries the old tag form, so this also pins the read-side normalization:
+    // the snapshot names the version bare, never `v2.0.0`.
     expect(snapshots).toEqual([
       {
-        current: "v2.0.0",
+        current: "2.0.0",
         latest: "2.1.0",
         available: true,
       },
     ]);
-    expect(runVersions).toEqual(["v2.0.0"]);
+    expect(runVersions).toEqual(["2.0.0"]);
     expect(events).toContain("install");
   });
 
@@ -301,7 +302,7 @@ describe("update sequence version comparison", () => {
 
     expect(snapshots).toEqual([
       {
-        current: "v2.1.0",
+        current: "2.1.0",
         latest: "2.1.0",
         available: false,
       },

@@ -17,10 +17,20 @@ export interface MenuItem {
 }
 
 export interface MenuInput {
+  /** The launcher's own version — the header, and nothing else. */
   readonly version: string;
   readonly port: number;
-  /** Present only when a newer release exists; the update row is omitted otherwise. */
-  readonly update?: { readonly latest: string } | undefined;
+  /**
+   * Present only when a newer release exists; the update row is omitted otherwise.
+   *
+   * `latest` and `current` both describe the *gateway* archive, which is
+   * versioned independently of this launcher. `current` is deliberately
+   * required rather than defaulted to `version`: the two numbers are usually
+   * different, and reusing the launcher's made the row read
+   * `Update to v2.1.0 (current: v2.2.0)` — a label that names the wrong thing.
+   * Both are stored bare; the row adds the `v`.
+   */
+  readonly update?: { readonly latest: string; readonly current: string } | undefined;
   /** Row the `>` cursor sits on. Out-of-range values clamp. */
   readonly selectedIndex?: number | undefined;
 }
@@ -33,7 +43,7 @@ export function buildMenuItems(input: MenuInput): readonly MenuItem[] {
   if (input.update !== undefined) {
     items.push({
       action: "update",
-      label: `Update to v${input.update.latest} (current: v${input.version})`,
+      label: `Update to v${input.update.latest} (current: v${input.update.current})`,
     });
   }
   items.push(

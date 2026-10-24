@@ -22,7 +22,7 @@
  *    mandatory verification step refuses it rather than installing unverified
  *    bytes.
  */
-import { compareVersions } from "./contracts";
+import { compareVersions, normalizeVersion } from "./contracts";
 import type { RawRelease, ReleaseAsset, UpdateChannel, UpdateSource } from "./contracts";
 
 /** Repository origin, as configured in `.git/config` for this checkout. */
@@ -278,8 +278,12 @@ export class GitHubReleaseSource implements UpdateSource {
       };
     });
 
+    // The tag carries the `v` that a display site adds back. Storing it verbatim
+    // made every consumer print `vv2.1.0`, and `version.json` recorded the tag
+    // as-is; `normalizeVersion` here is the single seam where the prefix is
+    // dropped, so nothing downstream has to know tags are prefixed.
     return {
-      version: newest.tag_name,
+      version: normalizeVersion(newest.tag_name),
       notesUrl: newest.html_url,
       ...(newest.published_at.length > 0 ? { publishedAt: newest.published_at } : {}),
       assets,

@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.2.1
+
+A launcher-side patch: no gateway binary, dashboard bundle, or configuration
+surface changes. Three defects in the self-update path, all reported from a real
+install.
+
+### An update that installed successfully reported failure, forever
+
+`lianrouter update` printed `install complete` and then
+`error: update failed` with `EPERM: operation not permitted, rm
+'...\.backup\2026-10-24T08-01-55-200Z'`. The install had in fact committed —
+the new binary, `migrations/`, and `dist/` were all on disk — but the backup
+directory held the image of the process doing the deleting, and Windows keeps a
+mapped executable undeletable until that process exits. The `rm` sat outside the
+rollback window yet inside the function, so its throw escaped
+`installAtomically()` and `runUpdate()` never reached `writeInstalledVersion()`.
+Result: a new tree with a stale `version.json`, so every launch offered the same
+update and every attempt re-downloaded the archive and failed identically.
+
+Cleanup is now garbage collection, not part of the transaction. The commit point
+is the last successful copy; after it, `sweepBackups()` attempts every timestamped
+directory under `<root>/.backup` and swallows per-entry failures. The locked
+backup is collected on the next run, when the old process is gone. Rollback is
+unchanged: a failure *inside* the copy loop still restores the previous tree and
+still rethrows.
+
+### Versions were stored with the release tag's `v`, then displayed with another
+
+GitHub tags are `v2.1.0`; `GitHubReleaseSource` returned the tag verbatim, so the
+menu rendered `Update to vv2.1.0` and `version.json` recorded `v2.0.0`. Versions
+are now bare everywhere except the display site that adds the prefix:
+normalization happens once, in `normalizeVersion()`, at the release source and at
+both ends of the version file. A legacy `{"version":"v2.0.0"}` record reads back
+as `2.0.0` instead of producing a second `v`.
+
+### The menu row named the launcher's version as the gateway's
+
+The update row describes a *gateway* archive, but the `current:` label was built
+from `CLI_VERSION`. A 2.2.0 launcher with a 2.0.0 gateway read
+`Update to v2.1.0 (current: v2.2.0)` — the wrong number, and one that made the
+offer look like a downgrade. `MenuInput.update` is now
+`{ latest, current }` with both resolved from the install root; the header keeps
+`MenuInput.version`, which is the launcher's own.
+
 ## 2.2.0
 
 2.2.0 is a minor release, not a patch: it adds a subcommand and a new

@@ -71,6 +71,36 @@ describe("version file", () => {
       assetName: "",
     });
   });
+
+  it("reads a legacy tag-prefixed record as a bare version", async () => {
+    // Records written before the version seam existed hold the release tag. They
+    // are on disk today (a 2.2.0 launcher with `{"version":"v2.0.0"}`), so the
+    // read side has to normalize or every display site prints `vv2.0.0`.
+    const root = await tempDir();
+    await writeFile(
+      join(root, "version.json"),
+      JSON.stringify({ version: "v2.0.0", installedAt: "x", assetName: "y" }),
+    );
+    expect((await readInstalledVersion(root))?.version).toBe("2.0.0");
+  });
+
+  it("stores a tag-prefixed version bare on write", async () => {
+    const root = await tempDir();
+    await writeInstalledVersion(root, {
+      version: "v2.1.0",
+      installedAt: "2026-01-01T00:00:00.000Z",
+      assetName: "lianrouter-win32-x64.zip",
+    });
+    const raw = JSON.parse(await Bun.file(join(root, "version.json")).text()) as { version: string };
+    expect(raw.version).toBe("2.1.0");
+    expect((await readInstalledVersion(root))?.version).toBe("2.1.0");
+  });
+
+  it("rejects a record whose version is only a tag prefix", async () => {
+    const root = await tempDir();
+    await writeFile(join(root, "version.json"), JSON.stringify({ version: "v" }));
+    expect(await readInstalledVersion(root)).toBeUndefined();
+  });
 });
 
 describe("resolveCurrentVersion", () => {

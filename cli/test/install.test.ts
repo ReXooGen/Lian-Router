@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { assertNotDevCheckout, installAtomically } from "../update/install";
+import { assertNotDevCheckout, installAtomically, sweepBackups } from "../update/install";
 
 const tempDirs: string[] = [];
 
@@ -38,8 +39,9 @@ async function fixture(): Promise<{ root: string; staged: string }> {
   return { root, staged };
 }
 
+/** True for a file *or* a directory: `Bun.file().exists()` is false for dirs. */
 async function exists(target: string): Promise<boolean> {
-  return Bun.file(target).exists();
+  return existsSync(target);
 }
 
 describe("installAtomically", () => {
@@ -135,6 +137,113 @@ describe("installAtomically", () => {
     );
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("replace list is empty");
+  });
+
+  it("resolves after the install commits even when the backup cannot be removed", async () => {
+    // The Windows case: the backup holds the image of the running process, so
+    // `rm` fails with EPERM. Cleanup is garbage collection, not part of the
+    // transaction — a throw here used to escape `installAtomically`, skip
+    // `writeInstalledVersion`, and leave a new tree with a stale record.
+    const { root, staged } = await fixture();
+    const attempted: string[] = [];
+
+    await expect(
+      installAtomically({
+        installRoot: root,
+        stagedDir: staged,
+        replace: ["lianrouter.exe", "migrations"],
+        remove: async (target) => {
+          attempted.push(target);
+          throw Object.assign(new Error(`EPERM: operation not permitted, rm '${target}'`), {
+            code: "EPERM",
+          });
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    // The new content is the installation, regardless of the failed sweep.
+    expect(await readFile(join(root, "lianrouter.exe"), "utf-8")).toBe("NEW BINARY BYTES");
+    expect(await readFile(join(root, "migrations", "0001_init.sql"), "utf-8")).toBe("NEW MIGRATION");
+    // Every entry was attempted: one undeletable binary must not strand the rest.
+    expect(attempted).toHaveLength(1);
+    expect(attempted[0]).toContain(".backup");
+  });
+
+  it("rolls back and rethrows when a copy fails, without sweeping the backup", async () => {
+    // The commit boundary must not swallow the transaction: a failure *inside*
+    // the copy loop still restores the old bytes and still rejects.
+    const { root, staged } = await fixture();
+    await rm(join(staged, "migrations"), { recursive: true, force: true });
+    const attempted: string[] = [];
+
+    const error = await installAtomically({
+      installRoot: root,
+      stagedDir: staged,
+      replace: ["lianrouter.exe", "migrations"],
+      remove: async (target) => {
+        attempted.push(target);
+      },
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("migrations");
+    expect(attempted).toEqual([]);
+    expect(await readFile(join(root, "lianrouter.exe"), "utf-8")).toBe("OLD BINARY BYTES");
+    expect(await readFile(join(root, "migrations", "0001_init.sql"), "utf-8")).toBe("OLD MIGRATION");
+  });
+});
+
+describe("sweepBackups", () => {
+  it("removes every timestamped directory under .backup", async () => {
+    const root = await tempDir();
+    await mkdir(join(root, ".backup", "2026-01-01T00-00-00-000Z"), { recursive: true });
+    await mkdir(join(root, ".backup", "2026-01-02T00-00-00-000Z"), { recursive: true });
+    await writeFile(join(root, ".backup", "2026-01-01T00-00-00-000Z", "lianrouter.exe"), "old");
+
+    await sweepBackups(root);
+
+    // Every entry went, so the container goes too: a clean install leaves no
+    // `.backup` at all, which is what the install test pins as well.
+    expect(await exists(join(root, ".backup"))).toBe(false);
+    expect(await exists(join(root, ".backup", "2026-01-01T00-00-00-000Z"))).toBe(false);
+    expect(await exists(join(root, ".backup", "2026-01-02T00-00-00-000Z"))).toBe(false);
+  });
+
+  it("keeps the container when an entry survives, so a later run can retry", async () => {
+    const root = await tempDir();
+    await mkdir(join(root, ".backup", "locked"), { recursive: true });
+    await mkdir(join(root, ".backup", "free"), { recursive: true });
+
+    await sweepBackups(root, async (target, options) => {
+      if (target.endsWith("locked")) {
+        throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+      }
+      await rm(target, options);
+    });
+
+    expect(await exists(join(root, ".backup", "locked"))).toBe(true);
+    expect(await exists(join(root, ".backup", "free"))).toBe(false);
+  });
+
+  it("swallows a throwing remover and still attempts every entry", async () => {
+    const root = await tempDir();
+    await mkdir(join(root, ".backup", "a"), { recursive: true });
+    await mkdir(join(root, ".backup", "b"), { recursive: true });
+    const attempted: string[] = [];
+
+    await expect(
+      sweepBackups(root, async (target) => {
+        attempted.push(target);
+        throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(attempted.map((target) => target.split(/[\\/]/).pop()).sort()).toEqual(["a", "b"]);
+  });
+
+  it("does nothing when there is no backup directory", async () => {
+    const root = await tempDir();
+    await expect(sweepBackups(root)).resolves.toBeUndefined();
   });
 });
 
