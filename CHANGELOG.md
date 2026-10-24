@@ -2,6 +2,36 @@
 
 ## 2.1.1
 
+### An installed copy has a config file, and a missing one fails early
+
+Running `lianrouter` from a global install printed `lianrouter: gateway did not
+answer /health on port 12800` and then quoted the gateway: `DATABASE_URL is
+required`. The message was accurate and the operator had nowhere to put the
+value. The mechanism was the working directory. A source checkout spawns the
+gateway from the repository root, where Bun loads the repository's `.env`
+automatically, so the file appeared to work. An installed copy spawns from the
+install root, which held no `.env` at all, and the launcher passed exactly one
+environment variable — the install-root hint for the control plane — so nothing
+ever supplied `DATABASE_URL` or `LIANROUTER_ENCRYPTION_KEY`.
+
+The install root now owns a config file at `<installRoot>/.env`, read by the
+launcher and merged into the child environment before spawn. The seam is the
+launcher, not the gateway, because `src/config.ts` documents its resolvers as
+pure with respect to `process.env` at call time and the gateway bootstraps from
+that environment; keeping the file read in the launcher leaves the binary a
+plain environment consumer and adds no parser to it. A value already exported
+in the shell wins over the file, so a one-off `DATABASE_URL=... lianrouter`
+still overrides the stored one.
+
+Because the file is resolved before the spawn, a missing required value now
+fails immediately with the file path, the missing variable names, and the next
+step, instead of a thirty-second health wait followed by the gateway's own
+error. `lianrouter init` writes a starter file with a generated 32-byte
+base64 encryption key and a commented `DATABASE_URL` placeholder, and refuses
+to overwrite an existing file. Failures that are not configuration problems —
+a port conflict, a missing `migrations/`, an unreachable database — still report
+the gateway's logged line through `describeFailure()`.
+
 ### The update command compares the installed gateway version
 
 `lianrouter update` on 2.1.0 printed "LianRouter 2.1.0 is up to date." and

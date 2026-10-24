@@ -194,6 +194,7 @@ silently move the install.
 
 ```text
 <installRoot>/
+  .env                  gateway configuration (operator-owned; see below)
   lianrouter            gateway executable (lianrouter.exe on Windows)
   migrations/           applied by the gateway at boot
   dist/dashboard/       console assets the gateway serves
@@ -230,6 +231,86 @@ assembled by whoever is shipping:
 State is deliberately separate from where the code was installed from: a package
 manager's global prefix can be read-only, so `resolveStateDir()` derives the
 `run/` tree from the install root rather than from the bundle's location.
+
+## Configuring an installed copy
+
+An installed launcher runs the gateway with its working directory set to the
+install root. A development checkout does not have this problem: `resolveRuntime()`
+runs the gateway from the repository root, where Bun loads the repository's
+`.env` on its own. An install root has no such file, so the launcher supplies
+one.
+
+`<installRoot>/.env` is the configuration file. It sits at the top of the install
+root rather than under `run/` because it is operator-owned input, not launcher
+state, and the updater replaces only the top-level entries a release archive
+carries — no archive carries `.env`, so the file survives upgrades.
+
+The launcher reads the file and merges it into the child environment before
+spawn (`cli/src/install-config.ts`). This seam is deliberate: `src/config.ts`
+documents its resolvers as "pure with respect to `process.env` at call time",
+and the gateway bootstraps from that environment, so the binary stays a plain
+`process.env` consumer and needs no dotenv parser of its own.
+
+Precedence is one rule:
+
+1. A variable already set in the launcher's environment wins. `DATABASE_URL=... lianrouter`
+   is a one-off override and the file is never allowed to replace it.
+2. Otherwise the value in `<installRoot>/.env` is passed to the gateway.
+3. Otherwise the variable is unset, and the gateway applies its own default or
+   fails as it always has.
+
+Because of rule 1, a variable set in your shell shadows the file for every run
+in that shell. Unset it, or edit the file, when you mean to change the stored
+value.
+
+Three variables are required before the gateway can answer `/health` in its
+default mode:
+
+- `DATABASE_URL` — a PostgreSQL connection string with an explicit host and port.
+  The gateway never infers a Docker or Laragon connection.
+- `LIANROUTER_ENCRYPTION_KEY` — the 256-bit key used to encrypt provider
+  credentials and hash API keys. `decodeEncryptionKey()` in `src/config.ts`
+  accepts a 64-character hexadecimal string or base64, and requires the decoded
+  value to be exactly 32 bytes. A key that decodes to any other length is
+  rejected at boot, so reusing a passphrase here fails.
+- `REDIS_URL` — required because `REDIS_MODE` defaults to `normal`. Setting
+  `REDIS_MODE=single_instance_local` runs a single gateway process without a
+  Redis client, and then `REDIS_URL` is not required.
+
+The early check mirrors those rules: it requires `REDIS_URL` only when the
+effective `REDIS_MODE` is `normal`, so it never rejects a configuration the
+gateway accepts.
+
+### `lianrouter init`
+
+```bash
+lianrouter init
+```
+
+Writes a starter `<installRoot>/.env` with the required keys present and
+commented guidance, and generates a random 32-byte key encoded as base64 so the
+first start cannot fail on key shape. `DATABASE_URL` and `REDIS_URL` are written
+as comments: the launcher does not invent a connection string, and you uncomment
+each line after replacing the placeholder. `REDIS_MODE=normal` is written
+uncommented, matching the gateway default.
+
+The command refuses to overwrite an existing file and says which path it left
+alone, so it is safe to run on a machine that is already configured. It does not
+install the gateway, start it, or contact the network.
+
+### Failing before the spawn
+
+Before spawning an installed copy, the launcher resolves the configuration and
+fails immediately when a required value is missing from both the shell and the
+file. The message names the config path it looked for, the exact missing
+variables, and the two ways to fix it. This replaces the older behavior, where
+the only signal was a health timeout after the spawn — accurate, because it
+quoted the gateway's own error, but slow and silent about where the file lives.
+
+Failures that are not configuration problems still come from
+`describeFailure()`: a port conflict, a missing `migrations/` directory, or a
+database that is configured but unreachable all keep reporting the gateway's own
+logged line.
 
 ## Process model
 

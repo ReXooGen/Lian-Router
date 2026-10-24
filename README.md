@@ -303,11 +303,25 @@ install stays offline, and `status`, `stop`, `--version`, and `--help` never rea
 the network at all. Later runs find the binary and start offline.
 
 Installing the gateway is not the same as configuring it: it still needs
-`DATABASE_URL` (and `REDIS_URL` when `REDIS_MODE=normal`) in its environment or a
-`.env` in its working directory before `/health` can answer — see
-[Configuration](#configuration). A first run that installs cleanly and then
-cannot start is a configuration problem, and the launcher prints the gateway's
-own error line instead of a bare health timeout.
+`DATABASE_URL` and `LIANROUTER_ENCRYPTION_KEY` (and `REDIS_URL` when
+`REDIS_MODE=normal`) before `/health` can answer. An installed copy reads them
+from `<installRoot>/.env` — on Windows, `%LOCALAPPDATA%\LianRouter\.env`. The
+error message names the resolved path on your machine. A variable already
+exported in your shell wins over the file.
+
+```bash
+lianrouter init    # writes a starter .env with a generated 32-byte key
+```
+
+Then open that file and uncomment `DATABASE_URL`, replacing the placeholder with
+your PostgreSQL connection string. `lianrouter init` refuses to overwrite a file
+that already exists.
+
+A missing value fails before the gateway is spawned, naming the file and the
+variables; see [cli/CLI.md](cli/CLI.md#configuring-an-installed-copy) for
+precedence and the encryption-key encoding. A gateway that is configured but
+cannot start still reports its own logged error line instead of a bare health
+timeout.
 
 The tray is the way to leave the gateway running without a console window:
 `lianrouter tray`, or the menu's **Hide to Tray** row, starts the gateway, hides

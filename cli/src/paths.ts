@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
  *
  * ```
  * <installRoot>/            compiled gateway binary, migrations/, dist/dashboard/
+ *   .env                    gateway configuration; survives updates
  *   logs/lianrouter.log     child stdout+stderr, appended across restarts
  *   cache/updates/          downloaded release artifacts
  *   run/lianrouter.pid      gateway pid, written on spawn
@@ -34,6 +35,9 @@ const LOGS_DIR = "logs";
 const CACHE_DIR = "cache";
 const RUN_DIR = "run";
 const UPDATE_CACHE_DIR = "updates";
+
+/** Gateway configuration for an installed copy; the launcher merges it into the child env. */
+const CONFIG_FILE_NAME = ".env";
 
 const LOG_FILE_NAME = "lianrouter.log";
 const PID_FILE_NAME = "lianrouter.pid";
@@ -110,6 +114,17 @@ export function resolveBinaryPath(
 /** Append-only log file for the supervised child's stdout and stderr. */
 export function resolveLogFile(installRoot: string = resolveInstallRoot()): string {
   return join(installRoot, LOGS_DIR, LOG_FILE_NAME);
+}
+
+/**
+ * Gateway configuration file for an installed copy.
+ *
+ * It lives at the top of the install root rather than under `run/` because it is
+ * operator-owned input, not launcher state: the updater replaces top-level
+ * entries a release archive carries, and no archive carries `.env`.
+ */
+export function resolveConfigFile(installRoot: string = resolveInstallRoot()): string {
+  return join(installRoot, CONFIG_FILE_NAME);
 }
 
 /** Gateway pid file. Presence means "a gateway claimed this install root". */

@@ -18,6 +18,7 @@ import {
 } from "./paths";
 import { installShutdownHandlers, shutdownSessionFiles } from "./shutdown";
 import { GatewaySupervisor, type ServerStatus } from "./supervisor";
+import { assertGatewayConfigured, resolveGatewayConfig, writeStarterConfig } from "./install-config";
 import { resolveGatewayVersion, runUpdateSequence } from "./update-flow";
 import { hideConsoleWindow, isTrayRunning, startTray, stopTray } from "./tray-launcher";
 import type { TrayStartResult } from "./tray-launcher";
@@ -55,6 +56,7 @@ Commands:
   update           Check for and install an update
   tray             Run the gateway in the background with a tray icon
   tui              Open the terminal UI
+  init             Write a starter config file into the install root
 
 Options:
   --port <n>       Gateway port (default ${DEFAULT_PORT}, or $PORT)
@@ -69,7 +71,15 @@ Environment:
   LIANROUTER_HOME  Override the install/state root
   PORT             Default gateway port`;
 
-const KNOWN_COMMANDS: readonly string[] = ["start", "stop", "status", "update", "tray", "tui"];
+const KNOWN_COMMANDS: readonly string[] = [
+  "start",
+  "stop",
+  "status",
+  "update",
+  "tray",
+  "tui",
+  "init",
+];
 
 /**
  * Parses argv. Unknown flags and commands are errors rather than silent
@@ -249,6 +259,37 @@ export async function run(argv: readonly string[]): Promise<number> {
   }
 
   const runtime = resolveRuntime();
+  if (options.command === "init") {
+    // No install and no gateway: the point of this command is to make the
+    // first start possible, so it must work on a root with nothing in it.
+    const path = writeStarterConfig(runtime.installRoot);
+    console.log(`Wrote ${path}`);
+    console.log("Set DATABASE_URL in that file (uncomment the line), then run lianrouter.");
+    return 0;
+  }
+
+  // A checkout lets Bun load the repository's `.env` for the gateway child; an
+  // install has no such file in its working directory, so the launcher supplies
+  // one. The check runs before anything is installed or spawned: a ~50 MB
+  // download followed by a 30-second health wait is a bad way to learn that two
+  // variables were never set.
+  //
+  // Only commands that start the gateway are checked. `update` must be able to
+  // replace a binary on a machine that was never configured, and `status`/`stop`
+  // answer a question about the current machine.
+  const startsGateway =
+    options.command === undefined ||
+    options.command === "start" ||
+    options.command === "tray" ||
+    options.command === "tui";
+  const gatewayConfig =
+    runtime.command === undefined && startsGateway
+      ? resolveGatewayConfig(runtime.installRoot)
+      : undefined;
+  if (gatewayConfig !== undefined) {
+    assertGatewayConfigured(gatewayConfig);
+  }
+
   // Commands that answer a question must not install anything: `status` and
   // `stop` on a machine that never ran the gateway have to report that fact
   // offline, not reach for the release feed.
@@ -265,7 +306,10 @@ export async function run(argv: readonly string[]): Promise<number> {
     // and the launcher is the only process allowed to install. The child needs
     // the install root to find `run/control.json`; without it the console has no
     // launcher to talk to and reports updates as unavailable.
-    env: { LIANROUTER_LAUNCHER_HOME: runtime.installRoot },
+    env: {
+      LIANROUTER_LAUNCHER_HOME: runtime.installRoot,
+      ...(gatewayConfig?.env ?? {}),
+    },
     ...(runtime.command === undefined ? {} : { command: runtime.command }),
   });
 
