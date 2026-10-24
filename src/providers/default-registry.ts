@@ -208,6 +208,14 @@ export const PROVIDER_CAPABILITIES = {
       return discoverMuseModels({ credential, ...(fetcher ? { fetcher } : {}) });
     },
   },
+  meta: {
+    // Same origin, wire, and catalog as Muse Code; the only difference is the
+    // credential (an operator API key rather than a subscription-minted one),
+    // so the shared factory builds the adapter from the spec. No
+    // `loadAuthentication`: the default key-only credential path applies.
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/meta")).META_SPEC),
+    loadModels: async () => (await import("./integrations/meta")).META_MODELS,
+  },
   kimi: {
     loadAdapter: async () => (await import("./integrations/kimi/kimi")).kimiCodeAdapter,
     loadModels: async () => (await import("./integrations/kimi/kimi")).KIMI_CODE_MODELS,

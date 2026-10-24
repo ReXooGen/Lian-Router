@@ -519,6 +519,13 @@ zero-hook hosts (`groq`, `mistral`, `siliconflow`, `fireworks`, `nvidia`, `gmi`,
 single-file specs add hooks only where needed. `zai/spec.ts` shows the credential-codec variant
 (`extractAccessTokenOrRaw` + `credential_forwarding: "never"`).
 
+`integrations/meta.ts` is the spec-only sibling of `muse/`: Meta's Model API is the same `api.meta.ai/v1`
+Responses surface and the same `muse-spark-*` catalog, reached with an operator API key from the Meta
+developer dashboard instead of the subscription-minted key the Muse device login exchanges for. It therefore
+declares no `base_url` (the metadata row owns the origin), imports `MUSE_CODE_MODELS` rather than restating
+the roster, and has no `loadAuthentication` — the default key-only credential path plus
+`probeApiKeyConnectivity` is the account test.
+
 **Reseller and regional batches.** Most of the catalog is resellers and regional gateways whose whole contract is
 an origin, a wire family, and a model list: `integrations/alibaba.ts` holds the four Alibaba key products
 (`alicode`, `alicode-intl`, `alims-intl`, `alitp-intl`), because they are the same OpenAI wire on four hosts

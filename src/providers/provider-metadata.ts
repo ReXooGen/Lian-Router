@@ -47,6 +47,9 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "devin", displayName: "Devin", baseUrl: "https://server.codeium.com" },
   { id: "antigravity", displayName: "Antigravity", baseUrl: "https://daily-cloudcode-pa.googleapis.com" },
   { id: "muse", displayName: "Muse Code", baseUrl: "https://api.meta.ai" },
+  // Same host and catalog as Muse Code, different credential: an operator API
+  // key from the Meta developer dashboard instead of a subscription-minted one.
+  { id: "meta", displayName: "Meta Model API", baseUrl: "https://api.meta.ai", wireFamilyDefault: "responses" },
   { id: "kimi", displayName: "Kimi Code", baseUrl: "https://api.kimi.com/coding" },
   { id: "opencodeft", displayName: "OpenCode Free", baseUrl: "https://opencode.ai", requiresAccount: false },
   { id: "opencodezen", displayName: "OpenCode Zen", baseUrl: "https://opencode.ai" },

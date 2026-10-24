@@ -17,6 +17,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   devin: "Devin",
   antigravity: "Antigravity",
   muse: "Muse Code",
+  meta: "Meta Model API",
   kimi: "Kimi Code",
   opencodeft: "OpenCode Free",
   opencodezen: "OpenCode Zen",

@@ -63,6 +63,9 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   "qoder-cn": { file: "qoder", ext: "webp" },
   mistral: { file: "mistral", ext: "webp" },
   muse: { file: "muse", ext: "svg" },
+  // Same vendor mark on the same host; there is no separate `meta` asset, so
+  // the Model API row reuses the Muse Code logo.
+  meta: { file: "muse", ext: "svg" },
   openrouter: { file: "openrouter", ext: "webp" },
   ollama: { file: "ollama", ext: "webp" },
   ollamacloud: { file: "ollama-cloud", ext: "webp" },
