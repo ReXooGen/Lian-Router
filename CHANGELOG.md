@@ -5,6 +5,22 @@
 > All changes below are pre-release. LianRouter has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### The coverage gate runs under the suite's own timeout
+
+`bun run check:coverage` invoked `bun test` directly, so it ran with Bun's
+default 5 s per-test timeout instead of the 60 s budget every other gate gets
+from `scripts/ops-run-tests.ts`. That was invisible while the suite stayed
+fast, and it broke as soon as a test legitimately needed more than five
+seconds: `test/network/outbound-fetch.test.ts` drives a blackholed proxy
+through the 15 s CONNECT bound in `src/network/pool/agent.ts` and asserts the
+dial fails rather than hanging, so it cannot finish in 5 s by design. It
+passed under `bun run test` and timed out under `check:coverage`, which made
+the coverage gate fail for a reason that had nothing to do with coverage.
+
+The script now runs through the same wrapper as `test` and `test:contracts`,
+so one timeout governs every suite and the two entry points cannot drift
+apart again.
+
 ### The console ships no bundled character artwork
 
 Six images sat in `dashboard/public/` with no product role. Five had no
