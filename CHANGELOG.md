@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.1
+
+### The update command compares the installed gateway version
+
+`lianrouter update` on 2.1.0 printed "LianRouter 2.1.0 is up to date." and
+installed nothing, while `%LOCALAPPDATA%\LianRouter\version.json` still recorded
+`v2.0.0`. The mechanism was the comparison input: the update sequence was handed
+the launcher's own version, so a release that matched the launcher never looked
+newer than what the command believed was installed, and the sequence returned
+before the download. The sequence now resolves the installed gateway's version
+from `version.json` itself, at one choke point, so no caller can pass the wrong
+number and the launcher's version is no longer consulted for this question.
+
+2.1.0 shipped with that defect and keeps it. 2.1.1 is the fixed build; the
+gateway binary and the dashboard bundle are unchanged.
+
 ## 2.1.0
 
 > 2.0.0 is published on npm and exists as a GitHub release; this document
