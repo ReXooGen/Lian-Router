@@ -5,7 +5,10 @@
  * touching the installation; `runUpdate` performs the whole sequence. The split
  * exists because the console shows a modal on the answer and only starts the
  * destructive work when the user picks it — checking must therefore be cheap,
- * side-effect free, and callable on a timer.
+ * side-effect free, and callable on a timer. `resolveInstallCandidate` answers
+ * the other question the same feed can be asked — "what is the newest release
+ * for this host, and which asset installs it" — with no comparison against a
+ * running version, because the first run has nothing running yet.
  *
  * Progress accounting is deliberately global rather than per phase. Each stage
  * is mapped into a weighted slice of 0..100 (download 0–70, verify 70–78, extract
@@ -87,6 +90,90 @@ export async function checkForUpdate(opts: {
     ...(release.publishedAt === undefined ? {} : { publishedAt: release.publishedAt }),
     ...(asset === undefined ? {} : { assetUrl: asset.url, assetName: asset.name }),
     ...(asset?.checksum === undefined ? {} : { checksum: asset.checksum }),
+  };
+}
+
+/**
+ * A release artifact that can be installed on this host.
+ *
+ * Deliberately carries no `current` and no `available`: installing is not
+ * updating. The first run has no gateway at all, so the only question is "what
+ * is the newest release for this host, and which asset installs it" — a release
+ * that equals (or even precedes) the launcher's own version is still the only
+ * thing the operator can run.
+ */
+export interface InstallCandidate {
+  readonly version: string;
+  readonly assetName: string;
+  readonly assetUrl: string;
+  /** `undefined` means the feed published no digest; the installer refuses it. */
+  readonly checksum: string | undefined;
+  readonly notesUrl?: string;
+  readonly publishedAt?: string;
+}
+
+/**
+ * Outcome of {@link resolveInstallCandidate}.
+ *
+ * "The feed has no release" and "the newest release has no build for this host"
+ * are different facts with different instructions for the operator, so they are
+ * separate variants instead of one shared `undefined`.
+ */
+export type InstallResolution =
+  | { readonly status: "installable"; readonly candidate: InstallCandidate }
+  | { readonly status: "no-release" }
+  | {
+      readonly status: "no-asset";
+      /** The newest release, which simply does not ship this host's artifact. */
+      readonly version: string;
+      readonly notesUrl?: string;
+    };
+
+/**
+ * Resolves the newest installable release for this host.
+ *
+ * This is the install predicate, not the update predicate: it never compares
+ * `release.version` with anything. `checkForUpdate` stays the updater's gate so
+ * a running gateway is never rolled backwards; the bootstrap uses this one so a
+ * launcher can install whatever release exists. Sharing the fetch here keeps a
+ * single place where a release is parsed and an asset is selected.
+ */
+export async function resolveInstallCandidate(opts: {
+  channel?: UpdateChannel;
+  source?: UpdateSource;
+  /**
+   * Only used to build the default source's User-Agent. It is never compared
+   * against the release version — that is the whole point of this function.
+   */
+  clientVersion?: string;
+}): Promise<InstallResolution> {
+  const channel = opts.channel ?? "stable";
+  const source = opts.source ?? new GitHubReleaseSource(opts.clientVersion ?? "unknown");
+  const release = await source.fetchLatest(channel);
+
+  if (release === null) {
+    return { status: "no-release" };
+  }
+
+  const asset = pickAssetForPlatform(release.assets, process.platform, process.arch);
+  if (asset === undefined) {
+    return {
+      status: "no-asset",
+      version: release.version,
+      ...(release.notesUrl === undefined ? {} : { notesUrl: release.notesUrl }),
+    };
+  }
+
+  return {
+    status: "installable",
+    candidate: {
+      version: release.version,
+      assetName: asset.name,
+      assetUrl: asset.url,
+      checksum: asset.checksum,
+      ...(release.notesUrl === undefined ? {} : { notesUrl: release.notesUrl }),
+      ...(release.publishedAt === undefined ? {} : { publishedAt: release.publishedAt }),
+    },
   };
 }
 

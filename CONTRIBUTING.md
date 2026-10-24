@@ -152,6 +152,60 @@ lands at the archive root. The script prints the archive's sha256 — a release
 asset without a digest is refused by the install path, so the digest must be
 attached to the GitHub release asset.
 
+## Cutting a release
+
+A release ships three artifacts that must agree, in an order that is not
+arbitrary. The sequence below is the one the install path enforces; running it
+out of order produces a published launcher that cannot install the gateway it
+was built to supervise.
+
+1. **Bump the version in every manifest that carries it.** The three numbers are
+   read independently at runtime, so a mismatch surfaces as three different
+   version strings in the same session:
+   - `package.json` — the gateway. Read by `src/transport/version.ts` as
+     `LIANROUTER_VERSION`, which is what `/v1/*` responses, metrics, and
+     metadata helpers advertise.
+   - `cli/package.json` — the launcher. Read by `cli/src/version.ts` as
+     `CLI_VERSION`, which drives the menu header, `--version`, and the update
+     comparison.
+   - `dashboard/package.json` — the console. Read by
+     `dashboard/src/lib/version.ts` as `DASHBOARD_VERSION`, which renders the
+     brand version badge.
+2. **Build the gateway, then the release archive.** `bun run build` produces
+   the binary, the AOT bundle, and `dist/dashboard/`. `bun run build:release`
+   (`scripts/build-release.ts`) stages the gateway executable, `migrations/`,
+   and `dist/dashboard/` flat and zips them into
+   `dist/release/lianrouter-<platform>-<arch>.zip`, printing the archive's
+   `sha256`. The packager refuses a slice whose binary is missing rather than
+   leaving a half-staged archive, so cutting a release for a non-host platform
+   means running the gateway build on that platform (or a matching cross-build
+   host) and running `build:release` there — one host cannot package a slice it
+   did not build.
+3. **Create the GitHub release before touching npm.** The tag is `v<version>`
+   (the update source reads `tag_name` as-is; `normalizeVersion` strips the
+   leading `v` on compare). Upload every platform archive under its exact
+   `lianrouter-<platform>-<arch>.zip` name — `pickAssetForPlatform` in
+   `cli/update/github-source.ts` matches by exact `platform-arch` token and
+   prefers `.zip`, so a renamed, re-compressed, or nested asset is simply not
+   seen. Each uploaded asset must carry a `sha256:<hex>` digest matching the
+   value `build:release` printed; `cli/src/bootstrap.ts` fails closed on an
+   asset with no digest rather than installing unverified bytes, so a release
+   whose assets were uploaded through a path that did not record a digest is
+   installable by nothing.
+4. **Publish the npm package last, from `cli/`.** Only after the GitHub release
+   is published and its assets carry digests: `cd cli && npm publish` (the
+   `prepublishOnly` script rebuilds the bundles; `publishConfig.access` is set
+   to `public`, so no flag is needed). Publishing first is what breaks first
+   run — the launcher that ships to the registry has no gateway bundled, so a
+   fresh install runs `lianrouter`, finds nothing in the install root, asks the
+   release feed for an asset, and raises `GatewayNotInstalledError` because the
+   release the launcher was cut for does not exist yet. The package is
+   technically installable and functionally unusable until the release lands.
+5. **The version only moves forward.** npm refuses to republish a version that
+   has already been published, so a mistake in step 4 is corrected by bumping
+   step 1 and walking the sequence again — not by overwriting. The bump must
+   therefore precede the publish, never follow it.
+
 ## Pull requests
 
 - Branch from `main`, keep the change focused, remove callers in the same

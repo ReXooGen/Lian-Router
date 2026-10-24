@@ -21,15 +21,22 @@ export interface TrayLaunchOptions {
   readonly control: ControlHandshake;
   /** Repository root when running from a checkout; undefined for a packaged install. */
   readonly devRepoRoot?: string;
+  /** Overrides the launcher bundle directory; defaults to `import.meta.dir`. */
+  readonly bundleDir?: string;
   /** Overrides the tray command; tests pass a plain runtime. */
   readonly command?: readonly string[];
   readonly cwd?: string;
 }
 
 export interface TrayEntryOptions {
-  readonly installRoot: string;
   /** Repository root when running from a checkout; undefined for a packaged install. */
   readonly devRepoRoot?: string;
+  /**
+   * Directory holding the launcher's own bundle, which is where a packaged
+   * install keeps `tray.js`. Defaults to `import.meta.dir`; tests inject a temp
+   * directory.
+   */
+  readonly bundleDir?: string;
 }
 
 /** Outcome of a tray spawn. A failure carries a message fit to print. */
@@ -38,10 +45,24 @@ export type TrayStartResult = { readonly ok: true; readonly pid: number } | { re
 /**
  * Path of the tray entry.
  *
- * A packaged install ships `dist/tray.js` inside the install root. A source
- * checkout does not: `bun run build:cli` writes the bundle to
- * `<repo>/cli/dist/tray.js`, while the install root stays in app data, so the
- * install-root path names a file that will never exist there.
+ * Candidates, in order:
+ *
+ * 1. `<devRepoRoot>/cli/dist/tray.js` — the bundle `bun run build:cli` writes
+ *    from a source checkout. First so `bun run cli:dev` runs the freshly built
+ *    tray rather than whatever copy sits beside the executing launcher.
+ * 2. `<bundleDir>/tray.js`, where `bundleDir` defaults to `import.meta.dir` —
+ *    the directory of the launcher that is executing. The published package
+ *    ships `dist/cli.js` and `dist/tray.js` side by side, so this is the only
+ *    candidate that exists for an install from npm. It is also the correct
+ *    anchor for version locking: the tray speaks the launcher's control
+ *    protocol, so resolving it from the gateway install root would let a tray
+ *    left over from an older launcher outlive an upgrade.
+ *
+ * There is deliberately no `<installRoot>/dist/tray.js` candidate. The release
+ * archive (`releaseEntries` in `scripts/build-release.ts`) contains exactly the
+ * gateway executable, `migrations/`, and `dist/dashboard`; neither the bootstrap
+ * nor the updater ever writes a tray bundle into the install root, so that path
+ * could never resolve.
  *
  * The choice is made by existence rather than by mode, because both directions
  * are real — a checkout that has not been built yet has neither file, and a
@@ -49,12 +70,24 @@ export type TrayStartResult = { readonly ok: true; readonly pid: number } | { re
  * root, whose launcher package is `cli/`.
  */
 export function resolveTrayEntry(options: TrayEntryOptions): string | undefined {
+  return trayEntryCandidates(options).find((candidate) => existsSync(candidate));
+}
+
+/**
+ * Every location `resolveTrayEntry` probes, in order.
+ *
+ * Exported because the failure message must name exactly these paths: one list
+ * feeds the resolver and the diagnostic, so the two cannot drift into naming a
+ * path the resolver never tried or omitting one it did.
+ */
+export function trayEntryCandidates(options: TrayEntryOptions): readonly string[] {
+  const bundleDir = options.bundleDir ?? import.meta.dir;
   const candidates: string[] = [];
   if (options.devRepoRoot !== undefined) {
     candidates.push(join(options.devRepoRoot, "cli", "dist", "tray.js"));
   }
-  candidates.push(join(options.installRoot, "dist", "tray.js"));
-  return candidates.find((candidate) => existsSync(candidate));
+  candidates.push(join(bundleDir, "tray.js"));
+  return candidates;
 }
 
 /**
@@ -76,21 +109,21 @@ export async function startTray(options: TrayLaunchOptions): Promise<TrayStartRe
   if (options.command !== undefined) {
     command = options.command;
   } else {
-    const entry = resolveTrayEntry(
-      options.devRepoRoot === undefined
-        ? { installRoot: options.installRoot }
-        : { installRoot: options.installRoot, devRepoRoot: options.devRepoRoot },
-    );
+    const entryOptions: TrayEntryOptions = {
+      ...(options.devRepoRoot === undefined ? {} : { devRepoRoot: options.devRepoRoot }),
+      ...(options.bundleDir === undefined ? {} : { bundleDir: options.bundleDir }),
+    };
+    const entry = resolveTrayEntry(entryOptions);
     if (entry === undefined) {
-      const looked: string[] = [];
-      if (options.devRepoRoot !== undefined) {
-        looked.push(join(options.devRepoRoot, "cli", "dist", "tray.js"));
-      }
-      looked.push(join(options.installRoot, "dist", "tray.js"));
-      return {
-        ok: false,
-        error: `The tray bundle is missing (looked for ${looked.join(", ")}). Run \`bun run build:cli\` to build it.`,
-      };
+      const looked = trayEntryCandidates(entryOptions).join(", ");
+      // A checkout has a build step; a package install does not, and telling a
+      // packaged user to run `bun run build:cli` sends them looking for a
+      // repository that was never there.
+      const advice =
+        options.devRepoRoot === undefined
+          ? "The launcher package is incomplete; reinstall it (`bun add -g lianrouter` or `npm i -g lianrouter`)."
+          : "Run `bun run build:cli` to build it.";
+      return { ok: false, error: `The tray bundle is missing (looked for ${looked}). ${advice}` };
     }
     command = [process.execPath, entry];
   }

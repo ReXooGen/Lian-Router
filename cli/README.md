@@ -43,7 +43,10 @@ Gateway 2.0.0 installed at ~/.local/share/LianRouter/lianrouter
 
 An archive without a published digest is refused rather than installed, and a
 platform with no published build is told so by name instead of failing later at
-spawn. Every subsequent run finds the binary and starts offline.
+spawn. The newest release for your platform is installed regardless of how its
+version compares to the launcher's own, so a first release that shares the
+launcher's version still installs. Every subsequent run finds the binary and
+starts offline.
 
 Installing the gateway is not the same as configuring it: the gateway still needs
 `DATABASE_URL` (and `REDIS_URL` when `REDIS_MODE=normal`) in its environment or a

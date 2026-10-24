@@ -7,7 +7,7 @@
     "lianrouter": "./dist/cli.js"
   },
   "engines": {
-    "bun": ">=1.1.0"
+    "bun": ">=1.4.2"
   },
   "files": [
     "dist",
@@ -18,5 +18,26 @@
     "typecheck": "tsc --noEmit -p .",
     "postinstall": "echo lianrouter: the gateway binary installs on first run, not during this install",
     "prepublishOnly": "bun run build"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ReXooGen/Lian-Router.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/ReXooGen/Lian-Router/issues"
+  },
+  "homepage": "https://github.com/ReXooGen/Lian-Router#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "lianrouter",
+    "ai-gateway",
+    "openai-compatible",
+    "llm-router",
+    "self-hosted",
+    "cli",
+    "launcher"
+  ]
 }

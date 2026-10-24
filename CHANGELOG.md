@@ -5,6 +5,28 @@
 > All changes below are pre-release. LianRouter has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### `lianrouter tray` starts on an install from npm
+
+The tray was unreachable for every install that came from a package.
+`resolveTrayEntry()` in `cli/src/tray-launcher.ts` looked for
+`<installRoot>/dist/tray.js`, and nothing ever writes that file: the release
+archive contains only the gateway executable, `migrations/`, and
+`dist/dashboard`, while the tray bundle ships inside the npm package next to
+the launcher. The launcher therefore reported that the tray bundle was missing
+and told the operator to run `bun run build:cli`, which is advice for someone
+with a checkout and not for someone who installed a package.
+
+The tray now resolves from the launcher's own bundle directory, which is where
+`bun add -g lianrouter` puts `dist/tray.js` beside `dist/cli.js`. That also
+version-locks the tray to the launcher that spawned it, which matters because
+the tray speaks the launcher's control protocol; resolving it from the gateway
+install root would have let an old tray outlive a launcher upgrade. The
+dev-checkout candidate stays first so `bun run cli:dev` keeps using the freshly
+built bundle, and the install-root candidate is gone rather than kept as a
+speculative fallback. A missing bundle now names every path that was probed and
+gives situation-specific advice: build the bundle from a checkout, reinstall the
+package from an install.
+
 ### The published launcher installs the gateway on first run
 
 `npm i -g lianrouter` (or `bun add -g lianrouter`) followed by `lianrouter`
@@ -31,6 +53,20 @@ path to its own location and pins its bundling cwd, so `prepublishOnly` from
 `cli/` and `bun run build:cli` from the repository root emit byte-identical
 bundles; `cli/package.json` ships `README.md` alongside `dist`, and the root and
 dashboard manifests report `2.0.0` so the launcher and the console agree.
+
+### The first install no longer requires a newer release
+
+The bootstrap gate asked `checkForUpdate()` whether a release was *available*,
+and that predicate requires a strictly newer version plus an asset for the host.
+The natural first release is tagged with the launcher's own version, so a fresh
+machine saw `available: false` and refused to install a release that existed,
+printing "no release published yet" about a release it had just read. The
+update engine now also exports `resolveInstallCandidate()`, which answers the
+install question — newest release for this host, and its asset — with no version
+comparison and a discriminated result that keeps "no release" distinct from "no
+build for this platform". The launcher installs whatever it can run, including a
+tag that equals or precedes its own, because a launcher that cannot install a
+gateway is useless. `checkForUpdate()` is unchanged.
 
 ### The tray host exists, and it does not block the event loop
 

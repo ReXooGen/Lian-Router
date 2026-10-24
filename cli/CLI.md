@@ -40,7 +40,7 @@ cli/
     download.ts          streamed download with inline sha256 verification
     extract.ts           zip/tar/7z extraction into a staging directory
     install.ts           atomic install with rollback; dev-checkout refusal
-    engine.ts            checkForUpdate() / runUpdate()
+    engine.ts            checkForUpdate() / resolveInstallCandidate() / runUpdate()
     version-file.ts      records the installed version after a committed install
   tui/
     app.ts               the interactive console: poll, reduce, render, act
@@ -139,13 +139,19 @@ supervisor is constructed:
    path every later run takes: no release source is constructed, no request is
    made, and a machine with no network still starts.
 2. Otherwise create the install root, log `gateway not installed; fetching the
-   latest release`, and ask `checkForUpdate()` for the release matching this
-   host.
-3. Refuse — never install — when the release has no asset for this platform, no
-   sha256 digest, or (as the release feed reports it) no release at all. Each
-   case names itself: a published release with no build for `win32-x64` tells you
-   so and points at the releases page; an empty feed says no release is published
-   yet.
+   latest release`, and ask `resolveInstallCandidate()` for the newest release
+   that ships an artifact for this host. That resolver is the *install*
+   predicate: it never compares the release version with the launcher's own, so
+   a first release tagged with the launcher's version (or an older tag that is
+   the only one published) still installs. `checkForUpdate()` remains the
+   *update* predicate and keeps requiring a strictly newer release, so a running
+   gateway is never rolled backwards.
+3. Refuse — never install — only for four reasons: the feed has no release at
+   all, the newest release ships no asset for this platform, the asset has no
+   sha256 digest, or the payload is broken (empty, or nested one level deep).
+   Each case names itself: an empty feed says no release is published yet; a
+   published release with no build for `win32-x64` names the release version and
+   the platform; both point at the releases page.
 4. Download to a temp directory under `os.tmpdir()`, verify the sha256 inline,
    extract into a staging directory, and hand both to `installAtomically()`. The
    temp directory is removed in a `finally`, so a failed first run leaves no
@@ -357,8 +363,12 @@ stream's `cancel`, so a browser tab closed mid-update does not leak a controller
 
 `checkForUpdate()` answers "is there a newer release for this host" without
 touching the installation — cheap, side-effect free, callable on a timer.
-`runUpdate()` performs the sequence. The split is what lets the menu show an
-update row before anything is downloaded.
+`resolveInstallCandidate()` answers the install question the first run asks
+instead: the newest release for this host and the asset that installs it, with
+no version comparison at all, returning a discriminated result so "no release"
+and "no asset for this host" stay distinguishable. `runUpdate()` performs the
+sequence. The split is what lets the menu show an update row before anything is
+downloaded.
 
 **The gateway stays up until the install boundary.** The console that shows the
 progress bar is served by the gateway child, so stopping it early would kill the
@@ -506,10 +516,28 @@ The tray lives in eleven files under `cli/tray/`:
 
 `scripts/build-cli.ts` bundles `cli/tray/host.ts` → `cli/dist/tray.js`
 alongside `cli/src/main.ts` → `cli/dist/cli.js`, and `resolveTrayEntry()` looks
-for that bundle in the dev checkout first and then in `<installRoot>/dist/tray.js`,
-which is where a release puts it. A build that is missing the bundle produces an
-explicit "the tray bundle is missing … run `bun run build:cli`" instead of a
-console that hides itself and waits for an icon that never appears.
+for that bundle in two places, in order:
+
+1. `<devRepoRoot>/cli/dist/tray.js` — what `bun run build:cli` writes from a
+   source checkout, so `bun run cli:dev` runs the tray it just built.
+2. `<bundleDir>/tray.js`, where `bundleDir` is the directory of the launcher
+   that is executing (`import.meta.dir`). The published package ships
+   `dist/cli.js` and `dist/tray.js` side by side, so this is the only candidate
+   that exists for an install from npm. It is also the anchor that version-locks
+   the tray to its launcher: the tray speaks the launcher's control protocol, so
+   a tray resolved from the gateway install root could outlive a launcher
+   upgrade.
+
+There is no `<installRoot>/dist/tray.js` candidate. The release archive carries
+only the gateway executable, `migrations/`, and `dist/dashboard`
+(`releaseEntries` in `scripts/build-release.ts`), and nothing installs a tray
+bundle into the install root, so that path could never resolve.
+
+A missing bundle produces an explicit "the tray bundle is missing …" message
+naming every path looked at, instead of a console that hides itself and waits
+for an icon that never appears. The advice differs by situation: from a checkout
+it is `bun run build:cli`, and from a package it is to reinstall the package,
+because a packaged user has no repository to build in.
 
 Two Win32 facts cost real debugging time and will cost it again:
 

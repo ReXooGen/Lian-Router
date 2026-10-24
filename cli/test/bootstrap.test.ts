@@ -259,8 +259,60 @@ describe("ensureGatewayInstalled", () => {
     };
     expect(record.version).toBe("2.0.1");
     expect(record.assetName).toBe(HOST_ASSET);
-    expect(lines).toEqual(["gateway not installed; fetching the latest release"]);
+    expect(lines).toEqual([
+      "gateway not installed; fetching the latest release",
+      `installing LianRouter 2.0.1 for ${process.platform}-${process.arch}`,
+    ]);
     expect(source.calls).toBe(1);
+  });
+
+  it("installs when the release version equals the launcher's own version", async () => {
+    // The regression that the old `checkForUpdate` gate could not survive: the
+    // natural first release is tagged with the same version as the launcher, so
+    // `available` was false and a fresh machine refused a release that exists.
+    const { installRoot, release } = await releaseFixture(FLAT_PAYLOAD, { version: "2.0.0" });
+    const source = new FakeSource(release);
+    const lines: string[] = [];
+
+    const result = await ensureGatewayInstalled({
+      installRoot,
+      currentVersion: "2.0.0",
+      source,
+      log: (line) => lines.push(line),
+    });
+
+    expect(result.version).toBe("2.0.0");
+    expect(await readFile(resolveBinaryPath(installRoot), "utf8")).toBe("NEW BINARY");
+    const record = JSON.parse(await readFile(join(installRoot, "version.json"), "utf8")) as {
+      version: string;
+      assetName: string;
+    };
+    expect(record.version).toBe("2.0.0");
+    expect(record.assetName).toBe(HOST_ASSET);
+    expect(lines).toContain(`installing LianRouter 2.0.0 for ${process.platform}-${process.arch}`);
+    expect(source.calls).toBe(1);
+  });
+
+  it("installs a release older than the launcher when it is the only build", async () => {
+    // There is no gateway on disk, so "older" is not a downgrade — it is the
+    // only thing the operator can run. Refusing it leaves them with nothing.
+    const { installRoot, release } = await releaseFixture(FLAT_PAYLOAD, { version: "1.9.0" });
+    const lines: string[] = [];
+
+    const result = await ensureGatewayInstalled({
+      installRoot,
+      currentVersion: "2.0.0",
+      source: new FakeSource(release),
+      log: (line) => lines.push(line),
+    });
+
+    expect(result.version).toBe("1.9.0");
+    expect(await readFile(resolveBinaryPath(installRoot), "utf8")).toBe("NEW BINARY");
+    const record = JSON.parse(await readFile(join(installRoot, "version.json"), "utf8")) as {
+      version: string;
+    };
+    expect(record.version).toBe("1.9.0");
+    expect(lines).toContain(`installing LianRouter 1.9.0 for ${process.platform}-${process.arch}`);
   });
 
   it("reports a published release with no asset for this host", async () => {
@@ -280,6 +332,7 @@ describe("ensureGatewayInstalled", () => {
     expect(error).toBeInstanceOf(GatewayNotInstalledError);
     const failure = error as GatewayNotInstalledError;
     expect(failure.message).toContain(`${process.platform}-${process.arch}`);
+    expect(failure.message).toContain("2.1.0");
     expect(failure.message).toContain("no build for");
     expect(failure.releaseUrl).toBe("https://github.com/ReXooGen/Lian-Router/releases");
     expect(failure.message).toContain(failure.releaseUrl);
@@ -298,6 +351,7 @@ describe("ensureGatewayInstalled", () => {
     expect(error).toBeInstanceOf(GatewayNotInstalledError);
     const failure = error as GatewayNotInstalledError;
     expect(failure.message).toContain("no LianRouter release published");
+    expect(failure.message).toContain(`${process.platform}-${process.arch}`);
     expect(failure.message).toContain("https://github.com/ReXooGen/Lian-Router/releases");
     expect(failure.message).not.toContain("no build for");
   });

@@ -8,8 +8,9 @@
  * and the operator got `ENOENT` from `uv_spawn`.
  *
  * The contract with the release feed is the same one the updater uses, and it is
- * deliberately not re-implemented here: `checkForUpdate` selects the asset for
- * this host, `downloadToFile` streams it and verifies the sha256 inline,
+ * deliberately not re-implemented here: `resolveInstallCandidate` answers the
+ * install question (newest release for this host, plus its asset) without
+ * comparing versions, `downloadToFile` streams it and verifies the sha256 inline,
  * `extractArchive` unpacks into a bounded staging directory, and
  * `installAtomically` swaps the top-level entries with rollback. A second
  * download path would be a second place for the checksum check to rot.
@@ -32,7 +33,7 @@ import { join } from "node:path";
 
 import type { UpdateSource } from "../update/contracts";
 import { downloadToFile } from "../update/download";
-import { checkForUpdate } from "../update/engine";
+import { resolveInstallCandidate } from "../update/engine";
 import { extractArchive } from "../update/extract";
 import { UPDATE_REPO } from "../update/github-source";
 import { installAtomically } from "../update/install";
@@ -132,52 +133,54 @@ export async function ensureGatewayInstalled(options: BootstrapOptions): Promise
   await mkdir(installRoot, { recursive: true });
   log("gateway not installed; fetching the latest release");
 
-  const info = await checkForUpdate({
-    currentVersion,
+  const resolution = await resolveInstallCandidate({
     ...(options.source === undefined ? {} : { source: options.source }),
+    clientVersion: currentVersion,
   });
   const platform = process.platform;
   const arch = process.arch;
-  const releaseUrl = releasePageUrl(info.notesUrl);
+  const releaseUrl = releasePageUrl(
+    resolution.status === "installable"
+      ? resolution.candidate.notesUrl
+      : resolution.status === "no-asset"
+        ? resolution.notesUrl
+        : undefined,
+  );
 
-  if (!info.available) {
-    // Two distinct facts share `available: false`. A newer release that simply
-    // has no asset for this host is a packaging gap; `latest === current` means
-    // the feed carries no release at all, which is a different instruction to
-    // the operator (wait/ask vs. build it yourself).
-    if (info.latest !== currentVersion) {
-      throw new GatewayNotInstalledError(
-        `LianRouter ${info.latest} has no build for ${platform}-${arch}. ` +
-          `Install from source (\`bun run build\`) or check ${releaseUrl}`,
-        { platform, arch, releaseUrl },
-      );
-    }
+  if (resolution.status === "no-release") {
     throw new GatewayNotInstalledError(
       `no LianRouter release published for ${platform}-${arch} yet ` +
-        `(the release feed has nothing newer than ${currentVersion}). See ${releaseUrl}`,
+        `(the release feed has no published release). See ${releaseUrl}`,
       { platform, arch, releaseUrl },
     );
   }
-
-  if (info.assetUrl === undefined || info.assetName === undefined) {
+  if (resolution.status === "no-asset") {
     throw new GatewayNotInstalledError(
-      `release ${info.latest} has no downloadable asset for ${platform}-${arch}. See ${releaseUrl}`,
+      `LianRouter ${resolution.version} has no build for ${platform}-${arch}. ` +
+        `Install from source (\`bun run build\`) or check ${releaseUrl}`,
       { platform, arch, releaseUrl },
     );
   }
-  const assetUrl = info.assetUrl;
-  const assetName = info.assetName;
 
-  if (info.checksum === undefined) {
+  // Install whatever this host can run, regardless of how the release version
+  // compares to the launcher's own. A launcher that cannot install a gateway is
+  // useless, and refusing an older-but-installable build leaves the operator
+  // with nothing at all — there is no gateway on disk to be "downgraded" from.
+  const { candidate } = resolution;
+
+  if (candidate.checksum === undefined) {
     // Fail closed. The code executes what it downloads, so an artifact that
     // cannot be distinguished from a tampered one is not installed.
     throw new GatewayNotInstalledError(
-      `release ${info.latest} has no sha256 digest for ${assetName}; ` +
+      `release ${candidate.version} has no sha256 digest for ${candidate.assetName}; ` +
         `refusing to install unverified bytes. See ${releaseUrl}`,
       { platform, arch, releaseUrl },
     );
   }
-  const checksum = info.checksum;
+  const assetUrl = candidate.assetUrl;
+  const assetName = candidate.assetName;
+  const checksum = candidate.checksum;
+  log(`installing LianRouter ${candidate.version} for ${platform}-${arch}`);
 
   const workDir = await mkdtemp(join(tmpdir(), "lianrouter-bootstrap-"));
   try {
@@ -222,7 +225,7 @@ export async function ensureGatewayInstalled(options: BootstrapOptions): Promise
     const replace = await payloadEntries(stagedDir);
     if (replace.length === 0) {
       throw new GatewayNotInstalledError(
-        `release ${info.latest} for ${platform}-${arch} has an empty archive; nothing to install. See ${releaseUrl}`,
+        `release ${candidate.version} for ${platform}-${arch} has an empty archive; nothing to install. See ${releaseUrl}`,
         { platform, arch, releaseUrl },
       );
     }
@@ -247,7 +250,7 @@ export async function ensureGatewayInstalled(options: BootstrapOptions): Promise
       // `lianrouter.exe` at the root; naming the entries makes that obvious
       // instead of leaving a spawn error on the next run.
       throw new GatewayNotInstalledError(
-        `release ${info.latest} installed but ${binaryPath} is missing; ` +
+        `release ${candidate.version} installed but ${binaryPath} is missing; ` +
           `the archive's top-level entries were ${replace.join(", ")}. ` +
           `A release whose payload is nested one level deep cannot be installed. See ${releaseUrl}`,
         { platform, arch, releaseUrl },
@@ -257,13 +260,13 @@ export async function ensureGatewayInstalled(options: BootstrapOptions): Promise
     // After the binary assertion, so a rejected archive never records a version
     // for an install the launcher cannot use.
     await writeInstalledVersion(installRoot, {
-      version: info.latest,
+      version: candidate.version,
       installedAt: new Date().toISOString(),
       assetName,
     });
 
-    emit?.({ phase: "done", percent: 100, message: `installed ${info.latest}` });
-    return { binaryPath, version: info.latest };
+    emit?.({ phase: "done", percent: 100, message: `installed ${candidate.version}` });
+    return { binaryPath, version: candidate.version };
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
