@@ -1,6 +1,10 @@
 # Changelog
 
-## 2.1.1
+## 2.2.0
+
+2.2.0 is a minor release, not a patch: it adds a subcommand and a new
+configuration surface that 2.1.1 did not have. The gateway binary and the
+dashboard bundle are unchanged.
 
 ### An installed copy has a config file, and a missing one fails early
 
@@ -31,6 +35,8 @@ base64 encryption key and a commented `DATABASE_URL` placeholder, and refuses
 to overwrite an existing file. Failures that are not configuration problems —
 a port conflict, a missing `migrations/`, an unreachable database — still report
 the gateway's logged line through `describeFailure()`.
+
+## 2.1.1
 
 ### The update command compares the installed gateway version
 
