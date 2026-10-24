@@ -45,6 +45,8 @@ src/console/
                           absolute paths)
   tunnel/                 cloudflared quick-tunnel lifecycle (`/tunnel*`) that publishes this
                           gateway publicly and outranks LIANROUTER_PUBLIC_BASE_URL while live
+  update/                 launcher-mediated self-update (`/update*`): reads the launcher's
+                          run/control.json and proxies its loopback control plane
 ```
 
 ## Conventions
@@ -120,6 +122,19 @@ in `console_settings.preferences.consolePasswordManaged`, read through the gate 
 releases ownership so the environment value applies again — the recovery path when the console
 password is forgotten. A claim with no fingerprint cannot prove the value was unchanged and is
 treated as rotated, because the alternative strands the operator outside their own console.
+
+Releasing ownership is scoped to the reconciled tenant (`console_settings` is one row per tenant;
+an unscoped update cleared the flag on every tenant at once). Boot reconciliation logs exactly one
+`warn` line when it changes something — ownership claimed or released, or the hash rewritten — and
+stays silent on the no-op path, which runs on every restart. The line carries the decision and the
+tenant id, never a password, hash, fingerprint, or token; the sink is injected so tests record it
+without patching the process logger.
+
+The login screen's default-password hint is a claim about a *usable credential*, so it is
+`usesDefaultPassword && !consoleManaged`. `resolveConsolePasswordGate` is sync and process-scoped
+and cannot read the DB, so `consolePasswordGateWithOwnership` applies the ownership flag the
+request already resolved; `/auth/first-boot` therefore hides the hint the moment the console owns
+the secret, even when the environment value never changed from the shipped default.
 
 **Invariants.** Session rows store `hashSecret(token)`; the plaintext is handed to the route
 once for cookie-setting and never persisted or logged. Cookie and DB expiry share one
@@ -648,6 +663,58 @@ its `exit` event flips the status to not-running with an error rather than leavi
 advertised. stderr is drained for the child's whole life, keeping only a bounded tail to scan
 for the host — an unread pipe eventually blocks cloudflared. The child's environment is never
 logged. The binary comes from `LIANROUTER_CLOUDFLARED_BIN` (default `cloudflared` on PATH).
+
+## Update (`update/`)
+
+`GET /update` reports whether this install can be updated and what the launcher
+last saw; `POST /update/start` asks the launcher to begin. Reads take
+`dashboard:read`; the start takes `dashboard:write` and audits
+`settings.update.started` with the current version as the target and the offered
+version in `detail`.
+
+**The launcher is the only writer.** The gateway cannot install an update: it
+does not own its binary, it cannot replace a file it is executing, and it is
+stopped in the middle of the operation. The launcher owns the install tree and
+the supervisor, survives the gateway being stopped and replaced, and publishes a
+loopback control plane in `<installRoot>/run/control.json` (`{port, pid,
+startedAt, token}`, mode `0600`). The launcher injects
+`LIANROUTER_LAUNCHER_HOME` into the gateway child; this domain reads that
+variable, reads the handshake, and calls
+`http://127.0.0.1:<port>/update/state` and `/update/start` with
+`x-lianrouter-control: <token>`.
+
+**The token never reaches the browser.** It exists so that reaching the port is
+not the same as being allowed to command the launcher, and it stays inside
+`launcher-client.ts` — no response in this domain carries it. The handshake is
+re-read on every request and never cached: the launcher mints a new port and
+token per boot, so a cached pair would outlive a launcher restart and dial a
+socket nobody owns. A missing env var, a missing file, a malformed field, or an
+unreachable port all collapse to `launcher: false` rather than an exception —
+"no update control" is a state the dashboard renders, not a failure it reports.
+
+**Progress survives a gateway restart.** An update stops the gateway, replaces
+the binary, and starts it again, while the launcher keeps running. The console
+tab that reconnects afterwards would otherwise see a fresh process with no
+memory of the update it was watching, so the launcher keeps the snapshot, the
+last progress frame, and a `running` flag in its own memory and serves them from
+`GET /update/state`. A second start while one is running is refused with
+`409 update_in_progress` instead of racing the install; a start with no launcher
+is `503 launcher_unavailable`; a launcher that answers anything else is
+`502 launcher_error` carrying its own message.
+
+The wire shape is the dashboard's contract:
+
+```json
+{ "launcher": true, "current": "2.0.0", "latest": "2.0.5", "available": true,
+  "notesUrl": "https://…/releases/tag/v2.0.5", "publishedAt": "2026-10-20T10:00:00Z",
+  "running": false, "progress": null }
+```
+
+`latest`, `notesUrl`, and `publishedAt` are `null` when unknown; `available` and
+`launcher` are both `false` when no launcher is attached; `progress` is `null` or
+`{ phase, percent, message, bytesReceived, bytesTotal, error }` with the three
+trailing fields `null` when absent. `phase: "error"` carries the reason in
+`error`.
 
 ## Automation proxy (`automation/`)
 

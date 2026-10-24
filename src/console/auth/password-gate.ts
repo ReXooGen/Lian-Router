@@ -26,6 +26,7 @@ import type { LianRouterDatabase } from "../../persistence/postgres";
 import { isRecord } from "../../protocol/primitives";
 import { resolveDefaultGatewayApiKey } from "../../config";
 import { encryptCredential, hashSecret } from "../../security/crypto";
+import { log } from "../../observability/logger";
 import { DEFAULT_API_KEY_LABEL } from "../domains/api-keys/contracts";
 import { and } from "drizzle-orm";
 import { apiKeys } from "../../persistence/schema";
@@ -41,12 +42,36 @@ const DEFAULT_GATE_USERNAME = "admin";
 
 /**
  * The password a fresh local install starts with, and the one the login screen
- * advertises while it is still in use. Changing it in `.env` hides the hint,
- * so the notice can never describe a password that no longer works.
+ * advertises while it is still in use.
+ *
+ * The hint describes a credential the operator can actually type, so it is only
+ * shown while the environment value is both the default *and* the effective
+ * password. Once the console owns the secret the environment value is a
+ * rotation trigger, not a credential, and the hint must disappear even if the
+ * configured value never changed.
  */
 export const DEFAULT_CONSOLE_PASSWORD = "local-console-2026";
 
 const GATE_SETUP_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('lianrouter:console_password_gate'))`;
+
+/**
+ * Where the gate reports a state change.
+ *
+ * Injected rather than reached for directly so a test can record the line
+ * without patching the process logger, and so the boot path can stay a plain
+ * async function. The default forwards to the shared structured logger every
+ * other `src/` module uses.
+ *
+ * A sink never receives a password, a hash, a fingerprint, or a token: only the
+ * decision and the tenant it applied to.
+ */
+export interface ConsolePasswordLogSink {
+  warn(message: string, context: Record<string, unknown>): void;
+}
+
+const defaultConsolePasswordLogSink: ConsolePasswordLogSink = {
+  warn: (message, context) => log.warn(message, context),
+};
 
 /** Compares two strings without leaking length-independent timing detail. */
 function constantTimeEquals(candidate: string, expected: string): boolean {
@@ -69,9 +94,10 @@ export interface ConsolePasswordGate {
   /** Username the gate signs in as. Only meaningful when enabled. */
   readonly username: string;
   /**
-   * The configured password is still the shipped default. The login screen
-   * shows it only in this state, so an operator who changed it does not see a
-   * stale credential on their own sign-in page.
+   * The configured password is still the shipped default *and* the environment
+   * is still the effective owner. The login screen shows it only in this
+   * state, so an operator who changed it — in `.env` or from the console — does
+   * not see a stale credential on their own sign-in page.
    */
   readonly usesDefaultPassword: boolean;
   /** Verifies a submitted password. Always false when the gate is disabled. */
@@ -124,6 +150,29 @@ export function consolePasswordGateFor(password: string): ConsolePasswordGate {
 }
 
 /**
+ * The gate a request should report the default-password hint for.
+ *
+ * `usesDefaultPassword` is a claim about a *usable credential*, and ownership
+ * decides whether the environment value is one: while the console owns the
+ * secret, `LIANROUTER_CONSOLE_PASSWORD` only triggers a reclaim, so printing it
+ * as "the default password" advertises a value the server rejects with a 401.
+ *
+ * The ownership flag is database state, so the combination cannot live in
+ * `resolveConsolePasswordGate` (sync, one read per process, no DB handle). It
+ * belongs here instead: the login route already resolves ownership once per
+ * request through `resolveEffectiveConsolePassword`, so this takes that answer
+ * as a parameter and stays sync. The gate is only rebuilt when ownership
+ * changes the answer — otherwise the caller's instance is returned untouched.
+ */
+export function consolePasswordGateWithOwnership(
+  gate: ConsolePasswordGate,
+  consoleManaged: boolean,
+): ConsolePasswordGate {
+  if (!consoleManaged || !gate.usesDefaultPassword) return gate;
+  return { ...gate, usesDefaultPassword: false };
+}
+
+/**
  * Whether the console has taken ownership of the password away from `.env`.
  *
  * Read from the gate user's tenant settings row. A missing row, a missing key,
@@ -133,32 +182,66 @@ export function consolePasswordGateFor(password: string): ConsolePasswordGate {
 export async function consolePasswordIsConsoleManaged(
   db: LianRouterDatabase,
 ): Promise<boolean> {
-  const preferences = await gatePreferences(db);
-  return isRecord(preferences) && preferences.consolePasswordManaged === "console";
+  const { managed } = await readConsolePasswordOwnership(db, undefined);
+  return managed;
 }
 
 /**
- * The gate's own preferences row.
+ * One read of everything the ownership decision needs: whose tenant the gate
+ * belongs to, whether the console owns the secret, and whether `.env` was
+ * rotated since it claimed it.
+ *
+ * Callers that need both answers (boot reconciliation) get them from one query
+ * instead of two, and the tenant id travels with the answer so a writer never
+ * has to re-derive it — the release path needs it to avoid an unscoped update.
+ */
+async function readConsolePasswordOwnership(
+  db: LianRouterDatabase,
+  environmentPassword: string | undefined,
+): Promise<{ tenantId: string | undefined; managed: boolean; rotated: boolean }> {
+  const { tenantId, preferences } = await gatePreferences(db);
+  const managed = isRecord(preferences) && preferences.consolePasswordManaged === "console";
+  if (!managed || environmentPassword === undefined) {
+    return { tenantId, managed, rotated: false };
+  }
+  const stored = preferences.consolePasswordEnvFingerprint;
+  // A row claimed before the fingerprint existed cannot prove the environment
+  // was unchanged. Treat it as a rotation: the environment value is the
+  // documented way back in, and assuming the opposite would leave an operator
+  // who forgot the console password with no path except editing the database.
+  const rotated =
+    typeof stored !== "string" || stored !== consolePasswordEnvFingerprint(environmentPassword);
+  return { tenantId, managed, rotated };
+}
+
+/**
+ * The gate's own preferences row plus the tenant it belongs to.
  *
  * Scoped to the gate user's tenant, never "the first row in the table": a
  * deployment can hold several tenants, and reading an arbitrary one made the
  * ownership flag depend on insert order — the console password then survived a
  * restart on one machine and silently reverted on another.
+ *
+ * The tenant id is returned beside the preferences because every writer of this
+ * row needs it: an unscoped `update(consoleSettings)` would clear ownership on
+ * every tenant at once.
  */
-async function gatePreferences(db: LianRouterDatabase): Promise<unknown> {
+async function gatePreferences(
+  db: LianRouterDatabase,
+): Promise<{ tenantId: string | undefined; preferences: unknown }> {
   const userRows = await db
     .select({ tenantId: consoleUsers.tenantId })
     .from(consoleUsers)
     .where(consoleUsernameMatches(DEFAULT_GATE_USERNAME))
     .limit(1);
   const tenantId = userRows[0]?.tenantId;
-  if (tenantId === undefined) return undefined;
+  if (tenantId === undefined) return { tenantId: undefined, preferences: undefined };
   const rows = await db
     .select({ preferences: consoleSettings.preferences })
     .from(consoleSettings)
     .where(eq(consoleSettings.tenantId, tenantId))
     .limit(1);
-  return rows[0]?.preferences;
+  return { tenantId, preferences: rows[0]?.preferences };
 }
 
 /**
@@ -183,6 +266,7 @@ export async function claimConsolePasswordOwnership(
   db: LianRouterDatabase,
   tenantId: string,
   environmentPassword: string | undefined = resolveConsolePassword(),
+  logSink: ConsolePasswordLogSink = defaultConsolePasswordLogSink,
 ): Promise<void> {
   const now = new Date();
   const fingerprint =
@@ -210,30 +294,9 @@ export async function claimConsolePasswordOwnership(
         updatedAt: now,
       },
     });
-}
-
-/**
- * True when the environment password changed since the console claimed it.
- *
- * A rotated `LIANROUTER_CONSOLE_PASSWORD` is the operator's explicit way to
- * take the secret back, including when they forgot the console one. An
- * unchanged value keeps the console's password, which is what makes a change
- * made in the UI durable.
- */
-export async function consolePasswordEnvRotated(
-  db: LianRouterDatabase,
-  environmentPassword: string | undefined = resolveConsolePassword(),
-): Promise<boolean> {
-  if (environmentPassword === undefined) return false;
-  const preferences = await gatePreferences(db);
-  if (!isRecord(preferences) || preferences.consolePasswordManaged !== "console") return false;
-  const stored = preferences.consolePasswordEnvFingerprint;
-  // A row claimed before the fingerprint existed cannot prove the environment
-  // was unchanged. Treat it as a rotation: the environment value is the
-  // documented way back in, and assuming the opposite would leave an operator
-  // who forgot the console password with no path except editing the database.
-  if (typeof stored !== "string") return true;
-  return stored !== consolePasswordEnvFingerprint(environmentPassword);
+  logSink.warn("[console-password] console claimed ownership of the gate password", {
+    tenantId,
+  });
 }
 
 /**
@@ -242,16 +305,23 @@ export async function consolePasswordEnvRotated(
  * Used when the operator rotates `LIANROUTER_CONSOLE_PASSWORD` on a machine
  * where the console had taken over: the environment becomes authoritative
  * again and the hash is re-seeded at boot.
+ *
+ * The update is scoped to the reconciled tenant. `console_settings` is one row
+ * per tenant, so an unscoped `update` cleared `consolePasswordManaged` and its
+ * fingerprint on every tenant in the deployment — a cross-tenant write in the
+ * path that decides who owns the console credential.
  */
 export async function releaseConsolePasswordOwnership(
   db: LianRouterDatabase,
+  tenantId: string,
 ): Promise<void> {
   await db
     .update(consoleSettings)
     .set({
       preferences: sql`${consoleSettings.preferences} - 'consolePasswordManaged'`,
       updatedAt: new Date(),
-    });
+    })
+    .where(eq(consoleSettings.tenantId, tenantId));
 }
 
 /**
@@ -328,17 +398,28 @@ export async function reconcileConsolePasswordUser(
   credentialService: ConsoleCredentialService,
   gate: ConsolePasswordGate = resolveConsolePasswordGate(),
   password: string | undefined = resolveConsolePassword(),
+  logSink: ConsolePasswordLogSink = defaultConsolePasswordLogSink,
 ): Promise<void> {
   if (!gate.enabled || password === undefined) return;
-  if (await consolePasswordIsConsoleManaged(db)) {
+  // One read for both ownership questions. The tenant id it returns is the one
+  // the release must target: the flag lives in a per-tenant row, so releasing
+  // it unscoped cleared every tenant's ownership at once.
+  const ownership = await readConsolePasswordOwnership(db, password);
+  let ownershipReleased = false;
+  if (ownership.managed) {
     // A console-managed password stays authoritative across restarts — that is
     // what makes a change made in the UI durable. Rotating the environment
     // value is the explicit way to take the secret back, which also covers an
     // operator who forgot the console password.
-    if (!(await consolePasswordEnvRotated(db, password))) return;
-    await releaseConsolePasswordOwnership(db);
+    if (!ownership.rotated) return;
+    if (ownership.tenantId !== undefined) {
+      await releaseConsolePasswordOwnership(db, ownership.tenantId);
+      ownershipReleased = true;
+    }
   }
 
+  let passwordHashRewritten = false;
+  let reconciledTenantId: string | undefined;
   await db.transaction(async (transaction) => {
     await transaction.execute(GATE_SETUP_LOCK);
     const scope = transaction as unknown as LianRouterDatabase;
@@ -357,6 +438,7 @@ export async function reconcileConsolePasswordUser(
       const inserted = insertedTenant.rows[0];
       tenantId = isRecord(inserted) && typeof inserted.id === "string" ? inserted.id : candidateId;
     }
+    reconciledTenantId = tenantId;
 
     // Same predicate the login route reads with: a row stored `Admin` is the
     // gate's account, and inserting a second `admin` beside it would make
@@ -383,6 +465,7 @@ export async function reconcileConsolePasswordUser(
         }),
       );
       assertMutationApplied(insertedUser, "Administrator user");
+      passwordHashRewritten = true;
     } else if (!(await credentialService.verifyPassword(password, existing.passwordHash))) {
       // The environment is authoritative until the console takes over: a
       // rotated password is applied on the next boot instead of requiring a
@@ -395,6 +478,7 @@ export async function reconcileConsolePasswordUser(
           .where(eq(consoleUsers.id, existing.id)),
       );
       assertMutationApplied(updated, "Administrator password");
+      passwordHashRewritten = true;
     }
 
     const defaultApiKey = resolveDefaultGatewayApiKey();
@@ -417,4 +501,18 @@ export async function reconcileConsolePasswordUser(
       requestsPerMinute: 240,
     });
   });
+
+  // Exactly one line per boot that changed the credential's owner or value.
+  // The no-op paths return above, so a routine restart — the common case — stays
+  // silent instead of printing the same line on every start.
+  if (ownershipReleased || passwordHashRewritten) {
+    logSink.warn("[console-password] reconciled the console gate password", {
+      tenantId: reconciledTenantId,
+      ownershipReleased,
+      passwordHashRewritten,
+      // What the boot path changed, not a secret: an operator whose environment
+      // password stopped working can see which branch ran.
+      effectiveOwner: "env",
+    });
+  }
 }

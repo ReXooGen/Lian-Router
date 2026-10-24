@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { usePresence } from "../lib/use-presence";
 import { useModalFocus } from "../lib/hooks/use-modal-focus";
@@ -43,6 +44,7 @@ import { useCustomizationAssetUrl, useCustomizationBranding } from "../lib/custo
 import { useQuotaOverview } from "../lib/hooks/quota";
 import { quotaBarTone } from "../lib/quota-formatters";
 import { ProviderIcon } from "./ProviderIcon";
+import { UpdateModal } from "./UpdateModal";
 import type { SessionUser } from "../lib/contracts";
 import { formatUptime } from "../lib/format";
 
@@ -150,6 +152,21 @@ function useSafeSystemHealth() {
     return useSystemHealth();
   } catch {
     return { data: undefined, isError: false, isFetching: false, isPending: false };
+  }
+}
+
+/**
+ * The shell is rendered without a `QueryClient` in some embeds (and in the
+ * shell's own markup tests). The update modal is a query reader, so it is only
+ * mounted when a client is actually present rather than throwing through the
+ * whole navigation tree.
+ */
+function useHasQueryClient(): boolean {
+  try {
+    useQueryClient();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -798,6 +815,7 @@ export function DashboardShell({
   const healthQuery = useSafeSystemHealth();
   const drawerPresence = usePresence(drawerOpen);
   const pull = usePullToRefresh(() => queryClient.invalidateQueries());
+  const hasQueryClient = useHasQueryClient();
 
   const isHealthy = healthQuery.data?.status === "healthy";
 
@@ -992,6 +1010,7 @@ export function DashboardShell({
         </div>
       </div>
       <CommandPalette open={paletteOpen} close={() => setPaletteOpen(false)} />
+      {hasQueryClient ? <UpdateModal /> : null}
     </>
   );
 }

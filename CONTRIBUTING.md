@@ -126,6 +126,32 @@ contributors:
   `AGENTS.md` under "Documentation and configuration currency" — read that
   section before touching any doc.
 
+## The launcher package
+
+`cli/` is a separate package with its own `package.json` and `tsconfig.json`, and
+it is not compiled by the root `tsc --noEmit` (the root config includes `src`,
+`test`, and `scripts` only). Typecheck and build it from its own directory with
+`bun run --cwd cli typecheck` and `bun run build:cli`; its behavior, install
+layout, and extension points are documented in `cli/CLI.md`. A change that
+crosses the process boundary — a new control route, a new update phase — updates
+that doc in the same change, because nothing in `src/` describes the launcher.
+
+`bun run build:cli` emits both bundles (`cli/dist/cli.js` for the `bin`,
+`cli/dist/tray.js` for the tray host). It is invoked by `prepublishOnly`, so
+every path in `scripts/build-cli.ts` is anchored to the script's own location
+and the build pins its bundling cwd: running it from the repository root and
+running `bun run build` inside `cli/` produce byte-identical output.
+
+The launcher does not ship the gateway. `bun run build` produces the binary and
+the dashboard, and `bun run build:release` (`scripts/build-release.ts`) stages
+the gateway executable, `migrations/`, and `dist/dashboard/` flat and zips them
+into `dist/release/lianrouter-<platform>-<arch>.zip`. That archive is the
+contract the updater and the first-run bootstrap consume: `pickAssetForPlatform`
+selects it by exact `platform-arch` token, and the bootstrap asserts the binary
+lands at the archive root. The script prints the archive's sha256 — a release
+asset without a digest is refused by the install path, so the digest must be
+attached to the GitHub release asset.
+
 ## Pull requests
 
 - Branch from `main`, keep the change focused, remove callers in the same

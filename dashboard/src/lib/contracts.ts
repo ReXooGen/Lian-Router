@@ -104,6 +104,13 @@ export type {
 } from "../../../src/console/settings/contracts";
 export type { TunnelStatus } from "../../../src/console/tunnel/contracts";
 
+// The update domain proxies the launcher's control socket; the wire shape is
+// the backend DTO, so the modal renders exactly what the gateway validated.
+export type {
+  UpdateProgressResponse as UpdateProgress,
+  UpdateStatusResponse as UpdateStatus,
+} from "../../../src/console/update/contracts";
+
 export type { RedisMode } from "../../../src/persistence/readiness";
 
 export type HealthStatus = (typeof healthStatus.enumValues)[number];

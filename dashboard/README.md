@@ -69,6 +69,38 @@ authority; update the mirror in the same change and keep `dashboard/src/*-parity
   API boundary instead of constructing another HTTP client or importing backend
   modules.
 
+## Update modal
+
+`src/components/UpdateModal.tsx` is mounted by `DashboardShell` next to the
+command palette, so it appears on every console page without a route of its own.
+It renders nothing unless the gateway reports an available release.
+
+It reads one endpoint and calls one:
+
+- `GET /console/api/update` → `{ launcher, current, latest, available,
+  notesUrl, publishedAt, running, progress }`. `latest`, `notesUrl` and
+  `publishedAt` may be `null`; `progress` is `null` or `{ phase, percent,
+  message, bytesReceived, bytesTotal, error }` with `percent` in `0..100` and
+  the counters and `error` nullable. `launcher: false` means the gateway was not
+  started by the `lianrouter` launcher, so the modal only points at
+  `lianrouter update` and offers no button.
+- `POST /console/api/update/start` → `202 { accepted: true }`, or an
+  `ApiErrorShape` with status 409 `update_in_progress`, 503
+  `launcher_unavailable`, or 502 `launcher_error`.
+
+`src/lib/hooks/update.ts` owns the query and mutation. The status query polls
+every 2s while `running`, otherwise every 60s, and validates the payload with
+`assertUpdateStatus` before the modal renders it. The wire types are re-exported
+from `src/lib/contracts.ts`, which mirrors `src/console/update/contracts.ts`.
+
+Dismissal is stored per version in `localStorage` under
+`lianrouter.update.dismissed`, so a newer release re-opens the modal. During an
+install the modal shows the launcher's phase and a determinate bar; an `error`
+phase renders the launcher's message with a Retry. Because the launcher restarts
+the gateway, the modal then polls `GET /health` (not `/console/api`) every 2s for
+up to 90s and reloads the page when the gateway answers. If it never answers,
+the modal says so and offers Reload.
+
 ## Browser-safe boundary
 
 Vite bundles this tree for browsers. Never import backend modules, Elysia,

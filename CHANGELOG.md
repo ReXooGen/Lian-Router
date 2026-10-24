@@ -5,6 +5,128 @@
 > All changes below are pre-release. LianRouter has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### The published launcher installs the gateway on first run
+
+`npm i -g lianrouter` (or `bun add -g lianrouter`) followed by `lianrouter`
+used to fail on a machine that had never run LianRouter: the package ships only
+the launcher, and the supervisor spawned `<installRoot>/lianrouter.exe`, which
+did not exist. `ensureGatewayInstalled()` in `cli/src/bootstrap.ts` now runs
+before the supervisor is constructed when there is no dev checkout: it returns
+immediately if the binary is present (no network), otherwise fetches the release
+for this platform, verifies its sha256, extracts it, installs it atomically, and
+records `version.json`. A release with no asset for the host, no digest, or no
+release at all is refused with a one-line message naming the platform and the
+releases page; an archive whose payload is nested is reported with the entries it
+actually contained instead of leaving a spawn error on the next run. The check is
+skipped for `status`, `stop`, `--version`, and `--help`, and never happens during
+`bun add` / `npm i` — the package's `postinstall` only prints that the download
+happens on first run.
+
+`bun run build:release` (`scripts/build-release.ts`) packages the archive both
+the updater and the bootstrap consume: `lianrouter-<platform>-<arch>.zip` with
+the gateway executable, `migrations/`, and `dist/dashboard/` at the top level. It
+prints the sha256 the release asset's digest must carry, because an asset without
+a digest is refused by the install path. `scripts/build-cli.ts` now anchors every
+path to its own location and pins its bundling cwd, so `prepublishOnly` from
+`cli/` and `bun run build:cli` from the repository root emit byte-identical
+bundles; `cli/package.json` ships `README.md` alongside `dist`, and the root and
+dashboard manifests report `2.0.0` so the launcher and the console agree.
+
+### The tray host exists, and it does not block the event loop
+
+The tray is a real process now: `cli/tray/` gained `pump.ts`, `icon.ts`,
+`host.ts`, `connection.ts`, and `update-watch.ts` alongside the existing
+`win32.ts`, `paths.ts`, `protocol.ts`, and `control-client.ts`, and
+`scripts/build-cli.ts` bundles `cli/tray/host.ts` to `cli/dist/tray.js` next to
+`cli/dist/cli.js` so `lianrouter tray` has an entry to spawn. The pump polls
+rather than waiting: it drains the queue with `PeekMessageW(PM_REMOVE)` and then
+awaits `Bun.sleep(8)`. A blocking `GetMessageW` cannot work, because a blocked
+thread cannot run JavaScript — a pending `fetch` stays unresolved for the whole
+block — and a Worker is not the answer either, since `RegisterClassExW` fails
+there with `ERROR_INVALID_PARAMETER`; a non-blocking pump on the main thread is
+the only shape that holds. `WM_NCCREATE` must return `1n`, because returning
+zero makes `CreateWindowExW` fail with `GetLastError() == 0` and no cause to
+read. The icon is drawn at runtime from the brand mark into a supersampled BGRA
+DIB, so a packaged build needs no asset file and no font. `connection.ts`
+re-reads `run/control.json` on every action and retries once when the port or
+token changed, because the control server binds an ephemeral port and mints a
+new token on every start. `update-watch.ts` polls `GET /update/state` after
+`POST /update/start` and reports a failed install, because the `202` alone says
+nothing about the outcome.
+
+### The console offers updates and shows the install progress
+
+The console can now offer an update instead of only the tray being able to.
+`src/console/update/` (`contracts.ts`, `routes.ts`, `launcher-client.ts`)
+proxies the launcher's loopback control plane through `GET /console/api/update`
+and `POST /console/api/update/start`; the gateway reads
+`LIANROUTER_LAUNCHER_HOME`, which the launcher injects, plus `run/control.json`,
+so the bearer token never reaches the browser. `GET /update/state` on the
+launcher is durable, which is what lets progress survive the gateway being
+stopped and replaced mid-install. The dashboard gained
+`dashboard/src/lib/hooks/update.ts` and
+`dashboard/src/components/UpdateModal.tsx`, mounted once in `Shell.tsx`.
+`cli/src/update-flow.ts` keeps the gateway alive through check, download,
+verify, and extract, and stops it exactly once on the first `installing` frame,
+because Windows holds the running executable open and the atomic install's
+rename would fail; the `restart` hook then starts the new binary. A failure
+before `installing` leaves the console working, while a failure after it
+restarts the gateway so the page's `/health` wait can recover, and the modal
+reloads the page when `/health` answers again.
+
+### The login screen no longer prints a password the server rejects
+
+`usesDefaultPassword` was computed from the environment value alone, so once the
+console took ownership of the password the sign-in hint still rendered the
+shipped default — and that value returned `401`, because the stored hash was
+authoritative. The hint is now combined with the DB ownership flag at the
+request boundary in `consolePasswordGateWithOwnership`, so it disappears exactly
+when the environment value stops being the effective password.
+`releaseConsolePasswordOwnership` now takes a tenant id and scopes its `UPDATE`;
+it previously had no `WHERE`, which would have cleared the claim on every tenant
+row when a rotated environment value reclaimed ownership — a cross-tenant write
+in the path that decides who owns the console credential. Reconciliation in
+`reconcileConsolePasswordUser` logs one `warn` line when it changes the
+credential and stays silent on the no-op path, so a routine restart no longer
+repeats the same line on every boot.
+
+### The launcher explains why the gateway did not start
+
+`ensureStarted` used to throw `gateway did not answer /health on port N` with no
+cause, leaving a missing `DATABASE_URL`, a missing `migrations/`, and a refused
+Postgres indistinguishable from outside. `cli/src/supervisor.ts` now keeps the
+last fatal line the child wrote — pino JSON, pino-pretty, or Bun's
+uncaught-error banner — and `describeFailure()` appends
+`The gateway logged: <line>` to the thrown message; with no fatal line it names
+the log path instead of inventing a cause. First-run installs render progress
+through `cli/src/progress.ts`, which rewrites one line on a TTY and emits one
+line per phase on a pipe, because a tens-of-megabytes download previously
+printed two lines and then nothing. `cli/src/shutdown.ts` installs
+`SIGINT`/`SIGTERM` handlers that stop the control server and the gateway and
+remove `run/control.json` and `run/lianrouter.pid`; a forced kill cannot be
+intercepted — and on Windows the signal is not delivered to a JS handler at all
+— so the tray host's stale-pid check and its re-resolving tooltip are what keep
+a surviving icon from pointing at a socket nobody owns.
+
+### The tray keeps working when the launcher is gone
+
+The tray could outlive its only backend and never say so: the icon stayed
+alive, every menu item answered "Could not reach the CLI control port", and
+the handshake on disk still named a live pid, so the dead-pid guard never
+fired. `callRecovering()` in `connection.ts` now re-resolves the handshake on a
+connection failure and retries once; when the recorded pid is dead,
+`resurrectLauncher()` in `resurrect.ts` spawns a launcher and waits 10 s,
+polling every 250 ms, for a handshake naming a different pid before retrying
+the action. The mode is `--headless`, never `--background`: background stops
+the control server and returns, so a resurrected launcher would publish a
+handshake and immediately delete it. The new launcher adopts a running gateway
+and binds a new ephemeral control port, which is why the tray re-resolves per
+action instead of caching. Open Console falls back to the last known URL, or
+`http://localhost:12800/console`, without the control server at all. `state.ts`
+gives the tooltip four texts — running, gateway stopped, launcher not running,
+control unreachable — and the update row now polls `GET /update/state` after
+the `202` to report a failed or unknown outcome.
+
 ### Provider promotions show as a console badge
 
 WorkBuddy's `deepseek-v4.1-flash` is free from Sep 11 to Oct 31 (2026), and the

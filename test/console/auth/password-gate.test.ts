@@ -20,6 +20,7 @@ import {
   releaseConsolePasswordOwnership,
   resolveConsolePasswordGate,
   type ConsolePasswordGate,
+  type ConsolePasswordLogSink,
 } from "../../../src/console/auth/password-gate";
 
 /**
@@ -50,6 +51,30 @@ function gateFor(password: string | undefined): ConsolePasswordGate {
     usesDefaultPassword: password === DEFAULT_CONSOLE_PASSWORD,
     verify: (candidate: string) => candidate === password,
   };
+}
+
+/**
+ * Reads the two first-boot flags off a JSON body without asserting a shape.
+ *
+ * The response is external input as far as this test is concerned; narrowing
+ * keeps a renamed or retyped field a loud failure instead of an undefined that
+ * compares false and makes the assertion pass for the wrong reason.
+ */
+function readFirstBootFlags(body: unknown): {
+  passwordGate: boolean;
+  defaultPasswordHint: boolean;
+} {
+  if (typeof body !== "object" || body === null) {
+    throw new Error("first-boot response was not a JSON object");
+  }
+  if (!("password_gate" in body) || !("default_password_hint" in body)) {
+    throw new Error("first-boot response is missing its flags");
+  }
+  const { password_gate, default_password_hint } = body;
+  if (typeof password_gate !== "boolean" || typeof default_password_hint !== "boolean") {
+    throw new Error("first-boot flags were not booleans");
+  }
+  return { passwordGate: password_gate, defaultPasswordHint: default_password_hint };
 }
 
 describe("console password gate", () => {
@@ -232,6 +257,44 @@ dbDescribe("single-password console login", () => {
     );
   });
 
+  test("hides the default hint once the console owns the password", async () => {
+    // Regression: the env value was unchanged and still equal to the shipped
+    // default, so the login screen printed "Default password: …" while the
+    // stored hash — the real credential — was a rotated one. The hint is a
+    // promise about a password that works, and in console-managed mode the
+    // environment value only triggers a reclaim.
+    const { userId } = await seedAdmin();
+    const [user] = await db
+      .select()
+      .from(consoleUsers)
+      .where(eq(consoleUsers.id, userId))
+      .limit(1);
+    expect(user).toBeDefined();
+    await claimConsolePasswordOwnership(db, user!.tenantId, DEFAULT_CONSOLE_PASSWORD);
+    expect(await consolePasswordIsConsoleManaged(db)).toBe(true);
+
+    const response = await authApp(gateFor(DEFAULT_CONSOLE_PASSWORD)).handle(
+      new Request("http://localhost/auth/first-boot"),
+    );
+    const payload = readFirstBootFlags(await response.json());
+    expect(payload.passwordGate).toBe(true);
+    expect(payload.defaultPasswordHint).toBe(false);
+  });
+
+  test("keeps the default hint while the environment still owns the password", async () => {
+    // The existing behaviour must not regress: with no ownership claim the env
+    // value *is* the credential, so the shipped default is advertised.
+    await seedAdmin();
+    await db.delete(consoleSettings);
+    expect(await consolePasswordIsConsoleManaged(db)).toBe(false);
+
+    const response = await authApp(gateFor(DEFAULT_CONSOLE_PASSWORD)).handle(
+      new Request("http://localhost/auth/first-boot"),
+    );
+    expect(readFirstBootFlags(await response.json()).defaultPasswordHint).toBe(true);
+  });
+
+
   test("a password changed from the console takes over from the environment", async () => {
     // A public deployment must be able to set its own password: the operator
     // has the console open, not a shell on the host. The change is accepted,
@@ -386,7 +449,7 @@ dbDescribe("console-owned password survives a restart", () => {
       await credentialService.verifyPassword("env-password-123456", after!.passwordHash),
     ).toBe(false);
 
-    await releaseConsolePasswordOwnership(db);
+    await releaseConsolePasswordOwnership(db, row!.tenantId);
     await db.delete(consoleSessions).where(eq(consoleSessions.userId, row!.id));
     await db.delete(consoleUsers).where(eq(consoleUsers.id, row!.id));
   });
@@ -442,7 +505,7 @@ dbDescribe("console-owned password survives a restart", () => {
     const managed = await consolePasswordIsConsoleManaged(db);
     expect(managed).toBe(true);
 
-    await releaseConsolePasswordOwnership(db);
+    await releaseConsolePasswordOwnership(db, row!.tenantId);
     expect(await consolePasswordIsConsoleManaged(db)).toBe(false);
 
     // With ownership released, a rotated environment value applies again.
@@ -461,6 +524,128 @@ dbDescribe("console-owned password survives a restart", () => {
       await credentialService.verifyPassword("env-password-rotated", after!.passwordHash),
     ).toBe(true);
 
+    await db.delete(consoleSessions).where(eq(consoleSessions.userId, row!.id));
+    await db.delete(consoleUsers).where(eq(consoleUsers.id, row!.id));
+  });
+});
+
+dbDescribe("console password reconciliation is tenant-scoped", () => {
+  /** Creates a second tenant with an ownership claim of its own. */
+  async function seedOtherTenant(): Promise<string> {
+    const tenantId = randomUUID();
+    await db.insert(tenants).values({ id: tenantId, name: "other-tenant", status: "active" });
+    await claimConsolePasswordOwnership(db, tenantId, "other-tenant-env-password");
+    return tenantId;
+  }
+
+  test("releasing ownership leaves every other tenant's claim intact", async () => {
+    // Regression: the release used an unscoped `update(consoleSettings)`, so a
+    // rotation on one tenant cleared `consolePasswordManaged` and its
+    // fingerprint on all of them — a cross-tenant write in the path that
+    // decides who owns the console credential.
+    const gate = gateFor("env-password-scoped");
+    await db.delete(consoleSettings);
+    await reconcileConsolePasswordUser(db, credentialService, gate, "env-password-scoped");
+    const [row] = await db
+      .select()
+      .from(consoleUsers)
+      .where(eq(consoleUsers.username, gate.username))
+      .limit(1);
+    expect(row).toBeDefined();
+
+    await claimConsolePasswordOwnership(db, row!.tenantId, "env-password-scoped");
+    const otherTenantId = await seedOtherTenant();
+
+    const otherBefore = await db
+      .select()
+      .from(consoleSettings)
+      .where(eq(consoleSettings.tenantId, otherTenantId))
+      .limit(1);
+    expect(otherBefore[0]?.preferences.consolePasswordManaged).toBe("console");
+    expect(typeof otherBefore[0]?.preferences.consolePasswordEnvFingerprint).toBe("string");
+
+    // The rotated value reconciles the gate tenant and releases only its claim.
+    await reconcileConsolePasswordUser(db, credentialService, gate, "env-password-rotated");
+    expect(await consolePasswordIsConsoleManaged(db)).toBe(false);
+
+    const otherAfter = await db
+      .select()
+      .from(consoleSettings)
+      .where(eq(consoleSettings.tenantId, otherTenantId))
+      .limit(1);
+    expect(otherAfter[0]?.preferences.consolePasswordManaged).toBe("console");
+    expect(otherAfter[0]?.preferences.consolePasswordEnvFingerprint).toBe(
+      otherBefore[0]?.preferences.consolePasswordEnvFingerprint,
+    );
+
+    await db.delete(tenants).where(eq(tenants.id, otherTenantId));
+    await db.delete(consoleSessions).where(eq(consoleSessions.userId, row!.id));
+    await db.delete(consoleUsers).where(eq(consoleUsers.id, row!.id));
+  });
+});
+
+dbDescribe("console password reconciliation logging", () => {
+  /** Collects what the gate reported, without touching the process logger. */
+  function recordingSink(): {
+    sink: ConsolePasswordLogSink;
+    lines: { message: string; context: Record<string, unknown> }[];
+  } {
+    const lines: { message: string; context: Record<string, unknown> }[] = [];
+    return {
+      lines,
+      sink: {
+        warn: (message, context) => {
+          lines.push({ message, context });
+        },
+      },
+    };
+  }
+
+  test("warns once when reconciliation changes the credential", async () => {
+    const gate = gateFor("env-password-logged");
+    await db.delete(consoleSettings);
+    await reconcileConsolePasswordUser(db, credentialService, gate, "env-password-logged");
+    const [row] = await db
+      .select()
+      .from(consoleUsers)
+      .where(eq(consoleUsers.username, gate.username))
+      .limit(1);
+    expect(row).toBeDefined();
+    await claimConsolePasswordOwnership(db, row!.tenantId, "env-password-logged");
+
+    const { sink, lines } = recordingSink();
+    await reconcileConsolePasswordUser(db, credentialService, gate, "env-password-rotated", sink);
+
+    expect(lines).toHaveLength(1);
+    const [line] = lines;
+    expect(line?.context.tenantId).toBe(row!.tenantId);
+    // The line names the decision, never the secret.
+    expect(JSON.stringify(line)).not.toContain("env-password-rotated");
+    expect(JSON.stringify(line)).not.toContain("consolePasswordEnvFingerprint");
+
+    await db.delete(consoleSessions).where(eq(consoleSessions.userId, row!.id));
+    await db.delete(consoleUsers).where(eq(consoleUsers.id, row!.id));
+  });
+
+  test("stays silent on the no-op boot path", async () => {
+    // A routine restart must not print the line: it runs on every boot and
+    // would be pure noise.
+    const gate = gateFor("env-password-quiet");
+    await db.delete(consoleSettings);
+    await reconcileConsolePasswordUser(db, credentialService, gate, "env-password-quiet");
+    const [row] = await db
+      .select()
+      .from(consoleUsers)
+      .where(eq(consoleUsers.username, gate.username))
+      .limit(1);
+    expect(row).toBeDefined();
+    await claimConsolePasswordOwnership(db, row!.tenantId, "env-password-quiet");
+
+    const { sink, lines } = recordingSink();
+    await reconcileConsolePasswordUser(db, credentialService, gate, "env-password-quiet", sink);
+    expect(lines).toHaveLength(0);
+
+    await releaseConsolePasswordOwnership(db, row!.tenantId);
     await db.delete(consoleSessions).where(eq(consoleSessions.userId, row!.id));
     await db.delete(consoleUsers).where(eq(consoleUsers.id, row!.id));
   });

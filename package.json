@@ -1,11 +1,12 @@
 {
   "name": "lianrouter",
-  "version": "2.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
   "workspaces": [
-    "dashboard"
+    "dashboard",
+    "cli"
   ],
   "engines": {
     "bun": "1.4.2"
@@ -19,6 +20,9 @@
     "doctor": "bun run scripts/ops-doctor.ts",
     "build:aot": "bun run scripts/build-aot.ts",
     "build:binary": "bun run scripts/build-binary.ts",
+    "build:cli": "bun run scripts/build-cli.ts",
+    "build:release": "bun run scripts/build-release.ts",
+    "cli:dev": "bun run cli/src/main.ts",
     "typecheck": "tsc --noEmit",
     "generate:usage-periods": "bun run scripts/ci-generate-usage-periods.ts",
     "db:migrate": "bun run scripts/ops-migrate.ts",

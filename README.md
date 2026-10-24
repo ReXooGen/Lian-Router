@@ -9,18 +9,19 @@ dialect — so you configure a route once, and any client can reach any model.**
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-Bun%201.4-black" />
   <img alt="Language" src="https://img.shields.io/badge/TypeScript-strict-3178c6" />
   <img alt="Database" src="https://img.shields.io/badge/PostgreSQL-16+-336791" />
-  <img alt="Build" src="https://img.shields.io/badge/distribution-local%20only-2ea043" />
+  <img alt="Build" src="https://img.shields.io/badge/distribution-self--hosted-2ea043" />
 </p>
 
-This repository is the **local, self-hosted build**: one process, one PostgreSQL
-database, and the console on `http://localhost:12800`. It is meant to be cloned
-and run on your own machine or LAN — there is no hosted service, no account, and
-no shared infrastructure behind it.
+This repository is the **self-hosted build**: one process, one PostgreSQL
+database, and the console on `http://localhost:12800`. Clone it and run it on
+your own machine or LAN. It is developed and published at
+<https://github.com/ReXooGen/Lian-Router>.
 
-> **This build is local-only.** It is a separate working copy from the
-> server-side deployment. Changes here are never published to, deployed to, or
-> synchronised with a remote host. If you also run a hosted instance, treat the
-> two as independent projects with their own configuration and release cadence.
+> **This is not a hosted service.** There is no account, no shared
+> infrastructure, and no telemetry leaving the machine. If a separate private
+> deployment exists, it is a different working copy with its own configuration
+> and release cadence — not this repository, and not something this repository
+> deploys to.
 
 LianRouter sits between your AI clients and your provider accounts. It accepts
 the wire formats real tools already speak, normalizes every one of them into a
@@ -49,6 +50,7 @@ Built with Bun, TypeScript, Elysia, PostgreSQL, and optional Redis coordination.
 - [Request lifecycle](#request-lifecycle)
 - [Requirements](#requirements)
 - [Run it locally](#run-it-locally)
+- [Desktop launcher](#desktop-launcher)
 - [Console](#console)
 - [Share access and tunnels](#share-access-and-tunnels)
 - [Configuration](#configuration)
@@ -170,10 +172,9 @@ same path once they are canonical.
 
 ## Requirements
 
-- Bun 1.4.2
+- Bun 1.4.2, for the runtime and for every build, test, and release script
 - PostgreSQL (local or reachable on your network)
 - Redis for `REDIS_MODE=normal`
-- Node-compatible development environment for tooling
 
 PostgreSQL is external in native and Docker setups. Redis is optional when using
 `REDIS_MODE=single_instance_local`, which is the simplest setup for a single
@@ -210,6 +211,14 @@ LIANROUTER_CONSOLE_PASSWORD=local-console-2026
 That is the password a fresh install ships with, and the login screen prints it
 while it is still in use. Replace it with your own value: the hint disappears as
 soon as the configured password is no longer the default.
+
+The hint is a promise about a password that works, so it appears only while the
+environment value is the **effective** password. Once the console takes ownership
+— a password changed from Settings → Security Controls — the hint is gone even if
+`LIANROUTER_CONSOLE_PASSWORD` still holds the default, because at that point the
+environment value is only a rotation trigger. The two ways back are changing
+`LIANROUTER_CONSOLE_PASSWORD` to a **different** value (a changed value reclaims
+ownership) or resetting the password from the console while signed in.
 
 ```bash
 bun run setup     # creates the schema and seeds the provider catalog
@@ -254,6 +263,74 @@ Useful endpoints:
 /share/:token public child-key enrollment
 ```
 
+## Desktop launcher
+
+The gateway also ships as a global command. Install it once and `lianrouter`
+starts the gateway, opens the console, or hands it to the tray:
+
+```bash
+bun add -g lianrouter
+lianrouter
+```
+
+```text
+========================================
+  Choose Interface (v2.0.0)
+  🚀 Server: http://localhost:12800
+========================================
+
+  > Update to v2.0.5 (current: v2.0.0)
+    Web UI (Open in Browser)
+    Terminal UI (Interactive CLI)
+    Hide to Tray (Background)
+    Exit
+```
+
+`bun` is the primary install path: the package's bin runs under the Bun runtime
+and declares `engines.bun`, so `npm i -g lianrouter` works only where `bun` is
+already on `PATH`. Subcommands skip the menu — `lianrouter start`, `stop`,
+`status`, `update`, `tray`, `tui` — and `--port`, `--host`, `--no-open`,
+`--background` cover the rest. The launcher is a separate package that starts
+and updates the gateway process; it is not on the request path.
+
+The package ships the launcher only, so the **first run** installs the gateway:
+`lianrouter` finds no binary in the install root, downloads the release archive
+for this platform while showing progress, verifies its sha256, and installs it
+atomically. An archive without a published digest is refused rather than
+installed, and a platform with no published build is told so by name instead of
+failing at spawn. Nothing is downloaded during `bun add -g` / `npm i -g` — the
+install stays offline, and `status`, `stop`, `--version`, and `--help` never reach
+the network at all. Later runs find the binary and start offline.
+
+Installing the gateway is not the same as configuring it: it still needs
+`DATABASE_URL` (and `REDIS_URL` when `REDIS_MODE=normal`) in its environment or a
+`.env` in its working directory before `/health` can answer — see
+[Configuration](#configuration). A first run that installs cleanly and then
+cannot start is a configuration problem, and the launcher prints the gateway's
+own error line instead of a bare health timeout.
+
+The tray is the way to leave the gateway running without a console window:
+`lianrouter tray`, or the menu's **Hide to Tray** row, starts the gateway, hides
+the console, and leaves an icon in the notification area. Right-click gives Open
+Console, Restart Server, Stop Server, Check for Updates, and Exit; a left
+double-click opens the console. The tray is Windows only — on macOS and Linux
+the command exits with a message pointing at running `lianrouter` in a terminal.
+
+The console can start an update itself. When the launcher reports a newer
+release, the console shows a dialog naming the target version; confirming it
+streams live download and install progress, the gateway restarts when the
+install finishes, and the page reloads once the new binary answers. The install
+is performed by the launcher, not by the gateway — a running binary cannot
+replace itself. An update is refused when the release asset has no published
+sha256 digest, and the console reports updates as unavailable when the gateway
+was not started by the launcher, because there is then no launcher to run the
+install.
+
+From a checkout, run it without installing: `bun run cli:dev`.
+
+See [cli/CLI.md](cli/CLI.md) for the install root, the control plane, the update
+flow, and the tray.
+
 ## Console
 
 This build ships the console only. The gateway serves no public marketing page:
@@ -271,6 +348,9 @@ The console covers the whole operational surface:
 - **CLI Tools** — map a coding agent's model slots onto your own routes
 - **Customization, Console Log, Settings** — runtime configuration, live logs,
   and backup/restore
+
+The console also surfaces an available update and can start the install, showing
+progress until the gateway restarts.
 
 Access is a single password (`LIANROUTER_CONSOLE_PASSWORD`) in front of the
 whole console, so opening the dashboard never exposes the router without it.
@@ -376,6 +456,9 @@ bun run dashboard:build
 bun run build:aot
 bun run build:binary
 bun run build
+bun run build:cli
+bun run build:release
+bun run cli:dev
 ```
 
 `bun run build` produces the standalone binary in three steps: build the
@@ -394,6 +477,14 @@ cannot execute:
 ```bash
 bun run scripts/build-binary.ts --outfile dist/lianrouter --target bun-linux-x64
 ```
+
+`bun run build:release` packages the release artifact:
+`dist/release/lianrouter-<platform>-<arch>.zip` with the gateway executable,
+`migrations/`, and `dist/dashboard/` at the archive root — the exact shape the
+first-run installer and the updater expect. It prints the archive's sha256,
+which the GitHub release asset's `digest` field must carry, because both refuse
+an artifact without one. It refuses to run when `dist/lianrouter` /
+`dist/lianrouter.exe` is missing, so `bun run build` comes first.
 
 ## Tests and coverage
 
@@ -478,14 +569,23 @@ generation. Regenerating is a separate, deliberate step.
 src/        production backend
  test/      backend and contract tests
  dashboard/ React/Vite dashboard (route and browser-boundary map in `dashboard/README.md`)
+ cli/       publishable launcher package (own `package.json`, `tsconfig.json`)
  scripts/   flat operational scripts
  drizzle/   database migrations
+ docs/      screenshots used by this README
+ .github/   CI workflow
 ```
+
+`cli/` is typechecked and built separately — `bun run --cwd cli typecheck` and
+`bun run build:cli` — because the root `tsc` does not include it. Its layer doc
+is `cli/CLI.md`.
 
 For repository-local coding conventions and cleanup rules, see `AGENTS.md`.
 
-## Two projects
+## A self-contained checkout
 
-This folder is the **local** build. It has its own git history, `.env`, and
-database, and is never deployed to the hosted instance. See [LOCAL.md](LOCAL.md)
-for the boundary between the two and the rules that keep them independent.
+This repository keeps its own `.env` and database, and nothing here is deployed
+automatically anywhere. Running a separate deployment is a deliberate act you
+perform yourself, against an independent copy with its own configuration and
+release cadence. See [LOCAL.md](LOCAL.md) for the rules that keep one instance
+independent of another.

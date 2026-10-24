@@ -68,6 +68,9 @@ export const queryKeys = {
   tunnel: {
     status: ["console", "tunnel"] as const,
   },
+  update: {
+    status: ["console", "update", "status"] as const,
+  },
   cliTools: {
     registry: ["console", "cli-tools", "registry"] as const,
     statuses: ["console", "cli-tools", "statuses"] as const,

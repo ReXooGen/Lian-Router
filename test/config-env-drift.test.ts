@@ -50,6 +50,8 @@ const NON_SRC_ENV_KEYS = new Set([
   "LIANROUTER_SETUP_MODE", // scripts/ops-setup.ts
   "BUN_OPTIONS", // Bun runtime
   "BUN_GARBAGE_COLLECTOR_LEVEL", // Bun runtime
+  "LIANROUTER_HOME", // cli/src/paths.ts — launcher install root
+  "LIANROUTER_UPDATE_BASE_URL", // cli/update/github-source.ts — launcher update feed
 ]);
 
 /**

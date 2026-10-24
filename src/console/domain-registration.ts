@@ -20,6 +20,7 @@ import { createNetworkPoolRoutes } from "./routing/pools/contracts";
 import { DrizzleModelRoutingStore } from "./routing/model/store";
 import { DrizzleNetworkPoolStore } from "./routing/pools/store";
 import { createRuntimeSettingsRoutes } from "./settings/contracts";
+import { createUpdateRoutes } from "./update/routes";
 import { createTunnelRoutes } from "./tunnel/contracts";
 import { getTunnelService } from "./tunnel/service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
@@ -232,6 +233,10 @@ export function registerConsoleDomains(
     snapshotInvalidator: ctx.routeSnapshotService,
   }));
   console.use(createRuntimeSettingsRoutes({ store: runtimeSettingsStore, accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
+  // The launcher home comes from the child's own environment, read inside the
+  // domain per request: a cached value would outlive a launcher restart, and the
+  // context object has no business carrying launcher state.
+  console.use(createUpdateRoutes({ accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
   console.use(
     createTunnelRoutes({
       service: getTunnelService(),

@@ -25,6 +25,7 @@ import { readSessionCookie } from "./session-resolver";
 import type { ConsolePasswordGate } from "./password-gate";
 import {
   claimConsolePasswordOwnership,
+  consolePasswordGateWithOwnership,
   resolveEffectiveConsolePassword,
 } from "./password-gate";
 export interface LoginRequest {
@@ -364,16 +365,28 @@ export function createConsoleAuthRoutes(
 
   app.get("/first-boot", async ({ set }) => {
     set.status = 200;
+    // Ownership decides whether the environment value is a usable credential:
+    // while the console owns the secret it is only a rotation trigger, so the
+    // hint must not print it. This is the same per-request read login performs,
+    // and it only runs when the gate is enabled.
+    const effective = passwordGate.enabled
+      ? await resolveEffectiveConsolePassword(database)
+      : undefined;
+    const gate = consolePasswordGateWithOwnership(
+      passwordGate,
+      effective?.consoleManaged === true,
+    );
     // Single-password mode has no account to create: the password already
     // exists in the environment, so the console must never route a visitor
     // into the setup wizard.
     return {
       requires_setup: passwordGate.enabled ? false : await setupService.requiresSetup(),
       password_gate: passwordGate.enabled,
-      // Only ever true while the shipped default is still in place: the login
-      // form renders the hint from this flag, so a rotated password cannot
-      // leave a stale credential printed on the sign-in screen.
-      default_password_hint: passwordGate.usesDefaultPassword,
+      // Only ever true while the shipped default is still the effective
+      // password: the login form renders the hint from this flag, so neither a
+      // rotated value nor a console-owned password can leave a stale credential
+      // printed on the sign-in screen.
+      default_password_hint: gate.usesDefaultPassword,
     };
   });
 

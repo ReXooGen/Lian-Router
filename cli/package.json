@@ -1,0 +1,22 @@
+{
+  "name": "lianrouter",
+  "version": "2.0.0",
+  "description": "LianRouter launcher: install, run and control the gateway from one command",
+  "type": "module",
+  "bin": {
+    "lianrouter": "./dist/cli.js"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run ../scripts/build-cli.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "postinstall": "echo lianrouter: the gateway binary installs on first run, not during this install",
+    "prepublishOnly": "bun run build"
+  }
+}

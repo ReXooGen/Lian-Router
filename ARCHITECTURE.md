@@ -86,8 +86,30 @@ and API-key usage totals.
 | observability | `src/observability/OBSERVABILITY.md` | Telemetry pipeline, logger, metrics, payloads, gauges |
 | workers | `src/workers/WORKERS.md` | Scheduler semantics, task table, OAuth + quota sweeps |
 
+### Distribution
+
+| Layer | Doc | Covers |
+|---|---|---|
+| cli | `cli/CLI.md` | Global `lianrouter` launcher: install root, gateway supervisor, loopback control plane, tray host, terminal UI, self-update |
+
+The launcher is a **separate publishable package** (`cli/package.json`, bin
+`lianrouter`) that installs beside the gateway rather than inside it. It is not
+part of `createGatewayApp()` and it sits on no request path: it starts, watches,
+and stops a gateway child process, and every `/v1/*` and `/console/api/*` byte
+belongs to that child. A change under `cli/` therefore never changes gateway
+routing, and a gateway change reaches the launcher only through the process
+boundary it supervises.
+
 ## Other trees (not covered by layer docs)
 
+- `cli/` — the launcher package above; its own `package.json`, `tsconfig.json`,
+  and `bun run --cwd cli typecheck` gate. `bun run build:cli` writes both
+  bundles, `cli/dist/cli.js` and `cli/dist/tray.js` (`--compile` also emits a
+  standalone executable); the path is already covered by the repository's
+  `dist/` ignore rule. The launcher package does not carry the gateway: the
+  first `lianrouter` run installs a release archive into the install root, and
+  `bun run build:release` (`scripts/build-release.ts`) is what produces that
+  archive from the built binary, `drizzle/migrations/`, and `dist/dashboard/`.
 - `dashboard/` — React/Vite console (console-only build) with public share enrollment
   mounted through the shared `index.html` and isolated share CSS. Its map and
   browser-safe import rules live in `dashboard/README.md`.
