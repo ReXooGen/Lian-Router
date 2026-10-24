@@ -1,9 +1,61 @@
 # Changelog
 
-## Unreleased
+## 2.1.0
 
-> All changes below are pre-release. LianRouter has not been tagged or
-> released; this document reflects the current production codebase architecture and capabilities.
+> 2.0.0 is published on npm and exists as a GitHub release; this document
+> covers the changes shipped since that release. Sections below 2.1.0 were
+> written before it shipped and are kept in the order they landed.
+
+### The Meta Model API provider
+
+Meta's Model API is API-key authenticated against the same `api.meta.ai`
+origin and the same `muse-spark-*` catalog as Muse Code, so the new `meta`
+provider is not a second adapter. The credential is the only difference: an
+operator key minted in the Meta developer dashboard, rather than the
+subscription-minted key the Muse device login exchanges for. The adapter is
+therefore the shared `createApiKeyAdapter` factory over a spec, the model list
+is the imported `MUSE_CODE_MODELS` declaration rather than a copy that drifts
+the moment either side is edited, and the metadata row owns the origin so the
+spec declares no `base_url`. There is no `loadAuthentication`, because the
+default key-only credential path plus `probeApiKeyConnectivity` already is the
+account test, and no quota collector or discovery hook because neither has an
+upstream endpoint to read. The console reuses the Muse mark for the same
+reason the backend reuses the wire: there is no separate `meta` asset on that
+host, and inventing one would imply a vendor distinction the API does not
+make.
+
+### Repeated invalid-model requests escalate to a ban
+
+A request naming a model the key may not use is rejected with 404
+`model_not_found`. One such rejection is a client mistake; a stream of them is
+a probe, and each attempt leaves a failed row in the console and in usage. Ten
+rejections inside thirty minutes now block the client address for six hours.
+
+The block is keyed on the address, not on the API key, and that choice is the
+whole design. One key is shared by every recipient of a share link or a team
+seat, so banning the key punishes callers that did nothing wrong while the
+address that actually probed mints a fresh key and carries on. The gate runs
+before request preparation, so a blocked address does no routing work, and a
+valid request does not reset the window, so a prober that occasionally guesses
+a real model name cannot erase its own history. The ban lapses on its own when
+the TTL expires, which means a false positive heals without an operator.
+
+Every strike call is best-effort, and this layer is **fail-open on a store
+outage** — deliberately the inverse of admission, which fails closed. The
+asymmetry is the point: admission protects a quota the operator has already
+committed to, so an unreadable counter must refuse rather than overspend, while
+a strike counter that cannot be read must never refuse a legitimate request.
+The worst case here is a missed strike; the worst case of the other choice is
+an outage that locks out every client. A future reader who finds this and
+reaches for symmetry will make the gateway deny service during a Redis blip,
+so the reason is recorded in `src/security/SECURITY.md` and
+`src/transport/TRANSPORT.md` as well as here. Thresholds are module constants
+rather than environment knobs, because a tunable would invite raising it to
+unblock oneself.
+
+The console gains `/console/api/model-bans`, platform-admin only because a
+block is cross-tenant, with list, lift, and instant-ban, plus a blocked-clients
+dialog opened from the API Credentials header.
 
 ### The coverage gate runs under the suite's own timeout
 

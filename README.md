@@ -98,11 +98,11 @@ API tokens, or production endpoints appear in them.
 
 ## Highlights
 
-- **79 bundled provider integrations** — OpenAI, Anthropic, Codex, Gemini, Grok,
+- **92 bundled provider integrations** — OpenAI, Anthropic, Codex, Gemini, Grok,
   Cursor, Devin, Mistral, Groq, OpenRouter, Cerebras, NVIDIA, Cloudflare,
-  DeepSeek, Cohere, Together, Hyperbolic, Fireworks, xAI, the Alibaba and
-  MiniMax families, and more, each with its own authentication, wire quirks, and
-  identity headers.
+  DeepSeek, Cohere, Together, Hyperbolic, Fireworks, xAI, Meta's Model API, the
+  Alibaba and MiniMax families, and more, each with its own authentication, wire
+  quirks, and identity headers.
 - **Four client protocols, one canonical model** — Chat Completions, Responses,
   Messages, and legacy Completions all normalize into the same request shape.
   A client's protocol is a property of the connection, not of the route.

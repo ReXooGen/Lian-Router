@@ -171,6 +171,13 @@ was built to supervise.
    - `dashboard/package.json` — the console. Read by
      `dashboard/src/lib/version.ts` as `DASHBOARD_VERSION`, which renders the
      brand version badge.
+
+   Then run `bun install` with no flags. `bun.lock` records the version of each
+   workspace package (`cli`, `dashboard`) alongside its dependency set, so the
+   three edits above leave the lockfile stale and `bun install --frozen-lockfile`
+   — the exact command both CI jobs run — fails with a lockfile mismatch before
+   any check executes. Commit the refreshed `bun.lock` in the same commit as the
+   manifests and confirm `bun install --frozen-lockfile` exits 0.
 2. **Build the gateway, then the release archive.** `bun run build` produces
    the binary, the AOT bundle, and `dist/dashboard/`. `bun run build:release`
    (`scripts/build-release.ts`) stages the gateway executable, `migrations/`,
