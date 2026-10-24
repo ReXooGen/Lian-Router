@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { ApiKeysPanel } from "./ApiKeysPanel";
 import { queryKeys } from "../lib/query-keys";
-import type { ApiKeyResponse, NetworkPoolResponse } from "../lib/contracts";
+import type { ApiKeyResponse, NetworkPoolResponse, SessionUser } from "../lib/contracts";
 
 const ACTIVE_KEY: ApiKeyResponse = {
   id: "key-active-0001",
@@ -45,15 +45,27 @@ const SHARE_TEMPLATE: ApiKeyResponse = {
   tokensConsumed: 0,
 };
 
+const SESSION: SessionUser = {
+  id: "user-1",
+  username: "admin",
+  email: "admin@example.test",
+  displayName: "Admin",
+  isFirstBoot: false,
+  sessionExpiresAt: "2026-08-31T00:00:00.000Z",
+  isPlatformAdmin: true,
+};
+
 function render(
   keys: readonly ApiKeyResponse[] | undefined,
   pools?: readonly NetworkPoolResponse[],
+  session?: SessionUser,
 ): string {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   if (keys) queryClient.setQueryData(queryKeys.apiKeys.all, keys);
   if (pools) queryClient.setQueryData(queryKeys.network.pools, pools);
+  if (session) queryClient.setQueryData(queryKeys.session.current, session);
   return renderToStaticMarkup(
     createElement(QueryClientProvider, { client: queryClient }, createElement(ApiKeysPanel)),
   );
@@ -126,6 +138,16 @@ describe("API keys panel", () => {
     const markup = render([]);
     expect(markup).toContain("No API keys issued");
     expect(markup).toContain("Create Key");
+  });
+
+  test("offers the blocked-client list only to a platform admin", () => {
+    // A model-abuse block is keyed on the client address, so it is
+    // cross-tenant. The server refuses a tenant operator; the entry point is
+    // hidden so they never walk into that 403.
+    expect(render([ACTIVE_KEY], undefined, SESSION)).toContain("Blocked Clients");
+    expect(render([ACTIVE_KEY], undefined, { ...SESSION, isPlatformAdmin: false })).not.toContain(
+      "Blocked Clients",
+    );
   });
 
   test("renders a loading state before the key list resolves", () => {

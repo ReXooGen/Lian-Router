@@ -23,6 +23,7 @@ import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
 import type { ApiKeyAdmissionService } from "../security/admission";
+import type { ModelStrikeService } from "../security/model-abuse";
 import type { RedisClient } from "../persistence/redis";
 import { CliToolMappingStore } from "./cli-tools/store";
 import { CliToolService } from "./cli-tools/service";
@@ -44,6 +45,12 @@ export interface ConsoleApiCompositionDeps {
   readonly redis: RedisClient;
   readonly oauthRefreshService: OAuthRefreshService;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  /**
+   * Graduated model-abuse strikes: the console reads and lifts bans from the
+   * same service the data plane records them in. Optional because a reduced
+   * composition (tests, route-only shells) has no strike layer to administer.
+   */
+  readonly modelStrikes?: ModelStrikeService;
   readonly resolvePeerAddress?: (request: Request) => string | null;
   readonly trustedProxyBoundary?: TrustedProxyBoundary;
 }
@@ -150,6 +157,7 @@ export function createConsoleRouter(deps: ConsoleApiCompositionDeps): Elysia {
     bundledModelCatalog: deps.bundledModelCatalog,
     networkBindingFactory: deps.networkBindingFactory,
     admissionService: deps.admissionService,
+    ...(deps.modelStrikes === undefined ? {} : { modelStrikes: deps.modelStrikes }),
     credentialService,
     // The backup surface re-authenticates the operator, so it needs the current
     // user's hash. Read from the session on the request that asks for it, never

@@ -32,6 +32,7 @@ import { createLiveRoutes } from "./domains/live";
 import { createLogRoutes } from "./domains/logs";
 import { createAuditRoutes } from "./domains/audit/contracts";
 import { DrizzleAuditReadStore } from "./domains/audit/store";
+import { createModelAbuseRoutes } from "./domains/model-abuse/routes";
 import { createStudioRoutes } from "./domains/studio/routes";
 import { DrizzleStudioSessionStore } from "./domains/studio/store";
 import { createPerformanceRoutes } from "./domains/performance/routes";
@@ -51,6 +52,7 @@ import type { CliToolService } from "./cli-tools/service";
 import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { RouteSnapshotService } from "../transport/routing/route-model";
 import type { ApiKeyAdmissionService } from "../security/admission";
+import type { ModelStrikeService } from "../security/model-abuse";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
 import type { RedisClient } from "../persistence/redis";
@@ -74,6 +76,8 @@ export interface ConsoleDomainContext {
   readonly poolSelector: NetworkPoolSelector;
   readonly telemetryBuffer: TelemetryBatchBuffer;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  /** Graduated model-abuse strikes, for the ban list and its lift action. */
+  readonly modelStrikes?: ModelStrikeService;
   /**
    * Loads the signed-in console user, for surfaces that re-authenticate the
    * operator rather than trusting the session alone (backup export/restore).
@@ -200,6 +204,13 @@ export function registerConsoleDomains(
     webFetch: (tenantId) => ctx.networkBindingFactory.fetch(undefined, tenantId),
     auditSink: ctx.auditRecorder,
   }));
+  if (ctx.modelStrikes !== undefined) {
+    console.use(createModelAbuseRoutes({
+      strikes: ctx.modelStrikes,
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+    }));
+  }
   console.use(createLogRoutes({ accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
   console.use(createPerformanceRoutes({ accessResolver: ctx.accessResolver }));
   console.use(createAuditRoutes({ store: auditReadStore, accessResolver: ctx.accessResolver }));

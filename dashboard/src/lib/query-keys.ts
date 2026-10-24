@@ -21,6 +21,9 @@ export const queryKeys = {
       ["console", "usage", "requests", period, limit, httpStatus ?? "all"] as const,
     requestDetail: (requestId: string) => ["console", "usage", "requests", requestId] as const,
   },
+  modelBans: {
+    all: ["console", "model-bans"] as const,
+  },
   promptInjection: {
     all: ["console", "prompt-injection"] as const,
     preview: (keyId: string | null, model: string) =>

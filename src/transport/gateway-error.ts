@@ -7,6 +7,7 @@ export type GatewayErrorCode =
   | "capability_unsupported"
   | "ambiguous_model"
   | "model_not_found"
+  | "model_abuse_banned"
   | "context_length_exceeded"
   | "accounts_unavailable"
   | "capacity_exhausted"

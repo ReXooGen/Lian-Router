@@ -2,8 +2,9 @@
 
 `src/security/` is the layered request-trust boundary: client identity,
 gateway API-key authentication, CSRF, per-IP abuse protection, and per-key
-admission (quotas, budgets, concurrency). Every layer is fail-closed —
-a store outage rejects the request, never bypasses the limit. Console
+admission (quotas, budgets, concurrency). Those layers are fail-closed — a
+store outage rejects the request, never bypasses the limit. `model-abuse.ts` is
+the one deliberate exception, explained under "Model-abuse strikes" below. Console
 dashboard sessions have their own DB-persisted lockout
 (`src/console/auth/service.ts`); this package covers the `/v1/*` data plane
 plus shared crypto/header primitives both planes use.
@@ -18,6 +19,7 @@ src/security/
   access-control.ts closed AccessScope model + immutable AccessDecision
   csrf.ts           stateless double-submit CSRF + session-cookie name
   abuse.ts          IpAbuseProtectionService + in-memory/Redis stores (/v1/* only)
+  model-abuse.ts    ModelStrikeService: graduated strikes/ban on repeated invalid-model requests
   admission.ts      ApiKeyAdmissionService + atomic counter stores (reserve/reconcile/release)
   crypto.ts         AES-256-GCM credential encryption + HMAC secret hashing
   outbound-headers.ts API/dashboard CSP builders + BASE_PROTECTED_HEADERS
@@ -89,6 +91,44 @@ produces:
    an injected persister (COALESCE increment), so budgets survive a Redis
    flush.
 
+## Model-abuse strikes
+
+`model-abuse.ts: ModelStrikeService` is a graduated response to a caller that
+keeps naming models it may not use. Preparation rejects such a request with
+`404 model_not_found`; each of those rejections records an instant against the
+**client address**, and crossing the threshold (10 attempts in 30 minutes)
+blocks that address for 6 hours. Both numbers are module constants, not
+environment knobs: they are an internal safety margin, and a tunable would
+invite "raise it so I can unblock myself", which is the change the layer exists
+to prevent.
+
+**Keyed on the address, not the key.** One key is shared by every recipient of
+a share link and every member of a team, so blocking the key punishes callers
+that did nothing while the address that probed mints a fresh key and continues.
+The address is the identity that cannot be re-enrolled.
+
+**Fail-open, and that is the design.** Every call the middleware makes is
+best-effort: the ban lookup swallows its error and reports "not banned", and the
+strike write swallows its error and reports no outcome, so the request proceeds
+and receives exactly the answer it would have received with no strike layer at
+all. Admission is the inverse — it refuses when its store is unreachable,
+because admitting an unauthorized request costs more than refusing a valid one.
+Here a missed strike costs a delayed ban; refusing a valid request costs the
+operator a customer. The asymmetry is intentional. Do not "fix" it to fail
+closed without also arguing why a Redis blip should take the data plane down.
+
+Where it runs: `createProxyRoutePreparationMiddleware`
+(`src/transport/middleware/ingress.ts`) — the one choke point where a request is
+rejected for an invalid model. The ban gate runs before preparation so a
+blocked address does no routing work and adds no failed row to the console; the
+strike is recorded in the rejection path; a valid request calls `noteValid`,
+which is deliberately a no-op so a prober that occasionally guesses a real
+model name cannot erase its own history. Instants older than the window stop
+counting, so a stale probe cannot combine with today's typo.
+
+A ban lapses on its own after its TTL; the console can lift one early
+(`/console/api/model-bans`, platform-admin only, because a block is cross-tenant).
+
 `csrf.ts: isCsrfValid` is not a data-plane layer: it guards unsafe
 `/console/api/*` mutations only (session-cookie present: the readable
 `csrf_token` cookie must timing-safe-equal the `x-csrf-token` header).
@@ -138,6 +178,8 @@ request or response payloads.
   memory for a Redis-less deployment, not operator policy.
 - Admission: 60 s RPM window; lease TTL 1 h; lifetime reconciled to Postgres.
 - Redis keys: `admission:rpm|daily|monthly|lifetime|concurrent:<key>[:bucket]`,
+  `lianrouter:model-abuse:strikes:<ip>` (sorted set, trimmed to the window, TTL'd)
+  and `lianrouter:model-abuse:bans` (sorted set scored with each ban's expiry),
   `admission:lease:<reservationId>`, `admission:tenant_concurrent:<tenant>`,
   `admission:inflight:<provider:model:account>`,
   `lianrouter:ip:<identity>:<route>`, `lianrouter:ip:ban-count:<identity>`,

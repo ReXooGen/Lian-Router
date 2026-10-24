@@ -15,6 +15,7 @@ import {
 } from "./ingress";
 import type { ReadinessCheckResult } from "../../persistence/readiness";
 import type { IpAbuseProtectionService } from "../../security/abuse";
+import type { ModelStrikeService } from "../../security/model-abuse";
 import type { ProxyRequestPreparer } from "../request/preparer";
 import { ProxyRequestStateStore } from "../request/state";
 import type { SurfaceAdapterRegistry } from "../surface/adapters";
@@ -33,6 +34,11 @@ export interface TransportPipelineContext {
   readonly trustedProxyBoundary: TrustedProxyBoundary;
   readonly resolvePeerAddress?: (request: Request) => string | null;
   readonly ipAbuseProtection?: IpAbuseProtectionService;
+  /**
+   * Graduated model-abuse strikes. Optional so a reduced composition (tests,
+   * route-only shells) can omit it; the production root always supplies it.
+   */
+  readonly modelStrikes?: ModelStrikeService;
   readonly maxBodyBytes?: number;
   readonly requestDeadlineMs?: number;
   readonly verifiedHttps?: boolean;
@@ -85,6 +91,7 @@ export function createTransportPipeline(context: TransportPipelineContext): Tran
     createProxyRoutePreparationMiddleware({
       stateStore: context.stateStore,
       preparer: context.preparer,
+      ...(context.modelStrikes === undefined ? {} : { modelStrikes: context.modelStrikes }),
     }),
   ];
   const mountRoot = (app: Elysia<any, any, any, any, any, any, any, any>): void => {

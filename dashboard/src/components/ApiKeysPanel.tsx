@@ -8,6 +8,7 @@ import {
   Pencil,
   Plus,
   Share2,
+  ShieldOff,
   Trash2,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -20,12 +21,14 @@ import { EmptyState, ErrorState, LoadingState } from "./ui/state";
 import { StatCard } from "./ui/layout";
 import { ApiKeyForm, oneTimeSecretForMode, type KeyFormInput } from "./ApiKeyForm";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ModelBansDialog } from "./ModelBansDialog";
 import { ClipboardButton } from "./patterns/clipboard-button";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../lib/helpers";
 import type { ApiKeyResponse, ShareKeyResponse } from "../lib/contracts";
 import { useApiKeys, useCreateApiKey, useRevealApiKey, useRevokeApiKey, useShareApiKey, useUpdateApiKey } from "../lib/hooks/api-keys";
 import { useNetworkPools } from "../lib/hooks/network";
+import { useSessionUser } from "../lib/hooks/system";
 import { networkPoolLabel } from "../lib/network-pool-label";
 
 /** Compact K/M/B/T token count used by the panel's stat cards and rows. */
@@ -66,6 +69,11 @@ export function ApiKeysPanel(): ReactNode {
   const [shareTarget, setShareTarget] = useState<ApiKeyResponse | null>(null);
   const [shareResult, setShareResult] = useState<ShareKeyResponse | null>(null);
   const [shareExpiry, setShareExpiry] = useState("");
+  const [bansOpen, setBansOpen] = useState(false);
+  // A model-abuse block is keyed on the client address, so it is cross-tenant
+  // and only a platform admin may read or lift one. The server enforces that;
+  // this only keeps a tenant operator from clicking into a 403.
+  const session = useSessionUser();
 
   const keys = keysQuery.data ?? [];
   // One pool list for the whole panel: each row resolves its binding label
@@ -129,14 +137,26 @@ export function ApiKeysPanel(): ReactNode {
         subtitle="Manage routing client keys, budgets, allow lists, and share links"
         icon={<KeyRound size={16} />}
         action={
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => { setRevealedSecret(null); setCreateOpen(true); }}
-            icon={<Plus size={13} />}
-          >
-            Create Key
-          </Button>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {session.data?.isPlatformAdmin ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setBansOpen(true)}
+                icon={<ShieldOff size={13} />}
+              >
+                Blocked Clients
+              </Button>
+            ) : null}
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => { setRevealedSecret(null); setCreateOpen(true); }}
+              icon={<Plus size={13} />}
+            >
+              Create Key
+            </Button>
+          </div>
         }
       />
       <CardBody>
@@ -409,7 +429,8 @@ export function ApiKeysPanel(): ReactNode {
           <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
             This link lets a visitor manually generate one child credential. The share template itself never authenticates requests, and each active IP can enroll once.
           </p>
-          {shareResult ? (
+          {bansOpen ? <ModelBansDialog onClose={() => setBansOpen(false)} /> : null}
+      {shareResult ? (
             <div style={{ display: "grid", gap: 8 }}>
               <code style={{ display: "block", padding: 8, borderRadius: 8, background: "var(--surface-1)", border: "1px solid var(--inner-border)", fontSize: 11.5, overflowWrap: "anywhere" }}>{shareResult.url}</code>
               <div style={{ display: "flex", gap: 8 }}>

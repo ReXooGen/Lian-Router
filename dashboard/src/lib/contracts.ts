@@ -212,3 +212,16 @@ export interface PromptInjectionPreviewEntry {
   readonly text?: string;
   readonly turns?: readonly PromptInjectionTurn[];
 }
+
+/**
+ * One model-abuse ban, as the console reads it.
+ *
+ * A ban is keyed on the client address, not the API key: one key can be shared
+ * by every recipient of a share link, so refusing the key would punish callers
+ * that did nothing. `expiresAt` is epoch ms; the ban lapses on its own.
+ */
+export interface ModelAbuseBan {
+  readonly ip: string;
+  readonly reason: "repeated_invalid_model_requests";
+  readonly expiresAt: number;
+}

@@ -13,6 +13,8 @@ import type { RouteCandidate, Reservation, RoutePlan } from "../../src/transport
 import type { RoutingEngine } from "../../src/transport/routing/router";
 import type { AdmissionLease, ApiKeyAdmissionService } from "../../src/security/admission";
 import type { IpAbuseProtectionService } from "../../src/security/abuse";
+import type { ModelStrikeService } from "../../src/security/model-abuse";
+import { GatewayError } from "../../src/transport/gateway-error";
 import type { ResolvedApiKey } from "../../src/security/api-key-auth";
 import type { ByokUpstreamHost } from "../../src/providers/operations/provider-catalog-service";
 import type { ValidatedNetworkBindingFactory } from "../../src/network/pool/resolver";
@@ -160,6 +162,15 @@ export interface PipelineHarnessOptions {
    * per-IP counter can be observed through the production middleware order.
    */
   readonly ipAbuseProtection?: Pick<IpAbuseProtectionService, "checkBeforeAccess">;
+  /** Real strike service, so escalation is observable through the pipeline. */
+  readonly modelStrikes?: ModelStrikeService;
+  /**
+   * Models the stub preparer rejects with the same `404 model_not_found` the
+   * real preparer throws for a name outside the key's allowlist. The stub is
+   * the only substituted layer; the strike middleware under test is the
+   * production one.
+   */
+  readonly invalidModels?: readonly string[];
 }
 
 export interface PipelineHarness {
@@ -239,6 +250,11 @@ export function buildPipelineHarness(options: PipelineHarnessOptions = {}): Pipe
       readonly authorization: ResolvedApiKey;
       readonly deadlineMs: number;
     }): Promise<PreparedProxyRequest> {
+      if (options.invalidModels?.includes(input.canonicalRequest.model)) {
+        throw new GatewayError("model_not_found", 404, "model is not allowed for this API key", {
+          model: input.canonicalRequest.model,
+        });
+      }
       if (options.rejectCapabilities) {
         projectForRoute(input.canonicalRequest, {
           ...PERMISSIVE_ROUTE_CAPABILITIES,
@@ -304,6 +320,7 @@ export function buildPipelineHarness(options: PipelineHarnessOptions = {}): Pipe
     networkBindingFactory,
     ipAbuseProtection:
       options.ipAbuseProtection ?? ({ checkBeforeAccess: async () => undefined } as never),
+    ...(options.modelStrikes === undefined ? {} : { modelStrikes: options.modelStrikes }),
     trustedProxyBoundary: { mode: "disabled" },
     poolSelector: {} as never,
     snapshotService: {} as never,

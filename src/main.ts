@@ -27,6 +27,7 @@ const app = boot
       byokUpstreamHosts: boot.deps.byokUpstreamHosts,
       networkBindingFactory: boot.deps.networkBindingFactory,
       ipAbuseProtection: boot.deps.ipAbuseProtection,
+      modelStrikes: boot.deps.modelStrikes,
       trustedProxyBoundary: boot.deps.trustedProxyBoundary,
       poolSelector: boot.deps.poolSelector,
       snapshotService: boot.deps.snapshotService,
@@ -53,6 +54,7 @@ const app = boot
               redis: boot.deps.redis,
               oauthRefreshService: boot.deps.oauthRefreshService,
               admissionService: boot.deps.admissionService,
+              modelStrikes: boot.deps.modelStrikes,
             },
           }
         : {}),

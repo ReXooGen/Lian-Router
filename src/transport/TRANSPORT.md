@@ -65,7 +65,10 @@ no telemetry buffer is configured):
 -  **Skips and failure modes** — canonical parse and route preparation skip GET/HEAD, non-JSON routes, and
   `/v1/responses/compact` (native path). Parse fails closed when the ingress stage did not run (`ingressBody === undefined`;
   an explicit `null` still flows to parse errors) and stashes a capped user-agent; preparation requires authorization +
-  canonical request.
+  canonical request. Preparation also owns the model-abuse strike: it refuses a blocked client address before doing any
+  routing work, records a strike on a `model_not_found` rejection, and is a no-op on success. Every strike call is
+  best-effort — a strike-store outage leaves the request's answer unchanged — which is the opposite of admission's
+  fail-closed policy, on purpose (see `src/security/SECURITY.md`).
 -  **Console, errors, lifecycle** — `createConsoleCsrfMiddleware` (double-submit `x-csrf-token` vs the readable `csrf_token`
   cookie, scoped to unsafe `/console/api/*` mutations) and `createConsoleMutationLimiterMiddleware` are defined here but
   mounted by the console router, not by the transport pipeline — they are not gateway stages. `createErrorNormalizationMiddleware` maps `GatewayError` (and unknown throws) to public JSON via
@@ -514,6 +517,7 @@ disagreed on 5xx and 529 — it is gone, and no adapter keeps a private copy of 
 | `capability_unsupported` | 400 | lianrouter | yes | the route does not support the requested capability |
 | `ambiguous_model` | 400 | lianrouter | no | the model id matched more than one route |
 | `model_not_found` | 404 | lianrouter | yes | no route serves this model, or the key may not use it |
+| `model_abuse_banned` | 403 | lianrouter | no | this client address is temporarily blocked for repeated invalid-model requests |
 | `context_length_exceeded` | 413 | upstream | no | the request exceeded the model's context window |
 | `invalid_request` | 400/401/403/409/413/415 | lianrouter/upstream | no | an unclassified rejection; the client should not retry unchanged |
 | `unsupported_field` | 400 | lianrouter | no | the request carried a field this route rejects |

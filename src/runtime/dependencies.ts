@@ -17,6 +17,11 @@ import { InMemoryRouteSnapshotService } from "../transport/routing/route-model";
 import { RedisAdmissionController, RoutingEngine } from "../transport/routing/router";
 import { ApiKeyAdmissionService, InMemoryAdmissionCounterStore, RedisAdmissionCounterStore, sweepLeases } from "../security/admission";
 import { InMemoryIpAbuseStore, IpAbuseProtectionService, RedisIpAbuseStore } from "../security/abuse";
+import {
+  InMemoryModelAbuseStore,
+  ModelStrikeService,
+  RedisModelAbuseStore,
+} from "../security/model-abuse";
 import { checkReadiness, resolveRedisMode } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
 import { DrizzleNetworkPoolLoader } from "../network/pool/loader";
@@ -64,6 +69,7 @@ export interface ProductionDeps {
   proxyPreparer: ProxyRequestPreparer;
   networkBindingFactory: ValidatedNetworkBindingFactory;
   ipAbuseProtection: IpAbuseProtectionService;
+  modelStrikes: ModelStrikeService;
   readiness: () => Promise<ReadinessCheckResult>;
   scheduledTasks: ScheduledTaskRegistry;
   poolAgentResolver: PoolAgentResolver;
@@ -137,6 +143,13 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   const ipAbuseProtection = new IpAbuseProtectionService(ipStore, undefined, {
     maxRequestsPerWindow: resolveIpRateLimit(),
   });
+  // Model-abuse strikes ride the same Redis client as admission, so a
+  // multi-instance deployment shares one ban index instead of banning per
+  // process. Redis-less mode falls back to the in-memory store, matching the
+  // abuse layer: escalation still works, it just does not span processes.
+  const modelStrikes = new ModelStrikeService(
+    redis ? new RedisModelAbuseStore(redis) : new InMemoryModelAbuseStore(),
+  );
   const readiness = () => checkReadiness(db, redis, redisMode);
   const scheduledTasks = new ScheduledTaskRegistry();
   if (redis) {
@@ -273,6 +286,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     }),
     networkBindingFactory,
     ipAbuseProtection,
+    modelStrikes,
     readiness,
     scheduledTasks,
     poolAgentResolver,

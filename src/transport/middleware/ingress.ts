@@ -16,6 +16,11 @@ import { GATEWAY_SECURITY_HEADERS } from "../../security/outbound-headers";
 import type { LianRouterDatabase } from "../../persistence/postgres";
 import { parseCookieValue, SESSION_COOKIE_NAME, isCsrfValid } from "../../security/csrf";
 import type { IpAbuseProtectionService } from "../../security/abuse";
+import {
+  modelAbuseBannedError,
+  withModelStrikeWarning,
+  type ModelStrikeService,
+} from "../../security/model-abuse";
 import type { ReadinessCheckResult } from "../../persistence/readiness";
 import type { TelemetryBatchBuffer, TelemetryEventInput } from "../../observability/telemetry-buffer";
 import { metrics } from "../../observability/metrics";
@@ -316,6 +321,18 @@ export function createCanonicalRequestMiddleware(deps: {
 export function createProxyRoutePreparationMiddleware(deps: {
   readonly stateStore: ProxyRequestStateStore;
   readonly preparer: ProxyRequestPreparer;
+  /**
+   * Graduated strikes for repeated invalid-model requests. This middleware is
+   * the single choke point where a request is rejected for naming a model the
+   * key may not use, so it is where a strike is recorded and where a banned
+   * address is refused.
+   *
+   * Every call here is best-effort: a strike-store outage must never turn a
+   * valid request into a failure, so errors are swallowed and the request
+   * proceeds exactly as it would have. That is the opposite of the admission
+   * layer's fail-closed policy, on purpose.
+   */
+  readonly modelStrikes?: ModelStrikeService;
 }): Elysia {
   return new Elysia()
     .beforeHandle(async ({ request }) => {
@@ -327,12 +344,52 @@ export function createProxyRoutePreparationMiddleware(deps: {
       const state = deps.stateStore.require(request);
       if (!state.authorization || !state.canonicalRequest)
         throw new GatewayError("admission_unavailable", 503, "proxy request context unavailable");
-      state.preparedRequest = await deps.preparer.prepare({
-        canonicalRequest: state.canonicalRequest,
-        authorization: state.authorization,
-        deadlineMs: state.deadlineMs,
-        signal: state.abortController.signal,
-      });
+      // Resolved once: the strike key is the client address, which cannot be
+      // re-enrolled, so it is the identity a ban belongs to. An unknown
+      // address (a reduced composition) simply records no strike.
+      const strikeIp = deps.modelStrikes === undefined ? undefined : state.clientIdentity?.address;
+      // Ban gate ahead of preparation: a banned address is refused before any
+      // routing work, and before this request can add a failed row to the
+      // console. `catch(() => false)` is the fail-open policy — an unreadable
+      // ban index must not refuse a legitimate caller.
+      if (deps.modelStrikes !== undefined && strikeIp !== undefined) {
+        const banned = await deps.modelStrikes.check({ ip: strikeIp }).catch(() => false);
+        if (banned) throw modelAbuseBannedError();
+      }
+      try {
+        state.preparedRequest = await deps.preparer.prepare({
+          canonicalRequest: state.canonicalRequest,
+          authorization: state.authorization,
+          deadlineMs: state.deadlineMs,
+          signal: state.abortController.signal,
+        });
+      } catch (error) {
+        // Only a *model* rejection counts: an invalid model the key may not
+        // use, or a name that resolves to nothing. A store outage, an aborted
+        // request, or a capability mismatch is not the caller probing for
+        // models, and counting it would ban honest clients for operator faults.
+        if (
+          deps.modelStrikes !== undefined &&
+          strikeIp !== undefined &&
+          error instanceof GatewayError &&
+          error.code === "model_not_found"
+        ) {
+          const outcome = await deps.modelStrikes
+            .noteInvalid({ ip: strikeIp })
+            .catch(() => null);
+          if (outcome?.banned === true) throw modelAbuseBannedError();
+          if (outcome !== null) {
+            throw withModelStrikeWarning(error, outcome, deps.modelStrikes.limit);
+          }
+        }
+        throw error;
+      }
+      // A valid model does not reset the invalid-attempt window; old attempts
+      // leave only by aging out. Not awaited: the decision for this request is
+      // already made and the response must not wait on a counter write.
+      if (deps.modelStrikes !== undefined && strikeIp !== undefined) {
+        void deps.modelStrikes.noteValid({ ip: strikeIp }).catch(() => undefined);
+      }
     })
     .as("plugin");
 }

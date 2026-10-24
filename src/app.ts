@@ -36,6 +36,7 @@ import { createResponsesCompactHandler } from "./transport/dispatch/responses-co
 import { createTransportPipeline } from "./transport/middleware/pipeline";
 import { PublicModelCatalogStore, type AllowedModelEntry } from "./console/providers/catalog/public-model-store";
 import type { IpAbuseProtectionService } from "./security/abuse";
+import type { ModelStrikeService } from "./security/model-abuse";
 import type { ReadinessCheckResult } from "./persistence/readiness";
 import type { RouteSnapshotService } from "./transport/routing/route-model";
 import type { TrustedProxyBoundary } from "./config";
@@ -96,6 +97,12 @@ export interface ProductionAppDeps {
   readonly byokUpstreamHosts: { readonly get: (providerId: string) => ByokUpstreamHost | undefined };
   readonly networkBindingFactory: ValidatedNetworkBindingFactory;
   readonly ipAbuseProtection: IpAbuseProtectionService;
+  /**
+   * Graduated model-abuse strikes for repeated invalid-model requests. Optional
+   * because a reduced composition omits it; the production root always supplies
+   * it, and omitting it only disables escalation, never a request.
+   */
+  readonly modelStrikes?: ModelStrikeService;
   readonly trustedProxyBoundary: TrustedProxyBoundary;
   readonly poolSelector: NetworkPoolSelector;
   readonly snapshotService: RouteSnapshotService;
@@ -288,6 +295,7 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       trustedProxyBoundary: deps.trustedProxyBoundary,
       ...(deps.resolvePeerAddress ? { resolvePeerAddress: deps.resolvePeerAddress } : {}),
       ipAbuseProtection: deps.ipAbuseProtection,
+      ...(deps.modelStrikes === undefined ? {} : { modelStrikes: deps.modelStrikes }),
       ...(deps.maxBodyBytes === undefined ? {} : { maxBodyBytes: deps.maxBodyBytes }),
       ...(deps.requestDeadlineMs === undefined ? {} : { requestDeadlineMs: deps.requestDeadlineMs }),
       ...(deps.verifiedHttps ? { verifiedHttps: true } : {}),
