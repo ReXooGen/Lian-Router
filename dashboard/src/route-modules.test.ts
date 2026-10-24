@@ -15,6 +15,7 @@ import Overview from "./routes/Overview";
 import Usage from "./routes/Usage";
 import ProviderDetail from "./routes/ProviderDetail";
 import Providers from "./routes/Providers";
+import PromptInjection from "./routes/PromptInjection";
 import Combos from "./routes/Combos";
 import Quota from "./routes/Quota";
 import Proxy from "./routes/Proxy";
@@ -38,6 +39,7 @@ const ROUTE_MODULES: ReadonlyArray<readonly [string, ComponentType]> = [
   ["/usage", Usage],
   ["/providers/:providerId", ProviderDetail],
   ["/providers", Providers],
+  ["/prompt-injection", PromptInjection],
   ["/combos", Combos],
   ["/quota", Quota],
   ["/proxy", Proxy],

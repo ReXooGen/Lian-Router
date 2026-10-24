@@ -293,6 +293,51 @@ Manual checks do not mutate dispatch health except for the explicit 402/407 disa
 Credentials are encrypted on write (`encryptCredential`) and never rehydrated on read; only
 prefix-length hints leave the store.
 
+## Prompt injection (`prompt-injection/`)
+
+Injected personas keyed by scope — `global`, one API key, or one model — each entry either a
+`prompt` or a multi-turn `chat script`, prepended or appended. `GET /prompt-injection` returns the
+catalog; adding `?preview` returns `{ stack }` instead, the exact resolved stack one request
+would receive (it runs the same `selectPromptInjections` the dispatch path uses, so the page's
+preview and request-time resolution cannot disagree). `?keyId` narrows the preview; omitting it
+is a real resolution mode, not a client filter.
+
+The dashboard page (`dashboard/src/routes/PromptInjection.tsx`) reads saved entries in three
+per-scope sections — `Global`, `Per API key`, `Per model` — each with its own title, description,
+and empty state, behind an `All | Global | Per API key | Per model` filter. Within a section the
+list is grouped by target with an active tally per group (`N active`, or `no active entry` when
+the target has none — `active` is per `(scope, target)`, so two active badges in one section are
+two different keys, not a broken invariant). Two targets that render the same label are
+disambiguated with a short id fragment. The Saved rows are ordered by label then target id, so
+editing a row never reorders the list.
+
+**Preview semantics.** The Stack preview is a server read of persisted state; its per-scope
+toggles (`Global` / `Per API key` / `Per model`) are a **display filter only** — `visibleStack`
+drops cards from the pane while the resolved stack is unchanged, and the notice says so. Two
+separate lines keep that honest: `previewScopeShownSummary` describes what the pane draws
+(`Showing global + per-key · per-model hidden`), while `stackScopeSummary` describes what the
+request carries (`This request carries: global, per-key, per-model`) and reads the resolved
+stack, not the toggles. A scope-count chip on each toggle shows the resolved count per scope.
+
+The preview's key picker's empty option is `No key — per-key injections excluded`: the request
+omits `keyId`, so the resolver never consults the key scope and the stack is `global + model`.
+That is how a per-model entry is inspected without a per-key persona on top of it.
+
+**Test.** The Test button posts a real `/v1/chat/completions` call with the selected key
+(revealed server-side) and the selected model, and it writes nothing — saving first would
+deactivate sibling entries and silently change which persona the router applies. It requires a
+key (`TEST_NEEDS_KEY_NOTICE`: the no-key mode is a preview resolution choice, not anonymous
+`/v1` access) and a model, and it applies the **saved** stack, not the editor: while the draft
+differs from the persisted entry, `TEST_UNSAVED_NOTICE` says the unsaved changes are not applied.
+
+**Editor seeding.** A draft belongs to one `(scope, target)` pair, and only a target change may
+re-seed it (`shouldReseedDraft`). A catalog refetch — every mutation triggers one — no longer
+overwrites the editor with the active entry, so an explicitly loaded entry survives a save
+elsewhere. `loadedEntryNotice` names the loaded entry and whether the router actually applies it
+(`not active (the router applies <name>)`, or no injection for that target), and
+`draftDiffersFromEntry` drives the unsaved-changes notice by comparing every field a save would
+send.
+
 ## Domains (`domains/`)
 
 - **API keys** (`api-keys/`): list (hides revoked), detail, create (generated `rk_` secret or
