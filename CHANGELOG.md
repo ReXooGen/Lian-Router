@@ -5,6 +5,25 @@
 > All changes below are pre-release. LianRouter has not been tagged or
 > released; this document reflects the current production codebase architecture and capabilities.
 
+### The console ships no bundled character artwork
+
+Six images sat in `dashboard/public/` with no product role. Five had no
+consumer at all: `og_bansos.webp`, `default-background.webp`,
+`default-backgrounds.jpg`, `default-backgrounds.webp`, and `favicon.webp`.
+They are deleted rather than left in the tree, because a file that nothing
+references still ends up in the release archive and in every operator's
+install, and the audit that found them should not have to run twice. The
+social preview is `og_image.webp`, which is the brand banner and stays; the
+favicon chain is `favicon.svg` plus the generated PNGs, and the manifest uses
+`favicon-192.png` and `favicon-512.png`.
+
+The sixth, `favicon_love.webp`, was the sidebar's fallback brand mark: it
+rendered only when an operator's custom branding upload failed to load. It was
+character art, not product identity, so the fallback now points at
+`favicon.svg`, the committed vector that the PNG set is rasterised from.
+Rendering an SVG inside the existing `<img>` needs no extra handling, and the
+fallback now matches the mark the rest of the console already shows.
+
 ### `lianrouter tray` starts on an install from npm
 
 The tray was unreachable for every install that came from a package.

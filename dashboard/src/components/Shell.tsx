@@ -848,7 +848,9 @@ export function DashboardShell({
   const meta = resolveRouteMeta(location.pathname);
   const [branding] = useCustomizationBranding();
   const customBrandingUrl = useCustomizationAssetUrl(branding.asset);
-  const defaultLogoUrl = `${import.meta.env.BASE_URL}favicon_love.webp`;
+  // A failed custom upload falls back to the vector brand mark, which is the
+  // same source the rasterised favicons are generated from.
+  const defaultLogoUrl = `${import.meta.env.BASE_URL}favicon.svg`;
   const logoUrl = customBrandingUrl ?? defaultLogoUrl;
   return (
     <>
