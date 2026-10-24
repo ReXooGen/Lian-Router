@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -394,7 +394,11 @@ describe("ensureGatewayInstalled", () => {
     expect(message).toContain("is missing");
     expect(message).toContain("lianrouter");
     expect(message).toContain("nested one level deep");
-    expect(existsSync(resolveBinaryPath(installRoot))).toBe(false);
+    // No runnable file at the launcher's spawn path. The nested payload does
+    // leave a *directory* named `lianrouter` there on POSIX hosts, so asserting
+    // bare existence would encode a Windows-only shape; what the launcher needs
+    // is that nothing executable sits at the path it will spawn.
+    expect(statSync(resolveBinaryPath(installRoot), { throwIfNoEntry: false })?.isFile()).not.toBe(true);
     // The archive's actual top-level entry is named, so the operator can see
     // that the release was built with the payload under `lianrouter/`.
     expect(message).toContain("the archive's top-level entries were lianrouter");

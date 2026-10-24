@@ -11,11 +11,24 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { mkdir, rm } from "node:fs/promises";
 
-/** Home directory — shared contract used by all injectors. */
-export { homedir as homeDir };
-export { join };
-
 const IS_WIN: boolean = platform() === "win32";
+
+/**
+ * Home directory — shared contract used by all injectors.
+ *
+ * Resolved from the environment on every call instead of delegating to
+ * `os.homedir()`. Bun caches the process-start home directory on Linux, so a
+ * later `HOME` change (how the injector suites sandbox themselves) would keep
+ * pointing at the real user's home: writes would land outside the sandbox and
+ * read back empty. `USERPROFILE` is the Windows equivalent, and
+ * `os.homedir()` remains the fallback when neither variable is set.
+ */
+export function homeDir(): string {
+  const fromEnv = IS_WIN ? process.env.USERPROFILE : process.env.HOME;
+  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
+  return homedir();
+}
+export { join };
 
 /** Check if a file exists. */
 export async function fileExists(path: string): Promise<boolean> {

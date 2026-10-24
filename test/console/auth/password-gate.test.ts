@@ -135,7 +135,17 @@ dbDescribe("single-password console login", () => {
   const createdTenantIds: string[] = [];
   const createdUserIds: string[] = [];
 
+  /**
+   * The login and change-password routes resolve the *effective* password from
+   * `LIANROUTER_CONSOLE_PASSWORD`, so the suite has to own that variable
+   * instead of inheriting it from a developer's `.env`. Without it the routes
+   * take the disabled branch and verify against the stored hash, which is the
+   * opposite of what these tests assert.
+   */
+  const originalConsolePassword = process.env.LIANROUTER_CONSOLE_PASSWORD;
+
   beforeAll(async () => {
+    process.env.LIANROUTER_CONSOLE_PASSWORD = GATE_PASSWORD;
     db = getDb();
     credentialService = new ConsoleCredentialService();
     sessionService = new ConsoleSessionService(db, {
@@ -163,6 +173,8 @@ dbDescribe("single-password console login", () => {
   });
 
   afterAll(async () => {
+    if (originalConsolePassword === undefined) delete process.env.LIANROUTER_CONSOLE_PASSWORD;
+    else process.env.LIANROUTER_CONSOLE_PASSWORD = originalConsolePassword;
     for (const userId of createdUserIds.splice(0)) {
       await db.delete(consoleSessions).where(eq(consoleSessions.userId, userId));
       await db.delete(consoleUsers).where(eq(consoleUsers.id, userId));

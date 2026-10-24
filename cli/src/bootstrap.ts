@@ -26,7 +26,7 @@
  *    concerned and then leaves the launcher spawning a path that does not
  *    exist — the silent loop this module's final assertion exists to prevent.
  */
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,7 +126,10 @@ export async function ensureGatewayInstalled(options: BootstrapOptions): Promise
   const emit = options.onProgress;
 
   const binaryPath = resolveBinaryPath(installRoot);
-  if (existsSync(binaryPath)) {
+  // A directory named like the binary is not an installed gateway: a nested
+  // release extracts `lianrouter/lianrouter` and leaves a directory at this
+  // path, so existence alone would report a usable install.
+  if (statSync(binaryPath, { throwIfNoEntry: false })?.isFile() === true) {
     return { binaryPath, version: await resolveCurrentVersion(installRoot, currentVersion) };
   }
 
@@ -244,7 +247,7 @@ export async function ensureGatewayInstalled(options: BootstrapOptions): Promise
       },
     });
 
-    if (!existsSync(binaryPath)) {
+    if (statSync(binaryPath, { throwIfNoEntry: false })?.isFile() !== true) {
       // The archive installed, but not where the supervisor looks. The usual
       // cause is a release built as `payload/lianrouter.exe` instead of
       // `lianrouter.exe` at the root; naming the entries makes that obvious
