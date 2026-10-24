@@ -18,7 +18,7 @@ import {
 } from "./paths";
 import { installShutdownHandlers, shutdownSessionFiles } from "./shutdown";
 import { GatewaySupervisor, type ServerStatus } from "./supervisor";
-import { runUpdateSequence } from "./update-flow";
+import { resolveGatewayVersion, runUpdateSequence } from "./update-flow";
 import { hideConsoleWindow, isTrayRunning, startTray, stopTray } from "./tray-launcher";
 import type { TrayStartResult } from "./tray-launcher";
 
@@ -414,7 +414,7 @@ async function openSession(
       try {
         const engine = await import("../update/engine");
         await runUpdateSequence({
-          currentVersion: CLI_VERSION,
+          launcherVersion: CLI_VERSION,
           installRoot: runtime.installRoot,
           checkForUpdate: (options) => engine.checkForUpdate(options),
           runUpdate: (options) => engine.runUpdate(options),
@@ -511,7 +511,7 @@ async function runInteractive(
     return await blockUntilTrayExit(supervisor, session, runtime);
   }
 
-  const update = await readUpdateInfo();
+  const update = await readUpdateInfo(runtime.installRoot);
   const action = await promptMenu({
     version: CLI_VERSION,
     port: supervisor.status.port,
@@ -582,7 +582,7 @@ async function runUpdateWithProgress(
   session.control.setUpdateRunning(true);
   try {
     await runUpdateSequence({
-      currentVersion: CLI_VERSION,
+      launcherVersion: CLI_VERSION,
       installRoot: runtime.installRoot,
       checkForUpdate: (options) => engine.checkForUpdate(options),
       runUpdate: (options) => engine.runUpdate(options),
@@ -753,7 +753,7 @@ async function runUpdateFlow(supervisor: GatewaySupervisor, runtime: Runtime): P
   const wasRunning = await supervisor.adoptExisting();
   try {
     await runUpdateSequence({
-      currentVersion: CLI_VERSION,
+      launcherVersion: CLI_VERSION,
       installRoot: runtime.installRoot,
       checkForUpdate: (options) => engine.checkForUpdate(options),
       runUpdate: (options) => engine.runUpdate(options),
@@ -797,10 +797,12 @@ async function runUpdateFlow(supervisor: GatewaySupervisor, runtime: Runtime): P
  * module is absent (an isolated build, or a stripped install). A missing module
  * means "no update known", which is exactly the menu's no-row case.
  */
-async function readUpdateInfo(): Promise<UpdateSnapshot | null> {
+async function readUpdateInfo(installRoot: string): Promise<UpdateSnapshot | null> {
   try {
     const engine = await import("../update/engine");
-    const info = await engine.checkForUpdate({ currentVersion: CLI_VERSION });
+    const info = await engine.checkForUpdate({
+      currentVersion: await resolveGatewayVersion(installRoot, CLI_VERSION),
+    });
     return { current: info.current, latest: info.latest, available: info.available };
   } catch {
     return null;

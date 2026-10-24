@@ -6,6 +6,22 @@
 > covers the changes shipped since that release. Sections below 2.1.0 were
 > written before it shipped and are kept in the order they landed.
 
+### Update compares against the installed gateway version
+
+`lianrouter update` was a no-op on a machine whose gateway was older than the
+launcher. With the launcher at 2.1.0 and the release also at 2.1.0, the command
+printed "LianRouter 2.1.0 is up to date." and installed nothing, while
+`%LOCALAPPDATA%\LianRouter\version.json` still recorded `v2.0.0`. The mechanism
+was the comparison input: `runUpdateSequence()` was handed `CLI_VERSION`, the
+launcher's own version, and asked `checkForUpdate()` to judge the release
+against it. The release matched the launcher, so it never looked newer, so the
+sequence returned before the download. The sequence now resolves the installed
+gateway version from `version.json` itself, because the launcher and the gateway
+are versioned independently and only the gateway's recorded version describes
+what is actually on disk. The launcher's version remains the fallback for an
+install that never recorded one, and `resolveCurrentVersion()` keeps preferring
+the compiled version for `--version`, which is a different question.
+
 ### The Meta Model API provider
 
 Meta's Model API is API-key authenticated against the same `api.meta.ai`

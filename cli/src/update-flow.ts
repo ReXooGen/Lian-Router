@@ -1,4 +1,5 @@
 import type { UpdateProgressFrame, UpdateSnapshot } from "./control-server";
+import { readInstalledVersion } from "../update/version-file";
 
 /**
  * The launcher's update sequence, extracted so it can be tested and reused.
@@ -43,7 +44,13 @@ export interface UpdateFlowRunOptions {
 }
 
 export interface UpdateFlowDeps {
-  readonly currentVersion: string;
+  /**
+   * The launcher's own version, used only as the fallback when the installation
+   * recorded none. It is never compared against a release: this sequence
+   * installs a *gateway* archive, so the number that decides "newer" is read
+   * from the install root by {@link runUpdateSequence}.
+   */
+  readonly launcherVersion: string;
   readonly installRoot: string;
   readonly checkForUpdate: (options: { currentVersion: string }) => Promise<UpdateFlowInfo>;
   readonly runUpdate: (options: UpdateFlowRunOptions) => Promise<void>;
@@ -56,13 +63,39 @@ export interface UpdateFlowDeps {
 }
 
 /**
+ * The version of the gateway archive installed on disk.
+ *
+ * The launcher and the gateway version independently: a launcher that shipped
+ * alongside a newer gateway compares a release against the *gateway's* recorded
+ * version, not its own. Comparing against the launcher's version made
+ * `lianrouter update` report "up to date" while `version.json` still named an
+ * older gateway, because the release matched the launcher and therefore looked
+ * not-newer.
+ *
+ * `launcherVersion` is the fallback for an installation that never recorded a
+ * version — a fresh install, or a record the reader rejected as corrupt. Both
+ * are real states, so the `undefined` is handled here rather than asserted away.
+ */
+export async function resolveGatewayVersion(
+  installRoot: string,
+  launcherVersion: string,
+): Promise<string> {
+  const record = await readInstalledVersion(installRoot);
+  return record?.version ?? launcherVersion;
+}
+
+/**
  * Runs check → install, stopping the gateway only at the install boundary.
+ *
+ * The version compared against the release is the installed gateway's, resolved
+ * here so no caller can hand this sequence the launcher's own number by mistake.
  *
  * Returns normally when the install is up to date; rethrows whatever the engine
  * threw. Callers own the "update is running" flag around this call.
  */
 export async function runUpdateSequence(deps: UpdateFlowDeps): Promise<void> {
-  const info = await deps.checkForUpdate({ currentVersion: deps.currentVersion });
+  const gatewayVersion = await resolveGatewayVersion(deps.installRoot, deps.launcherVersion);
+  const info = await deps.checkForUpdate({ currentVersion: gatewayVersion });
   deps.publish({
     current: info.current,
     latest: info.latest,
@@ -86,7 +119,9 @@ export async function runUpdateSequence(deps: UpdateFlowDeps): Promise<void> {
   try {
     await deps.runUpdate({
       installRoot: deps.installRoot,
-      currentVersion: deps.currentVersion,
+      // The engine re-runs the same check internally, so it must see the same
+      // number the sequence compared against or it refuses to install.
+      currentVersion: gatewayVersion,
       onProgress: (progress) => {
         deps.publishProgress({
           phase: progress.phase,

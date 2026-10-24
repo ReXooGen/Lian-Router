@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { UpdateSnapshot } from "../src/control-server";
 import type { UpdateFlowDeps, UpdateFlowProgress } from "../src/update-flow";
 import { runUpdateSequence } from "../src/update-flow";
+import type { RawRelease, UpdateChannel, UpdateSource } from "../update/contracts";
+import { checkForUpdate } from "../update/engine";
 
 /**
  * The ordering that makes console progress possible.
@@ -12,11 +18,53 @@ import { runUpdateSequence } from "../src/update-flow";
  * that list — not on internals.
  */
 
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+/** Asset name matching this host, so the engine's selection finds it. */
+const HOST_ASSET = `lianrouter-${process.platform}-${process.arch}.zip`;
+
+/**
+ * A real install root, because the sequence reads `version.json` from disk.
+ * Omitting `version` leaves the record absent — the fresh-install case.
+ */
+async function tempInstallRoot(record?: { readonly version: string }): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "lianrouter-update-flow-test-"));
+  tempDirs.push(dir);
+  if (record !== undefined) {
+    await writeFile(
+      join(dir, "version.json"),
+      JSON.stringify({ version: record.version, installedAt: "2026-01-01T00:00:00.000Z", assetName: HOST_ASSET }),
+    );
+  }
+  return dir;
+}
+
+/** Fake release source; the real one is exercised by its own suite. */
+class FakeSource implements UpdateSource {
+  readonly #release: RawRelease | null;
+
+  constructor(release: RawRelease | null) {
+    this.#release = release;
+  }
+
+  async fetchLatest(_channel: UpdateChannel): Promise<RawRelease | null> {
+    return this.#release;
+  }
+}
+
 interface Harness {
   readonly events: string[];
   readonly deps: UpdateFlowDeps;
   readonly progressFrames: string[];
   readonly snapshots: Array<UpdateSnapshot>;
+  /** Every version the sequence asked the engine to compare against. */
+  readonly checkedVersions: string[];
+  /** Every version the sequence handed to `runUpdate`. */
+  readonly runVersions: string[];
 }
 
 interface HarnessOptions {
@@ -25,12 +73,21 @@ interface HarnessOptions {
   readonly frames?: readonly UpdateFlowProgress[];
   /** Throws instead of reaching the `restart` hook. */
   readonly failAt?: string;
+  /** Install root the sequence reads `version.json` from. */
+  readonly installRoot?: string;
+  /** The launcher's own version, used only as the fallback. */
+  readonly launcherVersion?: string;
+  /** Latest release the fake engine offers. */
+  readonly latest?: string;
 }
 
 function harness(options: HarnessOptions = {}): Harness {
   const events: string[] = [];
   const progressFrames: string[] = [];
   const snapshots: Array<{ current: string; latest: string; available: boolean }> = [];
+  const checkedVersions: string[] = [];
+  const runVersions: string[] = [];
+  const latest = options.latest ?? "2.0.5";
   const frames = options.frames ?? [
     { phase: "checking", percent: 0, message: "checking for updates" },
     { phase: "downloading", percent: 10, message: "downloading asset" },
@@ -40,23 +97,25 @@ function harness(options: HarnessOptions = {}): Harness {
     { phase: "installing", percent: 90, message: "installing update" },
     { phase: "installing", percent: 95, message: "installed lianrouter.exe" },
     { phase: "restarting", percent: 97, message: "restarting gateway" },
-    { phase: "done", percent: 100, message: "updated to 2.0.5" },
+    { phase: "done", percent: 100, message: `updated to ${latest}` },
   ];
 
   const deps: UpdateFlowDeps = {
-    currentVersion: "2.0.0",
-    installRoot: "/install",
-    checkForUpdate: async () => {
+    launcherVersion: options.launcherVersion ?? "2.0.0",
+    installRoot: options.installRoot ?? "/install",
+    checkForUpdate: async (checkOptions) => {
       events.push("check");
+      checkedVersions.push(checkOptions.currentVersion);
       return {
-        current: "2.0.0",
-        latest: "2.0.5",
+        current: checkOptions.currentVersion,
+        latest,
         available: options.available ?? true,
-        notesUrl: "https://example.test/v2.0.5",
+        notesUrl: `https://example.test/v${latest}`,
         publishedAt: "2026-10-20T10:00:00Z",
       };
     },
     runUpdate: async (runOptions) => {
+      runVersions.push(runOptions.currentVersion);
       for (const frame of frames) {
         events.push(`progress:${frame.phase}`);
         runOptions.onProgress(frame);
@@ -89,7 +148,7 @@ function harness(options: HarnessOptions = {}): Harness {
     },
   };
 
-  return { events, deps, progressFrames, snapshots };
+  return { events, deps, progressFrames, snapshots, checkedVersions, runVersions };
 }
 
 describe("update sequence ordering", () => {
@@ -173,5 +232,103 @@ describe("update sequence ordering", () => {
     expect(events.filter((event) => event === "stop")).toHaveLength(1);
     expect(events.filter((event) => event === "start")).toHaveLength(1);
     expect(events.indexOf("start")).toBeGreaterThan(events.indexOf("stop"));
+  });
+});
+
+/**
+ * Which version the sequence compares against.
+ *
+ * The sequence installs a gateway archive, and the launcher and the gateway are
+ * versioned independently. Handing the sequence the launcher's own version made
+ * `lianrouter update` report "up to date" on a machine whose `version.json`
+ * still named an older gateway, because the release matched the launcher and so
+ * looked not-newer. These tests drive the real `checkForUpdate` predicate with a
+ * fake source, so the comparison under test is the shipped one.
+ */
+describe("update sequence version comparison", () => {
+  test("offers the release when the launcher is newer than the installed gateway", async () => {
+    const installRoot = await tempInstallRoot({ version: "v2.0.0" });
+    const release: RawRelease = {
+      version: "2.1.0",
+      assets: [{ name: HOST_ASSET, url: "https://example.invalid/never-fetched.zip", size: 1 }],
+    };
+    const source = new FakeSource(release);
+    const { events, deps, snapshots, runVersions } = harness({
+      installRoot,
+      launcherVersion: "2.1.0",
+      latest: "2.1.0",
+    });
+
+    await runUpdateSequence({
+      ...deps,
+      checkForUpdate: (options) => checkForUpdate({ ...options, source }),
+      runUpdate: async (options) => {
+        runVersions.push(options.currentVersion);
+        events.push("install");
+      },
+    });
+
+    // The launcher's own 2.1.0 must not satisfy the comparison; the gateway's
+    // recorded v2.0.0 is what makes 2.1.0 an update. The record is echoed
+    // verbatim, and the comparator strips the `v` when deciding newer.
+    expect(snapshots).toEqual([
+      {
+        current: "v2.0.0",
+        latest: "2.1.0",
+        available: true,
+      },
+    ]);
+    expect(runVersions).toEqual(["v2.0.0"]);
+    expect(events).toContain("install");
+  });
+
+  test("reports up to date and installs nothing when the gateway is already current", async () => {
+    const installRoot = await tempInstallRoot({ version: "v2.1.0" });
+    const release: RawRelease = {
+      version: "2.1.0",
+      assets: [{ name: HOST_ASSET, url: "https://example.invalid/never-fetched.zip", size: 1 }],
+    };
+    const { events, deps, snapshots, runVersions } = harness({
+      installRoot,
+      launcherVersion: "2.1.0",
+      latest: "2.1.0",
+    });
+
+    await runUpdateSequence({
+      ...deps,
+      checkForUpdate: (options) => checkForUpdate({ ...options, source: new FakeSource(release) }),
+    });
+
+    expect(snapshots).toEqual([
+      {
+        current: "v2.1.0",
+        latest: "2.1.0",
+        available: false,
+      },
+    ]);
+    expect(runVersions).toEqual([]);
+    expect(events).not.toContain("install");
+    expect(events).not.toContain("stop");
+    expect(events).not.toContain("start");
+  });
+
+  test("falls back to the launcher version when no install record exists", async () => {
+    const installRoot = await tempInstallRoot();
+    const release: RawRelease = {
+      version: "2.1.0",
+      assets: [{ name: HOST_ASSET, url: "https://example.invalid/never-fetched.zip", size: 1 }],
+    };
+    const { deps, snapshots } = harness({ installRoot, launcherVersion: "2.0.0" });
+
+    await runUpdateSequence({
+      ...deps,
+      checkForUpdate: (options) => checkForUpdate({ ...options, source: new FakeSource(release) }),
+      runUpdate: async () => undefined,
+    });
+
+    // A fresh install has no recorded gateway version, so the launcher's own is
+    // the only number available — and the update is still offered.
+    expect(snapshots[0]?.current).toBe("2.0.0");
+    expect(snapshots[0]?.available).toBe(true);
   });
 });

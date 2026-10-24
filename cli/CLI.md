@@ -370,6 +370,24 @@ and "no asset for this host" stay distinguishable. `runUpdate()` performs the
 sequence. The split is what lets the menu show an update row before anything is
 downloaded.
 
+**The comparison is against the installed gateway version, not the launcher's.**
+The launcher and the gateway are versioned independently: a launcher shipped
+alongside a newer gateway is the normal case, not an edge one. The sequence
+installs a *gateway* archive, so the number that decides "newer" is the one
+`version.json` records for the gateway, read through `readInstalledVersion()`
+inside `runUpdateSequence()`. Handing the sequence `CLI_VERSION` compared the
+release against the launcher's own number, which reported "up to date" while
+`version.json` still named an older gateway and installed nothing — the release
+matched the launcher, so it never looked newer. `runUpdateSequence()` resolves
+this itself, so no call site can pass the wrong version by mistake. The
+launcher's version is only the fallback for an installation that recorded none
+(a fresh install, or a record the reader rejected as corrupt).
+
+`resolveCurrentVersion()` keeps its own policy — the compiled version wins when
+it is real — because that answers a different question: which version this
+*launcher* is. `--version` and the menu header must keep reporting the artifact
+actually running, even after an update replaced the binary underneath it.
+
 **The gateway stays up until the install boundary.** The console that shows the
 progress bar is served by the gateway child, so stopping it early would kill the
 page rendering the update. `runUpdateSequence()` in `cli/src/update-flow.ts` keeps
