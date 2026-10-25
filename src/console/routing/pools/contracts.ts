@@ -6,7 +6,11 @@ import { Elysia, t } from "elysia";
 import { isIP } from "node:net";
 import type { AccessDecision } from "../../../security/access-control";
 import { isAddressAllowed } from "../../../network/ssrf";
-import { TRANSPORT_KINDS, type TransportKind } from "../../../network/pool/agent";
+import {
+  TRANSPORT_KINDS,
+  splitEndpointCredential,
+  type TransportKind,
+} from "../../../network/pool/agent";
 import type { SsrfPolicy } from "../../../config";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { PoolHealthEvent } from "../../../network/pool-health-machine";
@@ -414,13 +418,22 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
       ): Promise<NetworkPoolResponse> {
         const a = requireTenantScope(access, "dashboard:write");
         const normalizedConfig = normalizePoolConfig(request.config);
-        validateEndpoint(request.kind, request.endpoint, config.ssrfPolicy);
+        // A pasted `http://user:pass@host:port` carries its credential inside
+        // the endpoint. Persisting that verbatim would store a plaintext secret
+        // in `endpoint_config` and leave `credential_ciphertext` null, which the
+        // transport reads as "no credential" — the pool then dials with no
+        // `Proxy-Authorization` and the exit answers 407. Split it out so the
+        // credential lands in the encrypted column and the endpoint stays clean.
+        const split = splitEndpointCredential(request.endpoint);
+        const endpoint = split.endpoint;
+        const credential = request.credential ?? split.credential;
+        validateEndpoint(request.kind, endpoint, config.ssrfPolicy);
         validateTransportConfig(request.kind, normalizedConfig);
         validatePoolLimits(request.maxInflight, request.weight);
         const record: NetworkPoolRecord = {
           id: crypto.randomUUID(),
           kind: request.kind,
-          endpoint: request.endpoint,
+          endpoint,
           maxInflight: request.maxInflight ?? 10,
           weight: request.weight ?? 100,
           status: "active",
@@ -430,8 +443,8 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
           createdAt: new Date().toISOString(),
           ...(request.label === undefined ? {} : { label: request.label }),
           ...(Object.keys(normalizedConfig).length > 0 ? { config: normalizedConfig } : {}),
-          ...(request.credential === undefined ? {} : { credential: request.credential }),
-          ...(request.credential !== undefined ? { hasCredential: true } : {}),
+          ...(credential === undefined ? {} : { credential }),
+          ...(credential !== undefined ? { hasCredential: true } : {}),
         };
         await config.store.create(record);
         await config.auditSink?.record({
@@ -459,11 +472,24 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
           if (!existing) throw new ConsoleDomainError("pool_not_found", 404, `Pool ${poolId} not found`);
           const effectiveKind = request.kind ?? existing.kind;
           const effectiveEndpoint = request.endpoint ?? existing.endpoint;
-          const mergedConfig = { ...(existing.config ?? {}), ...(request.config ?? {}) };
-          const normalizedConfig = normalizePoolConfig(mergedConfig);
-          validateEndpoint(effectiveKind, effectiveEndpoint, config.ssrfPolicy);
+          // Same rule as create: a new endpoint may carry `user:pass@`, which
+          // belongs in the encrypted credential column, not in the persisted
+          // endpoint string. An explicit `credential` field still wins.
+          const split = splitEndpointCredential(effectiveEndpoint);
+          const normalizedConfig = normalizePoolConfig({
+            ...(existing.config ?? {}),
+            ...(request.config ?? {}),
+          });
+          validateEndpoint(effectiveKind, split.endpoint, config.ssrfPolicy);
           validateTransportConfig(effectiveKind, normalizedConfig);
-          request = { ...request, config: normalizedConfig };
+          request = {
+            ...request,
+            config: normalizedConfig,
+            endpoint: split.endpoint,
+            ...(request.credential === undefined && split.credential !== undefined
+              ? { credential: split.credential }
+              : {}),
+          };
         }
         const updated = await config.store.update(
           a.tenantId,
@@ -520,6 +546,11 @@ export function createNetworkPoolOperations(config: NetworkPoolConfig) {
       const a = requireTenantScope(access, "dashboard:write");
       const recovered = await config.store.recover(a.tenantId, poolId);
       if (!recovered) throw new ConsoleDomainError("pool_not_found", 404, `Pool ${poolId} not found`);
+      // The row is `active` again, but per-(pool, provider) cooldowns live in
+      // the selector and Redis, not in the row: a pool recovered from the
+      // console stayed unusable for every provider still cooling down, so the
+      // operator saw "active" and got `proxy_pool_cooldown` on dispatch.
+      await config.poolSelector?.clearPoolCooldowns(poolId);
       await config.poolAgentReleaser?.releasePool(poolId, a.tenantId);
       await config.auditSink?.record({
         access: a,

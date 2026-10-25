@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProviderDispatchTarget, ProviderAdapter } from "../../../src/providers/provider-registry";
 import { candidateFor, canonicalRequest, dispatchContext, dispatchJson } from "../../helpers/provider-dispatch";
 import { createApiKeyAdapter } from "../../../src/providers/integrations/configured-provider";
@@ -12,6 +12,7 @@ import {
   OPENCODE_ZEN_SPEC,
 } from "../../../src/providers/integrations/opencode";
 import { _resetStableOpenCodeSessionsForTesting, _stableOpenCodeSessionCountForTesting, stableOpenCodeSessionId } from "../../../src/providers/integrations/opencode-fingerprint";
+import { VERSION_SOURCES, _resetOpenCodeVersion, getOpenCodeVersion, resolveOpenCodeVersion } from "../../../src/providers/operations/client-versions";
 
 const CHAT_OK: Record<string, unknown> = {
   choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
@@ -485,8 +486,9 @@ describe("OpenCode bundled catalog", () => {
   });
 
   test("declares the live free-tier additions with snapshot limits", () => {
-    // Verified live against `GET /zen/v1/models` and a chat completion on
-    // 2026-10-20: both ids answer on `/zen/v1/chat/completions`.
+    // Verified live by generating once per id on 2026-10-25: both answer on
+    // `/zen/v1/chat/completions`. A 403 from the gate would only have proved the
+    // id is accepted, not that it still serves.
     const lightning = OPENCODE_FREE_MODELS.find(
       (model) => model.modelId === "nemotron-3.5-lightning-free",
     );
@@ -499,15 +501,19 @@ describe("OpenCode bundled catalog", () => {
     expect(lightning?.cost.input).toBe(0);
     expect(lightning?.cost.output).toBe(0);
 
-    const minimax = OPENCODE_FREE_MODELS.find(
-      (model) => model.modelId === "minimax-m3.1-flash-free",
-    );
-    expect(minimax).toBeDefined();
-    expect(minimax?.endpointPath).toBe("/zen/v1/chat/completions");
-    expect(minimax?.contextLimit).toBe(1_000_000);
-    expect(minimax?.outputLimit).toBe(512_000);
-    expect(minimax?.modalities.input).toEqual(["text", "image"]);
-    expect(minimax?.reasoning).toBe(true);
+    // Absent from the committed snapshot, so the explicit limits are the row's
+    // only source: a silent fallback to the generic default would misreport the
+    // window and the output budget the clamp enforces.
+    const flint = OPENCODE_FREE_MODELS.find((model) => model.modelId === "flint-40b-free");
+    expect(flint).toBeDefined();
+    expect(flint?.wireFamily).toBe("chat");
+    expect(flint?.endpointPath).toBe("/zen/v1/chat/completions");
+    expect(flint?.contextLimit).toBe(262_144);
+    expect(flint?.outputLimit).toBe(65_536);
+    expect(flint?.modalities.input).toEqual(["text"]);
+    expect(flint?.reasoning).toBe(true);
+    expect(flint?.cost.input).toBe(0);
+    expect(flint?.cost.output).toBe(0);
   });
 
   test("keeps the bare DeepSeek and GLM flash ids off the Free tier", () => {
@@ -519,6 +525,46 @@ describe("OpenCode bundled catalog", () => {
       const row = OPENCODE_ZEN_MODELS.find((model) => model.modelId === bare);
       expect(row).toBeDefined();
       expect(row?.endpointPath).toBe("/zen/v1/chat/completions");
+    }
+  });
+
+  /**
+   * Retired ids must not stay in the catalog: a row that cannot generate is a
+   * routing candidate that fails every dispatch. Measured 2026-10-25 —
+   * `minimax-m3.1-flash-free` and both `muse-spark-*-contributor-free` ids
+   * answer `410 ModelDeprecated`; `union-alpha` answers `400` "Model is
+   * unavailable" on both `/chat/completions` and `/messages`.
+   * `longcat-2.5-preview-free` is a different case: it passes the gate but was
+   * never proven to generate, so it is retired as unverified rather than dead.
+   */
+  test("does not declare tombstoned or unverified free ids", () => {
+    const retired = [
+      "minimax-m3.1-flash-free",
+      "muse-spark-1.2-contributor-free",
+      "muse-spark-1.3-contributor-free",
+      "union-alpha",
+      "longcat-2.5-preview-free",
+    ];
+    for (const id of retired) {
+      expect({ id, present: OPENCODE_FREE_MODELS.some((model) => model.modelId === id) }).toEqual({
+        id,
+        present: false,
+      });
+    }
+  });
+
+  /**
+   * `union-alpha` was the free tier's only Messages model. With it gone the
+   * family has no row behind it, and a declared-but-empty family turns a
+   * capability map into a failure path: the adapter would accept a Messages
+   * candidate and post an Anthropic-shaped payload at a route this catalog
+   * cannot serve. (The shared factory does serialize the `messages` wire; the
+   * omission is about having no model, not about a missing codec.)
+   */
+  test("declares only the wire families its catalog can serve", () => {
+    for (const spec of [OPENCODE_FREE_SPEC, OPENCODE_ZEN_SPEC, OPENCODE_GO_SPEC]) {
+      expect(spec.supported_wire_families).toEqual(["chat", "responses"]);
+      expect(spec.endpoint_paths_by_wire_family?.messages).toBeUndefined();
     }
   });
 
@@ -556,3 +602,37 @@ describe("OpenCode bundled catalog", () => {
   });
 });
 
+describe("OpenCode client version floor", () => {
+  const registryAnswer = (version: string): typeof fetch =>
+    (async () =>
+      new Response(JSON.stringify({ version }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+
+  // Both ends: a version cached by an earlier suite would otherwise answer
+  // before this test's fetcher is ever consulted.
+  beforeEach(() => {
+    _resetOpenCodeVersion();
+  });
+  afterEach(() => {
+    _resetOpenCodeVersion();
+  });
+
+  /**
+   * The free gate answers `426 UpgradeRequired` for any `user-agent` below
+   * 1.18.0. A registry publishing an older artifact must therefore never
+   * replace the pinned fallback, or every free dispatch fails at the gate
+   * instead of at the model.
+   */
+  test("a discovered version below the floor keeps the pinned fallback", async () => {
+    const resolved = await resolveOpenCodeVersion(registryAnswer("1.17.9"));
+    expect(resolved).toBe(VERSION_SOURCES.opencode.fallback);
+    expect(getOpenCodeVersion()).toBe("1.18.32");
+  });
+
+  test("a discovered version at or above the floor is adopted", async () => {
+    const resolved = await resolveOpenCodeVersion(registryAnswer("1.18.34"));
+    expect(resolved).toBe("1.18.34");
+  });
+});

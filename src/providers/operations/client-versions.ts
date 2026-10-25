@@ -65,7 +65,11 @@ export const VERSION_SOURCES = {
   },
   opencode: {
     key: "opencode",
+    // The free-tier gate answers `426 UpgradeRequired` for any `user-agent`
+    // below 1.18.0, so a registry publishing an older artifact must never be
+    // stamped on a dispatch. The pinned fallback is itself above the floor.
     fallback: "1.18.32",
+    minVersion: "1.18.0",
     sources: [{ url: "https://registry.npmjs.org/opencode-ai/latest" }],
   },
   commandcode: {

@@ -18,7 +18,8 @@ src/network/
   ssrf.ts                 resolveAllAddresses, isAddressAllowed, validateResolvedAddresses, resolveAndValidateOnce
   pool/                   pool-bound egress: agents, loading, cache lifecycle, admission
     agent.ts              transports (http/https/socks5), ProxyAgentPair, relay classification, per-connect SSRF lookup
-    loader.ts             DrizzleNetworkPoolLoader: one DB row → resolver shape (decrypts credential)
+    loader.ts             DrizzleNetworkPoolLoader: one DB row → resolver shape (decrypts credential);
+                          loadPoolEgressHost: credential-free host:port for operator-facing output
     resolver.ts           PoolAgentResolver (single-flight cache, idle reap, LRU ceiling) + ValidatedNetworkBindingFactory
     selector.ts           NetworkPoolSelector: distributed admission (local + Redis), cooldowns, weighted scoring
   pool-health.ts          flagPoolCooldown: provider-scoped 429 → volatile flag + health_events row
@@ -157,10 +158,17 @@ route snapshots. Three consecutive faults are labeled `cooldown`; successful req
 states immediately, while the 30-second health sweep recovers expired faults. A **dispatch** through a
 pool that receives HTTP 402 or 407 marks the proxy reachable but unusable, disables it from routing,
 records the status in `health_events`, and invalidates the route snapshot; only an operator can
-re-enable it. A manual console probe deliberately does not: it records only `lastHealthCheckAt` /
-`lastLatencyMs`, because a freshly added exit can answer 407 while the provider is still provisioning
-it, and one diagnostic probe must not park an otherwise healthy pool. These proxy responses do not
-count as provider-account failures. Disabled pools are never auto-recovered. `subscribePoolHealth` feeds status transitions to the console pool SSE stream.
+re-enable it. A manual console probe is asymmetric on purpose: a probe that **fails** records only
+`lastHealthCheckAt` / `lastLatencyMs`, because a freshly added exit can answer 407 while the provider
+is still provisioning it and one diagnostic dial must not park an otherwise healthy pool; a probe that
+**succeeds** is dispatch-grade evidence, so it resets `consecutiveFailures`, clears
+`cooldownUntil` / `lastError*`, sets `lastSuccessAt`, promotes a `degraded` or `cooldown` pool back to
+`active`, journals the transition, publishes it to the SSE subscribers, and invalidates the route
+snapshot. A `disabled` pool is never touched by a probe: that state is an operator decision or a
+dispatch 402/407 verdict. Operator re-enable (`status: active`) clears the same fields from any parked
+state, and `/recover` also drops the pool's per-provider cooldown markers, so a recovered pool is not
+immediately unusable for providers still cooling down. These proxy responses do not count as
+provider-account failures. Disabled pools are never auto-recovered. `subscribePoolHealth` feeds status transitions to the console pool SSE stream.
 
 ## Supporting modules
 
@@ -168,6 +176,7 @@ count as provider-account failures. Disabled pools are never auto-recovered. `su
   + strict `parseAgentConfig` at the DB/console trust boundary
   (`ProxyConfigError` on bad values).
 - `pool-health-machine.ts`: persistent transport-failure status, health-event history, recovery,
+  `recordPoolProbeOutcome` (probe asymmetry: diagnostics on failure, promotion on success),
   expiry sweep, and push notifications consumed by the console pool SSE stream.
 - `retry.ts`: `retryWithBackoff` (default 3 retries, 100 ms base, 5 s cap,
   25% jitter) — only for idempotent metadata lookups (e.g. registry version

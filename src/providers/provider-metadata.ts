@@ -225,14 +225,19 @@ export function providerDisplayName(providerId: string): string {
 export function providerBaseUrl(providerId: string): string {
   const entry = BUNDLED_PROVIDER_METADATA.find((candidate) => candidate.id === providerId);
   if (!entry) throw new Error(`Unknown builtin provider "${providerId}"`);
-  // The opencodeft free gate is satisfied by the request-side fingerprint the
-  // adapter already installs (desktop UA, `x-opencode-*`, tool quartet, and
-  // `Authorization: Bearer public`), so direct dispatch works. A deployment
-  // whose edge still rejects the in-process client may front the provider with
-  // a local OpenCode CLI bridge and point this override at the bridge (the one
-  // origin source of truth) instead of a DB `base_url`, which only custom/BYOK
-  // rows may carry. Such a bridge is lossy: it flattens content to text and
-  // drops tools.
+  // The opencodeft free gate is an application-layer predicate the adapter
+  // satisfies on every dispatch: `user-agent: opencode/<semver>` at or above
+  // 1.18.0, `x-opencode-session` matching `^ses_[0-9a-f]{12}`, `stream: true`,
+  // and either a `read` tool or the title-generator system prompt. TLS plays no
+  // part — the real client's own traffic runs HTTP/1.1 and passes through a
+  // TLS-terminating proxy. Direct dispatch therefore passes the gate and is the
+  // default; whether a given request generates depends on the address's
+  // remaining allowance, not on the fingerprint.
+  // The override exists for a deployment that deliberately fronts the provider
+  // with a local CLI bridge; such a bridge is lossy (it flattens content to
+  // text and drops tools), and it is never a requirement. It replaces the
+  // origin source of truth rather than a DB `base_url`, which only custom/BYOK
+  // rows may carry.
   if (providerId === "opencodeft") {
     const override = resolveOpenCodeFtBaseUrl();
     if (override !== undefined) return override;

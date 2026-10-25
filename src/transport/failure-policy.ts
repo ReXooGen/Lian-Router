@@ -383,16 +383,32 @@ const CAPACITY_SCOPE_IDENTIFIERS: Readonly<Record<string, true>> = {
  * own captured outbound bytes (headers and body) were replayed to the live
  * endpoint and returned `200` with a real stream, while a malformed
  * `x-opencode-session` returned `403 FreeTierError` and a `user-agent` below
- * `1.18.0` returned `426 UpgradeRequired`. Production telemetry settles the
- * quota question: real client traffic produced no 429s at all, every recorded
- * `FreeUsageLimitError` came from the model-probe path, and a freshly minted
- * session from a spent address is still refused while an unspent address serves
- * both. So the handle is an identity, not an allowance key.
+ * `1.18.0` returned `426 UpgradeRequired`. A freshly minted session from a spent
+ * address is still refused while an unspent address serves both, so the handle
+ * is an identity, not an allowance key. Production telemetry was previously
+ * reported as showing no 429s on real client traffic and every recorded
+ * `FreeUsageLimitError` on the model-probe path; that read is not reproducible
+ * from this repository, so it is background for the design rather than a
+ * measurement this code rests on.
  *
  * For every provider that does present a credential, the same 429 is
  * `account`-scoped instead.
  */
 const EGRESS_SCOPED_PROVIDER_IDS: Readonly<Record<string, true>> = { opencodeft: true };
+
+/**
+ * Whether this provider's quota is keyed on the source address rather than a
+ * credential.
+ *
+ * Exported because the answer decides more than error classification: a probe
+ * against an egress-scoped provider must not spend an allowance unit to answer
+ * a question the free catalog already answers, so the probe path branches on
+ * exactly this predicate instead of keeping a second list that could drift.
+ */
+export function isEgressScopedProvider(providerId: string | undefined): boolean {
+  if (providerId === undefined) return false;
+  return Object.hasOwn(EGRESS_SCOPED_PROVIDER_IDS, providerId.trim().toLowerCase());
+}
 
 /** Structured identifiers carried by an upstream error body, lowercased. */
 function rateLimitIdentifiers(body: unknown, providerCode?: string): readonly string[] {
@@ -423,7 +439,7 @@ export function classifyRateLimitScope(input: {
   const identifiers = rateLimitIdentifiers(input.body, input.providerCode);
   if (identifiers.some((identifier) => Object.hasOwn(CAPACITY_SCOPE_IDENTIFIERS, identifier))) return "provider";
   const providerId = input.providerId?.toLowerCase();
-  if (providerId !== undefined && Object.hasOwn(EGRESS_SCOPED_PROVIDER_IDS, providerId)) return "network";
+  if (isEgressScopedProvider(providerId)) return "network";
   return "account";
 }
 
@@ -435,15 +451,43 @@ export function classifyRateLimitScope(input: {
  */
 const FREE_TIER_GATE_IDENTIFIER = "freeusagelimiterror";
 
-function openCodeFreeTierMessage(providerId: string, identifiers: readonly string[]): string | undefined {
+/**
+ * Renders a cooldown TTL as the operator reads it ("18h 7m").
+ *
+ * Minutes are rounded up because the gateway rounds the same way when it
+ * arms the flag; rounding down would print a window that has already expired
+ * by the time the message is read.
+ */
+function cooldownLabel(retryAfterMs: number | null | undefined): string | undefined {
+  if (typeof retryAfterMs !== "number" || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) {
+    return undefined;
+  }
+  const totalMinutes = Math.ceil(retryAfterMs / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+function openCodeFreeTierMessage(
+  providerId: string,
+  identifiers: readonly string[],
+  retryAfterMs: number | null | undefined,
+): string | undefined {
   if (providerId !== "opencodeft") return undefined;
   if (!identifiers.includes(FREE_TIER_GATE_IDENTIFIER)) return undefined;
+  // The header is the operator's only actionable number: the gateway applies
+  // this TTL verbatim, so a message that omits it invites retries inside a
+  // window that cannot succeed.
+  const cooldown = cooldownLabel(retryAfterMs);
   return (
     "OpenCode Free usage limit reached (upstream 429 FreeUsageLimitError). The free allowance is " +
     "keyed on the egress address, so this proxy exit is spent, not the account — the endpoint " +
-    "accepts only the public credential. The gateway cools this (pool, provider) pair so the next " +
-    "request leaves through a different exit; if every exit is spent the request fails and adding " +
-    "pools is the only remedy. Paid tier: `opencodego` serves the same MiMo-V2.6-Flash family."
+    "accepts only the public credential. " +
+    (cooldown === undefined
+      ? "The gateway cools this (pool, provider) pair so the next request leaves through a different exit; "
+      : `The gateway cools this (pool, provider) pair for ${cooldown}, so the next request leaves through a different exit; `) +
+    "when every exit is spent the request fails, and only a different egress network changes that. " +
+    "Paid tier: `opencodego` serves the same MiMo-V2.6-Flash family."
   );
 }
 
@@ -479,16 +523,18 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
       : statusToGatewayErrorCode(response.status);
   const status = contextLength ? 413 : response.status;
   const extracted = extractUpstreamMessage(parsedBody ?? text);
+  // Parsed before the message because the free-tier text states the cooldown
+  // the gateway is about to apply; deriving it twice would let the two drift.
+  const retryAfterMs = parseUpstreamBackoff(response.headers);
   const message = (
     channelVerification
       ? "CodeBuddy channel verification failed (11128 \"conversation id missing\"): the upstream gateway requires the X-Conversation-ID / X-Conversation-Request-ID / X-Conversation-Message-ID header family on every request. If this appears, the gate likely changed (e.g. a new required header)."
       : response.status === 429
-        ? openCodeFreeTierMessage(providerId, identifiers) ?? (extracted.length > 0 ? extracted : text.trim() || `Provider returned HTTP ${status}.`)
+        ? openCodeFreeTierMessage(providerId, identifiers, retryAfterMs) ?? (extracted.length > 0 ? extracted : text.trim() || `Provider returned HTTP ${status}.`)
         : extracted.length > 0
           ? extracted
           : text.trim() || `Provider returned HTTP ${status}.`
   ).slice(0, MAX_UPSTREAM_ERROR_BYTES).replace(/[\r\n]+/g, " ");
-  const retryAfterMs = parseUpstreamBackoff(response.headers);
   const requestId = upstreamRequestId(response.headers);
   // A spent free-tier allowance is attributed to the client handle the request
   // presented, so the retry has to present a different one. That decision

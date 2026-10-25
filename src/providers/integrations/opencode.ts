@@ -15,13 +15,20 @@ import {
 /**
  * OpenCode's three API-key tiers, all served from `opencode.ai`:
  *
- * - `opencodeft` (OpenCode Free): the public free endpoint. The upstream
- *   gate rejects anything that doesn't look like the real OpenCode binary
- *   with `FreeTierError` (upstream 403 "OpenCode's free tier can only be
- *   used from within OpenCode"). Account `Authorization` is withheld and
- *   replaced with the literal `Authorization: Bearer public`; the
- *   fingerprint quartet tools (bash/glob/grep/read) and `stream: true` are
- *   installed on every dispatch.
+ * - `opencodeft` (OpenCode Free): the public free endpoint. The gate is
+ *   application-layer — measured 2026-10-25 by capturing the real CLI and
+ *   replaying controlled probes — and requires all four of: a
+ *   `user-agent` of `opencode/<semver>` at or above 1.18.0 (below: 426
+ *   UpgradeRequired), `x-opencode-session` matching `^ses_[0-9a-f]{12}`
+ *   (lowercase hex only), `stream: true` as a JSON boolean, and either a
+ *   `tools` entry named exactly `read` or the title-generator `system`
+ *   prompt. No attestation, signature, or cookie was required by any probe
+ *   that passed; TLS is not part of the predicate (the real CLI's own traffic
+ *   ran HTTP/1.1 and passed through a TLS-terminating proxy). Account
+ *   `Authorization` is withheld and replaced with the literal
+ *   `Authorization: Bearer public`; the fingerprint quartet tools
+ *   (bash/glob/grep/read) and `stream: true` are installed on every dispatch,
+ *   though only `read` is load-bearing for the gate.
  * - `opencodezen` (OpenCode Zen): billed API-key route on `/zen/v1`.
  * - `opencodego` (OpenCode Go): billed API-key route on the separate
  *   `/zen/go/v1` base — a bundled, higher-tier model set.
@@ -93,20 +100,24 @@ function completeOpenCodeToolSchemas(payload: Record<string, unknown>): void {
 }
 
 function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): ApiKeyProviderSpec {
-  // The free tier is the one that lists a Claude-format model (`union-alpha`),
-  // served on `/zen/v1/messages`. That path is a real route on the shared Zen
-  // base (it answers the free-tier gate rather than 404), but only the free
-  // tier's catalog names a model for it, so only the free spec declares it.
-  const servesMessages = providerId === "opencodeft";
+  // No tier declares the `messages` wire family. `union-alpha` was the free
+  // tier's only Messages model and it is dead upstream (400 "Model is
+  // unavailable" on both `/chat/completions` and `/messages`), so the family now
+  // has no model behind it. A declared family with no model is a failure path:
+  // the adapter would accept a Messages candidate and post an Anthropic-shaped
+  // payload at a route nothing on this catalog serves.
+  //
+  // `responses` stays on all three specs even though the free catalog has no
+  // such row today: the shared factory serializes that wire correctly, the
+  // payload hooks below are exercised on it, and the free roster rotates ids
+  // back onto it. It is a served wire without a current model, not an
+  // unimplementable one — unlike `messages`.
   return {
     provider_id: providerId,
     endpoint_paths_by_wire_family: {
       ...PROVIDER_COMPATIBILITY_PROFILES[providerId]?.endpoint_paths_by_wire_family,
-      ...(servesMessages ? { messages: `${ZEN_PATH_PREFIX}/messages` } : {}),
     },
-    supported_wire_families: servesMessages
-      ? ["chat", "responses", "messages"]
-      : ["chat", "responses"],
+    supported_wire_families: ["chat", "responses"],
     promptCache: false,
     extra_headers: { accept: "application/json" },
     // Go is API-key-only: it never receives the desktop fingerprint; Free
@@ -190,6 +201,15 @@ export const OPENCODE_GO_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodego");
 // passing it is what makes the lookup answer with OpenCode's own entry instead
 // of a same-named model from another reseller. Only rows the snapshot predates
 // (a model newer than the snapshot) keep explicit `ctx`/`out`.
+//
+// The free tier rotates, and only one signal proves a row is alive: it
+// generates. `403 FreeTierError` means the gate *accepted* the id — it says
+// nothing about whether the model still exists — while `410 ModelDeprecated`
+// is the tombstone. `GET /zen/v1/models` is the published roster and is
+// unauthenticated, but presence in it is not proof of life either: it lags the
+// serving path in both directions. Roster below measured 2026-10-25 by
+// generating once per id through the real `opencode.exe` 1.18.34, not by
+// probing the gate.
 const sharedZenChat: readonly ModelDefinition[] = [
   defineModel({ id: "big-pickle", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true }),
   // Live on the shared `/zen/v1` base for both tiers. Not in the snapshot yet,
@@ -203,15 +223,13 @@ const sharedZenChat: readonly ModelDefinition[] = [
   // serves again from another egress pool or after the reset, and the 429 is
   // reported as the gate it is (`classifyRateLimitScope` → `network`).
   defineModel({ id: "mimo-v2.6-flash-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 200000, out: 32000, vision: true, document: true, audio: true, reasoning: true, free: true }),
-  // The free tier rotates: upstream deprecates old ids and serves new ones
-  // under the same `/zen/v1` base (verified live against `GET /zen/v1/models`
-  // with `Authorization: Bearer public`, which needs no attestation). Rows the
-  // current snapshot predates keep explicit limits from models.dev's own
-  // current data; snapshot-covered rows stay snapshot-driven.
   // beam-free: 1M/128k, text-only MoE reasoning.
   defineModel({ id: "beam-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1048576, out: 131072, reasoning: true, free: true }),
-  // longcat-2.5-preview-free: 1M/128k, text+image.
-  defineModel({ id: "longcat-2.5-preview-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1000000, out: 131072, vision: true, reasoning: true, free: true }),
+  // flint-40b-free: 256k/64k, text-only. Generates on the chat wire (measured
+  // 2026-10-25); the limits are models.dev's published row for the id, not a
+  // probe result. Absent from the committed snapshot, so they stay explicit
+  // rather than inheriting the generic default.
+  defineModel({ id: "flint-40b-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 262144, out: 65536, reasoning: true, free: true }),
   // deepseek-v4.1-flash-free / glm-5.3-flash-free: the `-free` ids are the free
   // tier's current serving of the V4.1-Flash / GLM-5.3-Flash families (200k/32k
   // each, per models.dev). The bare `deepseek-v4.1-flash` / `glm-5.3-flash` ids
@@ -224,23 +242,17 @@ const sharedZenChat: readonly ModelDefinition[] = [
   defineModel({ id: "nemotron-3.5-super-vl-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1048576, out: 131072, vision: true, reasoning: true, free: true }),
   // nemotron-3.5-lightning-free: 256k/256k, text-only (snapshot-covered).
   defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
-  // minimax-m3.1-flash-free: 1M/512k, text+image+video (snapshot-covered).
-  defineModel({ id: "minimax-m3.1-flash-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true, free: true }),
 ];
-
-const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
-  // 1M/128k, text-only; snapshot-covered (`opencode` row).
+  // 1M/128k, text-only; snapshot-covered (`opencode` row). Generates on the chat
+  // wire (measured 2026-10-25). Presence in `GET /zen/v1/models` is not the
+  // test — the catalog lags the serving path, so generation is the only proof.
   defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true }),
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  // Claude-format model: the published roster marks it `targetFormat: claude`,
-  // and `/zen/v1/messages` is a live route on this base (it answers the
-  // free-tier gate, where an unknown path answers 404).
-  defineModel({ id: "union-alpha", providerId: "opencode", wireFamily: "messages", endpoint: `${ZEN_PATH_PREFIX}/messages`, reasoning: true }),
 ];
+
+const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,

@@ -40,29 +40,80 @@ Three layers combine in `default-registry.ts: BUNDLED_PROVIDER_MODULES`, then `c
    `providerBaseUrl()` is the single declaration of origin; `providerUpstreamHost()` carries the SSRF
    binding, so dispatch needs no second map. For `opencodeft` the origin is overridable at
    deployment time through `LIANROUTER_OPENCODEFT_BASE_URL` (read via `resolveOpenCodeFtBaseUrl()`).
-   The free gate validates the request-side client fingerprint (desktop `User-Agent` with a
-   version at or above `1.18.0`, `x-opencode-*` correlation headers, the `bash`/`glob`/`grep`/`read`
-   tool quartet, and `Authorization: Bearer public`), which `buildOpenCodeFreeHeaders` +
-   `ensureFreeAgentRequest` install in-process — direct dispatch works and is the default. A CLI bridge remains an
-   optional deployment fallback for an environment whose edge rejects the in-process client, but
-   it is lossy: a CLI bridge flattens message content to text and drops `tools`, so vision and
-   tool calls declared by the catalog stop working. Point the override at a bridge only when
-   direct dispatch itself returns `FreeTierError`. A DB `base_url` on the bundled row is not an
-   option — custom rows only, and
+   Unset is the supported configuration: the free gate is a request-side predicate that
+   `buildOpenCodeFreeHeaders` + `ensureFreeAgentRequest` already satisfy in-process, so direct
+   dispatch passes the gate and a bridge is **not** required. The override exists only for a deployment that
+   deliberately routes through a local CLI bridge, which is lossy — it flattens message content to
+   text and drops `tools`, so vision and tool calls declared by the catalog stop working. A DB
+   `base_url` on the bundled row is not an option — custom rows only, and
    `registerByokProviders()` rejects bundled-id collisions at boot.
-   **The fingerprint is not the limit.** Verified against the live endpoint with the adapter's own
-   captured request bytes: a correct fingerprint returns `200` and a real stream, a malformed
-   `x-opencode-session` returns `403 FreeTierError`, and a `user-agent` below `1.18.0` returns `426
-   UpgradeRequired`. Separately, the free tier's *allowance* cannot be keyed on a credential — this
+   **The fingerprint is not the limit.** Measured against the live endpoint with the adapter's own
+   captured request bytes: a correct fingerprint returns `429 FreeUsageLimitError` from a
+   quota-spent source address — the gate passed and the refusal is the allowance, not the
+   fingerprint. A malformed `x-opencode-session` returns `403 FreeTierError`, and a `user-agent`
+   below `1.18.0` returns `426 UpgradeRequired`.
+   > **Koreksi.** This paragraph previously read "a correct fingerprint returns `200` and a real
+   > stream". No `200` was observed from the measuring address on 2026-10-25 — every correctly
+   > fingerprinted request landed on `429` — so the gate-pass evidence is the `429` itself, and it
+   > says nothing about whether generation succeeds. The `403` and `426` halves stand.
+   Separately, the free tier's *allowance* cannot be keyed on a credential — this
    provider is `requires_account: false` and sends the literal `Bearer public`, so there is no
    account identity to key on and no account to fail over to.
+
+   **The gate predicate, exactly (measured 2026-10-25).** It is application-layer. A capture of the
+   real client plus controlled probes showed all four conditions are required on
+   `POST /zen/v1/chat/completions`:
+
+   1. `user-agent` of `opencode/<semver>` at or above `1.18.0`; below that the answer is `426
+      UpgradeRequired` ("OpenCode 1.18.0 or newer is required to use the free tier").
+   2. `x-opencode-session` matching `^ses_[0-9a-f]{12}` — lowercase hex, exact length.
+   3. `stream: true` as a JSON boolean; a string `"true"`, `false`, or an omitted field is refused.
+   4. Body shape: a `tools` entry named exactly `read`, **or** a `system` message containing both
+      `You are a title generator. You output ONLY a thread title` and `Never use tools`.
+
+   Not required by the probes that passed: `authorization`, `x-opencode-client`, `x-opencode-project`,
+   `x-opencode-request`, `x-opencode-session-id`, `accept: text/event-stream`, cookies, any
+   attestation or HMAC — the four conditions above were sufficient with none of them varied into a
+   requirement. TLS is not part of it either — the real client's own inference traffic went
+   out HTTP/1.1 (`alpn=http/1.1`) and still passed through a TLS-terminating proxy, and an HTTP/2
+   client got the same `403`. Path scope is untested: only `/zen/v1/chat/completions` was probed.
+
+   **`403` vs `410` is the whole roster test.** `403 FreeTierError` means the gate *accepted* the
+   model id — it proves nothing about whether the model still exists. `410 ModelDeprecated` is the
+   tombstone: the id is gone. The
+   published roster is `GET /zen/v1/models`, which is unauthenticated — it answered `200` with 85
+   ids including with zero headers — and is the only place to read what upstream publishes; it can
+   lag the serving path, so a row missing from it is not automatically dead, but a row present in it
+   is not automatically alive. Generation is the only proof. Probe a candidate by dispatching once
+   and reading whether output comes back, not by checking its HTTP status on the gate.
+   Measured on 2026-10-25 by generating once per id through the real `opencode.exe` 1.18.34, the
+   roster is nine rows: `big-pickle`, `mimo-v2.6-flash-free`, `beam-free`,
+   `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`, `nemotron-3.5-super-vl-free`,
+   `nemotron-3.5-lightning-free`, `nemotron-3-ultra-free` and `flint-40b-free` all generate.
+   Five ids were removed on that evidence: `minimax-m3.1-flash-free`,
+   `muse-spark-1.2-contributor-free` and `muse-spark-1.3-contributor-free` answer `410
+   ModelDeprecated`, and `union-alpha` answers `400` "Model is unavailable" on both
+   `/chat/completions` and `/messages`. `longcat-2.5-preview-free` passes the gate but was never
+   proven to generate, and it is retired as unverified rather than dead — unknown is not alive.
+   `union-alpha` was the free tier's only Messages model, so `opencodeft` no longer declares that
+   wire family: a declared family with no row behind it makes the adapter accept a Messages
+   candidate and post an Anthropic-shaped payload at a route nothing on this catalog serves. The
+   `responses` family stays declared — a served wire without a current row, which is a different
+   fact from an unimplementable one.
+
    **The free-tier allowance is keyed on the source address.** A spent address answers
    `FreeUsageLimitError` (`429`) no matter which `x-opencode-session` it is given; an unspent one
    answers `200` for a reused handle and a freshly minted one alike. Rotating the proxy is therefore
-   what changes the quota, and the pool is the unit of that rotation. Confirmed from production
-   telemetry (24h and all-time): real client traffic to this provider produced **zero** 429s while
+   what changes the quota, and the pool is the unit of that rotation. Production telemetry (24h and
+   all-time) was reported as: real client traffic to this provider produced **zero** 429s while
    every one of the recorded `FreeUsageLimitError` events came from the console's model-probe path,
    which is what burned the addresses.
+   > **Unverified as of this change.** That telemetry read could not be re-measured here — the
+   > production database was not reachable from this workspace, so the claim above stands as a
+   > previously reported observation, not a measurement made by this change. What *is* established
+   > from source is the mechanism it depends on: `probeModel` dispatched a real completion per
+   > call, `probeAllModels` called it once per model, and the probe path cools the pool on the
+   > resulting 429. Re-measure before repeating the zero-429 claim as current.
    **The session handle is an identity, not a quota key.** `stableOpenCodeSessionId` keys
    `x-opencode-session` per `(credential identity, egress)`. That is correct on its own terms — the
    handle carries prompt-cache affinity and is the identity upstream attributes a request to, so two
@@ -88,6 +139,21 @@ Three layers combine in `default-registry.ts: BUNDLED_PROVIDER_MODULES`, then `c
    path: a bad model id, empty content, a deadline, or a 400 says nothing about the egress and must
    not sideline a healthy pool. `recordProbeHealth` keeps owning account health separately — pools and
    accounts are different machines, and the account branch still runs for credentialed providers.
+   **A probe no longer spends an allowance unit by default.** Cooling the burned exit was only half
+   the fix: the console's Test button dispatched a real completion per click, and "Test all"
+   dispatched one per model, so the diagnostic surface itself was what emptied the address pool —
+   it repeated every time a cooldown expired. For a provider whose quota is keyed on the source
+   address (`isEgressScopedProvider`, derived from the same `EGRESS_SCOPED_PROVIDER_IDS` the 429
+   classifier reads), `probeModel` now answers from the provider's published model catalog instead:
+   the discovery route is fetched through the same outbound binding, so it still exercises the
+   egress and still reports the pool, but no completion is sent and no allowance is charged.
+   `probeAllModels` reads that catalog once for the whole batch rather than once per model. The
+   result states which question it answered: `mode: "catalog"` means the id is published upstream
+   and `ok` must not be read as "it generates"; `mode: "dispatch"` means a completion went upstream
+   and `ok` is the generation verdict. A real dispatch stays available — `spendQuota: true` on the
+   probe request, surfaced in the console as its own action — because only generation proves a model
+   works, and the operator decides when that proof is worth an exit. Providers whose quota is keyed
+   on a credential are untouched: their probe still dispatches by default.
    > **Koreksi.** Two earlier readings in this doc were wrong and are retracted here. First, that
    > this was purely a per-address cap with the handle irrelevant: the handle sharing was real
    > (every caller collided on `opencode:default`) but it was not the cause of the observed 429s.
@@ -95,9 +161,11 @@ Three layers combine in `default-registry.ts: BUNDLED_PROVIDER_MODULES`, then `c
    > that inverted the causality. Both exits were simply already spent — 16 pools had been burned,
    > and the probe path is what burned them. The per-address keying is the correct model; the
    > identity-scoped handle stands on its own merits and is not a quota mechanism.
-   The `*-free` model rows stay in the catalog: they are
-   referenced by tenant aliases and fallback combos, and `seedBundledModels` prunes any `builtin`
-   row the catalog no longer declares, after which routing reports `model_not_found` for the alias.
+   A row that generates stays in the catalog even when an address's allowance is spent, because a
+   tenant alias or fallback combo may name it and `seedBundledModels` prunes any `builtin` row the
+   catalog no longer declares — after which routing reports `model_not_found` for that alias. That
+   is a reason to keep a live row, never a reason to keep a dead one: a row that cannot generate is
+   a routing candidate that fails every dispatch, so it is removed and the alias is repaired.
    `DEFAULT_PROXY_BYPASS_PROVIDER_IDS` derives the one
    proxy-bypass default that console routing, provider detail, and domain registration all read.
    `PROVIDER_COMPATIBILITY_PROFILES` holds wire overrides for the three `opencode*` hosts and for
@@ -318,7 +386,10 @@ database. Per-provider entry points live in `integrations/`, registered as each 
   model for probing without mutating the catalog; `staticEndpointForWire` maps a wire family to the
   provider's own bundled-catalog path and backs explicit-wire probes plus manual registration. Probing takes
   its outbound fetch from `ProbeOutboundResolver`, which may return a pool-bound binding carrying fetch +
-  `networkPoolId` + `release`.
+  `networkPoolId` + `release`. The result keeps that identity: `networkPoolId` names the pool that served the
+  attempt and `poolHost` its `host:port`, both absent on a direct dial. `poolHost` comes from the
+  `network_pools` row via `loadPoolEgressHost`, which reads only `endpoint_config` and never the decrypted
+  credential, so the console can show which exit answered a free-tier 429 without ever holding the secret.
 
 Rules: discovery never imports console presentation types — probe contracts live here so the lower layer
 stays console-free. Failures yield `null` or a `ProbeModelResult` with `ok: false`, never a thrown dispatch
@@ -642,7 +713,10 @@ modules are edited for those providers.
 `createClientVersionResolver` and `provider-version-cache.ts`); each entry defines its key, fallback,
 `minVersion` guard, and sources, and resolution is always discovered → pinned fallback so dispatch never
 blocks on the npm/vendor lookup. Keep provider-specific fingerprint parsing beside the table only when the
-upstream identifier is not a normal version source.
+upstream identifier is not a normal version source. `opencode` carries `minVersion: "1.18.0"` for the same
+reason the fallback sits above it: the free gate answers `426 UpgradeRequired` below that floor, so a
+registry publishing an older artifact must be discarded rather than stamped on a dispatch. A version
+resolver that can move a client backward is a resolver that can break every request.
 
 **Where each pinned fallback comes from.** The table below records the lookup for every entry, so refreshing a
 pin is a fetch rather than a hunt. `client-versions.ts` is the single source of truth for the *values*; this

@@ -32,11 +32,13 @@ cli/
     menu.ts              arrow-key menu renderer + prompt (numbered fallback)
     tray-launcher.ts     detached tray spawn, console-window hiding
     update-flow.ts       the ordered update sequence; gateway stays up until the install boundary
+    update-notice.ts     startup update lines (pure rendering, no I/O)
     progress.ts          first-run progress rendering, TTY vs pipe
     shutdown.ts          SIGINT/SIGTERM teardown and handshake removal
   update/
     contracts.ts         UpdatePhase/UpdateProgress/UpdateChannel + version compare
     github-source.ts     release feed + per-platform asset selection
+    npm-source.ts        published launcher package check (registry manifest)
     download.ts          streamed download with inline sha256 verification
     extract.ts           zip/tar/7z extraction into a staging directory
     install.ts           atomic install with rollback; dev-checkout refusal
@@ -608,6 +610,51 @@ it earlier would claim a version that a rollback then un-installed.
 at module load, so the version check and the download cannot disagree about which
 host is authoritative mid-run. There is no channel environment variable: the
 channel is a parameter (`stable` | `beta`) on `checkForUpdate`/`runUpdate`.
+
+### The startup notice
+
+A launcher that starts the gateway prints at most two lines before the menu, one
+per artifact that is behind:
+
+```text
+lianrouter: a newer launcher is published (2.2.1 → 2.3.0). Run: bun add -g lianrouter@latest
+lianrouter: a gateway update is available (2.2.0 → 2.3.0). Run: lianrouter update
+```
+
+The two checks are separate because the two artifacts are separate. The gateway
+line comes from the release feed compared against the installed gateway's
+recorded version — the same comparison the menu row uses. The launcher line comes
+from `https://registry.npmjs.org/lianrouter/latest`, compared against
+`CLI_VERSION`; without it a newer published package is invisible, because
+`checkForUpdate()` never asks about the package that is running. `npm-source.ts`
+owns that check and returns `current`, `outdated`, or `unavailable` — never an
+exception.
+
+The line is the notification; the menu row is the action. Both can appear for the
+same gateway version, and that is intended: the line is read on the way to the
+menu, the row is what gets selected.
+
+The registry request is bounded at 2.5 s and starts before the gateway boot, so
+its deadline overlaps the seconds the boot already costs rather than adding to
+them. A slow or unreachable registry therefore costs a start nothing once the
+boot outlasts the deadline. Every failure is silent: an unavailable check prints
+no line, changes no exit code, and leaves the menu exactly as it would have been.
+A non-TTY is not treated differently — the lines are plain text with no escape
+sequences, so a piped or CI invocation gets them too, one line per notice.
+
+The lines appear for the commands that start the gateway and reach a menu:
+`lianrouter` and `lianrouter start`. They do not appear for `status`, `stop`,
+`update`, `init`, `--version`, `--help`, `--background`, or `--headless` — the
+first group answers a question or is itself the update path, and the last two
+print no menu to read a notice from (the tray spawns `--headless` to resurrect a
+launcher and must not wait on a registry deadline to do it).
+
+`LIANROUTER_NO_UPDATE_CHECK=1` disables both startup checks, the registry one and
+the release-feed one. `updateCheckDisabled()` in `npm-source.ts` is the single
+authority for that switch, so the two cannot disagree about whether the operator
+wanted to be contacted. `LIANROUTER_NPM_REGISTRY` overrides the manifest URL, read
+once at module load like the release feed override, for a mirrored or offline
+registry.
 
 > **Not yet implemented.** The release feed is unauthenticated. A GitHub rate
 > limit surfaces as `UpdateCheckUnavailableError` and the menu simply shows no

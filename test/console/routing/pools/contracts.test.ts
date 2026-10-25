@@ -84,6 +84,58 @@ describe("network pool domain contract", () => {
     expect(response).not.toHaveProperty("credential");
   });
 
+  test("createPool moves userinfo out of a pasted endpoint into the credential column", async () => {
+    const { store, created } = makeStore();
+    const factory = createNetworkPoolOperations({ store, accessResolver: () => access });
+    const response = await factory.createPool(access, {
+      kind: "http",
+      endpoint: "http://209.50.160.35:3129",
+      credential: "alice:s3cr3t",
+    });
+    expect(created[0]?.credential).toBe("alice:s3cr3t");
+    expect(response.hasCredential).toBe(true);
+
+    // A bulk paste sends `{ kind, endpoint }` with the userinfo inside the URL.
+    const pasted = await factory.createPool(access, {
+      kind: "http",
+      endpoint: "http://bob:hunter2@104.207.52.24:3129",
+    });
+    const pastedRecord = created[1]!;
+    expect(pastedRecord.credential).toBe("bob:hunter2");
+    expect(pastedRecord.endpoint).toBe("http://104.207.52.24:3129/");
+    expect(pasted.hasCredential).toBe(true);
+    // The endpoint echoed to the console must never carry the plaintext secret.
+    expect(pasted.endpoint).not.toContain("hunter2");
+    expect(pasted.endpoint).not.toContain("@");
+
+    // An endpoint without userinfo stays credential-less: no invented secret.
+    const bare = await factory.createPool(access, {
+      kind: "http",
+      endpoint: "http://65.111.2.134:3129",
+    });
+    expect(created[2]?.credential).toBeUndefined();
+    expect(bare.hasCredential).toBeUndefined();
+    expect(bare.endpoint).toBe("http://65.111.2.134:3129");
+  });
+
+  test("updatePool moves userinfo out of a replacement endpoint into the credential column", async () => {
+    const { store, created } = makeStore();
+    const factory = createNetworkPoolOperations({ store, accessResolver: () => access });
+    const pool = await factory.createPool(access, {
+      kind: "http",
+      endpoint: "http://209.50.160.35:3129",
+    });
+    const updated = await factory.updatePool(access, pool.id, {
+      endpoint: "http://carol:pa55@209.50.160.35:3129",
+    });
+    expect(created[0]?.credential).toBe("carol:pa55");
+    expect(created[0]?.endpoint).toBe("http://209.50.160.35:3129/");
+    // `hasCredential` is derived by the store from the persisted ciphertext
+    // (`DrizzleNetworkPoolStore.map`); this layer's contract is that the
+    // credential reaches the store and the endpoint stays clean.
+    expect(updated.endpoint).not.toContain("pa55");
+  });
+
   test("updatePool and deletePool release the cached dial agent for the pool", async () => {
     const { store } = makeStore();
     const released: Array<{ poolId: string; tenantId: string }> = [];

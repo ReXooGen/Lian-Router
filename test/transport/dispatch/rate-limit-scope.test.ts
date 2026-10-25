@@ -92,11 +92,41 @@ describe("429 rate-limit scope", () => {
     expect(error.message).toContain("keyed on the egress address");
     expect(error.message).toContain("cools this (pool, provider) pair");
     expect(error.message).toContain("opencodego");
+    // Every exit on this provider shares one ASN, so more pools buy more
+    // refusals. Telling the operator otherwise sends them to spend money on
+    // addresses that are already spent.
+    expect(error.message).not.toContain("adding pools is the only remedy");
+    expect(error.message).toContain("only a different egress network changes that");
     // The upstream body is still preserved verbatim for diagnostics.
     expect(error.details["raw"]).toContain("Free usage limit reached");
     // The adapter that owns the handle reads this flag to retire it. It is set
     // only for the structured allowance error, never for a status alone.
     expect(error.details["freeTierAllowanceExhausted"]).toBe(true);
+  });
+
+  test("the free-tier gate states the cooldown the gateway is about to apply", async () => {
+    // The real header from the spent free allowance: ~18h07m. A message that
+    // omits it invites retries inside a window that cannot succeed.
+    const error = await capture429(
+      { error: { type: "FreeUsageLimitError", message: "free usage limit reached" } },
+      "opencodeft",
+      { "retry-after": "65256" },
+    );
+
+    expect(error.details["retryAfterMs"]).toBe(65_256_000);
+    expect(error.message).toContain("for 18h 8m");
+  });
+
+  test("the free-tier gate omits a duration it was not given", async () => {
+    const error = await capture429(
+      { error: { type: "FreeUsageLimitError", message: "free usage limit reached" } },
+      "opencodeft",
+    );
+
+    // No header means no measured TTL. Printing a made-up window would be the
+    // same class of lie as the removed remedy sentence.
+    expect(error.message).not.toMatch(/\bfor \d/);
+    expect(error.message).toContain("cools this (pool, provider) pair so the next request");
   });
 
   test("a bare 429 or a 5xx does not claim the allowance was exhausted", async () => {

@@ -3,6 +3,11 @@ import type { HealthCheckResult } from "./contracts";
 /**
  * Classifies probe responses without confusing an HTTP proxy response with a
  * failed tunnel. 402 and 407 prove the proxy answered, but make it unusable.
+ *
+ * The label says both halves because the distinction matters to the operator:
+ * a proxy that is up and refusing is a different fault from a proxy that is
+ * down, and the old wording ("Proxy reachable") read as success for a tunnel
+ * that carried nothing.
  */
 export function classifyPoolProbeResponse(
   poolId: string,
@@ -17,7 +22,7 @@ export function classifyPoolProbeResponse(
       status: "reachable",
       httpStatus: response.status,
       latencyMs,
-      errorMessage: `Proxy reachable — HTTP ${response.status} ${reason}`,
+      errorMessage: `Proxy answered but refused the tunnel — HTTP ${response.status} ${reason}`,
     };
   }
 

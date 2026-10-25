@@ -10,7 +10,7 @@ test("HTTP 402 is reachable but reports a payment failure", () => {
     status: "reachable",
     httpStatus: 402,
     latencyMs: 12,
-    errorMessage: "Proxy reachable — HTTP 402 Payment Required",
+    errorMessage: "Proxy answered but refused the tunnel — HTTP 402 Payment Required",
   });
 });
 
@@ -20,7 +20,7 @@ test("HTTP 407 is reachable but reports a proxy authentication failure", () => {
     status: "reachable",
     httpStatus: 407,
     latencyMs: 12,
-    errorMessage: "Proxy reachable — HTTP 407 Proxy Authentication Required",
+    errorMessage: "Proxy answered but refused the tunnel — HTTP 407 Proxy Authentication Required",
   });
 });
 test("proxy CONNECT authentication rejection remains reachable", () => {
@@ -35,7 +35,7 @@ test("proxy CONNECT authentication rejection remains reachable", () => {
     status: "reachable",
     httpStatus: 407,
     latencyMs: 15,
-    errorMessage: "Proxy reachable — HTTP 407 Proxy Authentication Required",
+    errorMessage: "Proxy answered but refused the tunnel — HTTP 407 Proxy Authentication Required",
   });
   expect(classifyPoolConnectError("pool-1", new Error("connection refused"), 15)).toBeUndefined();
 });

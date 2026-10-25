@@ -265,12 +265,15 @@ export const PROVIDER_CAPABILITIES = {
     loadModelDiscovery: openAIModelDiscovery("gmi", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   opencodeft: {
-    // `messages` carries the free tier's one Claude-format model
-    // (`union-alpha`); the adapter declares the family only for this tier.
+    // Only the family this tier's catalog actually declares. The tier's sole
+    // Messages model (`union-alpha`) is dead upstream (400 "Model is
+    // unavailable"), and its only Responses rows were the
+    // `muse-spark-*-contributor-free` ids, tombstoned (410 ModelDeprecated) — so
+    // both paths would advertise a wire nothing can be routed to. The shared
+    // factory still accepts them; the free catalog simply produces no such
+    // candidate.
     endpointPathsByWireFamily: {
       chat: "/zen/v1/chat/completions",
-      responses: "/zen/v1/responses",
-      messages: "/zen/v1/messages",
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode")).OPENCODE_FREE_SPEC),
     loadModels: async () => (await import("./integrations/opencode")).OPENCODE_FREE_MODELS,

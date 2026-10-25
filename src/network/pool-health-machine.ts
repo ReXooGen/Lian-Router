@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { LianRouterDatabase } from "../persistence/postgres";
 import { healthEvents, networkPools } from "../persistence/schema";
 import { resolvePoolCooldownMs } from "../config";
+import { ProxyConnectError } from "./pool/agent";
 
 export interface PoolHealthEvent {
   readonly id: string;
@@ -39,7 +40,32 @@ function publishPoolHealth(snapshot: PoolHealthSnapshot): void {
 }
 
 function poolFaultCategory(error: unknown, origin: string | undefined): string | undefined {
+  // An upstream error is the provider's answer, not evidence the proxy tunnel
+  // is broken: an upstream 429 arrives *through* a working CONNECT, so blaming
+  // the pool would park healthy exits whenever a provider rate-limits. This
+  // function has no provider or route context to tell an egress-scoped quota
+  // from a global one, and `sweepExpiredPoolCooldowns` resets counters on a
+  // wall-clock timer regardless, so the row's status could not carry that
+  // meaning reliably anyway. Egress-scoped quota exhaustion is surfaced instead
+  // through the Redis cooldown and the console's `lastSuccessAt` display.
   if (origin === "upstream") return undefined;
+  // The pool's own CONNECT failure carries no `code` field: the attempt loop
+  // reports a non-GatewayError with `errorOrigin: "gateway"`, so the code-based
+  // branches below never saw it and a pool that could not establish a single
+  // tunnel stayed `active` forever. Its proxy status picks the category so the
+  // console can tell "proxy refuses me" from "proxy is down".
+  //
+  // A refused CONNECT degrades rather than disables on purpose: `disabled` is
+  // an operator decision or an upstream 402/407 verdict, and one credential
+  // rotation across a fleet of exits would otherwise sideline every pool at
+  // once with no path back except manual re-enable. Degrading is enough to
+  // take the pool out of rotation, and a passing probe (or the cooldown sweep)
+  // brings it back.
+  if (error instanceof ProxyConnectError) {
+    return error.proxyStatus === 402 || error.proxyStatus === 407
+      ? "proxy_auth_required"
+      : "proxy_unreachable";
+  }
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
     const code = error.code;
     if (["proxy_unreachable", "tunnel_setup_failed", "proxy_auth_required", "tls_rejected", "transport_unavailable", "deadline_exceeded"].includes(code)) return code;
@@ -188,6 +214,116 @@ export async function disablePoolForProxyHttpStatus(
     lastErrorAt: now.toISOString(),
   });
   await snapshotInvalidator?.invalidate();
+  return true;
+}
+
+/** What a manual probe observed, as the health machine needs it. */
+export interface PoolProbeOutcome {
+  readonly status: "healthy" | "reachable" | "unhealthy" | "timeout";
+  readonly latencyMs?: number;
+}
+
+/**
+ * Applies a manual probe to the pool row.
+ *
+ * The asymmetry between the two outcomes is the point of this function. A
+ * probe that *fails* never demotes: a freshly added exit can answer 407 while
+ * the provider is still provisioning it, and one diagnostic dial must not park
+ * an otherwise working pool. A probe that *succeeds* is the opposite kind of
+ * evidence — the operator just watched the tunnel carry a request — and it is
+ * the only way a pool parked by dispatch evidence can be cleared without
+ * waiting out its cooldown or clicking Recover. Without it a pool that had one
+ * bad minute stays out of routing after it demonstrably works again.
+ *
+ * `disabled` is never touched. That state is either an operator decision or a
+ * dispatch-time 402/407 verdict, and a canary dial is not authority over
+ * either.
+ *
+ * Returns true when the row was promoted back to `active`.
+ */
+export async function recordPoolProbeOutcome(
+  db: LianRouterDatabase,
+  tenantId: string,
+  poolId: string,
+  outcome: PoolProbeOutcome,
+): Promise<boolean> {
+  const rows = await db
+    .select({ status: networkPools.status })
+    .from(networkPools)
+    .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)))
+    .limit(1);
+  const pool = rows[0];
+  if (!pool) return false;
+  const now = new Date();
+  const diagnostics = {
+    lastHealthCheckAt: now,
+    lastLatencyMs: outcome.latencyMs ?? null,
+  };
+  if (pool.status === "disabled") {
+    await db
+      .update(networkPools)
+      .set(diagnostics)
+      .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)));
+    return false;
+  }
+  // `reachable` lands here too: the proxy answered but refused the tunnel
+  // (402/407), which is a dispatch failure and not a working pool. It is still
+  // not grounds for demotion — dispatch evidence owns that call.
+  if (outcome.status !== "healthy") {
+    await db
+      .update(networkPools)
+      .set(diagnostics)
+      .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)));
+    return false;
+  }
+  const parked = pool.status === "degraded" || pool.status === "cooldown";
+  // The status guard is part of the WHERE clause, not a read-then-write
+  // assumption: a concurrent dispatch or sweep that already moved the row must
+  // not be journaled as if this probe made the transition.
+  const updated = await db
+    .update(networkPools)
+    .set({
+      ...diagnostics,
+      lastSuccessAt: now,
+      ...(parked
+        ? {
+            status: "active" as const,
+            consecutiveFailures: 0,
+            cooldownUntil: null,
+            lastError: null,
+            lastErrorCategory: null,
+            lastErrorAt: null,
+            lastRecoveredAt: now,
+          }
+        : {}),
+    })
+    .where(
+      parked
+        ? and(
+            eq(networkPools.tenantId, tenantId),
+            eq(networkPools.id, poolId),
+            inArray(networkPools.status, ["degraded", "cooldown"]),
+          )
+        : and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)),
+    )
+    .returning({ id: networkPools.id });
+  if (!parked || !updated[0]) return false;
+  await db.insert(healthEvents).values({
+    entityKind: "pool",
+    networkPoolId: poolId,
+    fromStatus: pool.status,
+    toStatus: "active",
+    reason: "Proxy probe succeeded — pool recovered",
+    errorCategory: null,
+    createdAt: now,
+  });
+  publishPoolHealth({
+    poolId,
+    tenantId,
+    status: "active",
+    consecutiveFailures: 0,
+    lastSuccessAt: now.toISOString(),
+  });
   return true;
 }
 

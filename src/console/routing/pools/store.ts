@@ -25,6 +25,7 @@ import { PoolAgentResolver } from "../../../network/pool/resolver";
 import type { SsrfPolicy } from "../../../config";
 import {
   listNetworkPoolHealthEvents,
+  recordPoolProbeOutcome,
   recoverNetworkPool,
 } from "../../../network/pool-health-machine";
 const NETWORK_POOL_HEALTH_CANARY = "https://www.google.com/generate_204";
@@ -40,6 +41,12 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
   constructor(
     private readonly db: LianRouterDatabase,
     private readonly ssrfPolicy: SsrfPolicy = {},
+    /**
+     * Route-snapshot invalidator. A probe that promotes a parked pool makes it
+     * eligible again, and the cached snapshot still excludes it; without this
+     * the recovery would only take effect after some unrelated mutation.
+     */
+    private readonly snapshotInvalidator?: { invalidate(): unknown },
   ) {
     this.poolAgents = new PoolAgentResolver(new DrizzleNetworkPoolLoader(db), { ssrfPolicy, db });
   }
@@ -64,6 +71,10 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       ...(row.lastErrorAt ? { lastErrorAt: row.lastErrorAt.toISOString() } : {}),
       ...(row.lastError ? { lastError: row.lastError } : {}),
       ...(row.lastErrorCategory ? { lastErrorCategory: row.lastErrorCategory } : {}),
+      // `cooldownUntil` is written by the health machine and swept on a timer,
+      // so dropping it here left the console unable to show why a pool was
+      // parked. It is a plain timestamp on the row, not derived state.
+      ...(row.cooldownUntil ? { cooldownUntil: row.cooldownUntil.toISOString() } : {}),
       ...(Object.keys(rest).length > 0 ? { config: rest } : {}),
       ...(row.credentialCiphertext ? { hasCredential: true } : {}),
       tenantId,
@@ -135,11 +146,13 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       ...(patch.config ?? {}),
     };
     const effectiveKind = patch.kind ?? current.kind;
-    const clearsProxyResponseFailure =
-      patch.status === "active" &&
-      current.status === "disabled" &&
-      (current.lastErrorCategory === "proxy_payment_required" ||
-        current.lastErrorCategory === "proxy_auth_required");
+    // Operator re-enable is an authoritative recovery, whatever the row was
+    // parked by: a 402/407 `disabled` verdict or accumulated transport faults.
+    // Clearing the failure counter here matters as much as clearing the error
+    // fields — leaving `consecutiveFailures` at its threshold meant the next
+    // single fault re-parked the pool at `cooldown` immediately, which reads
+    // to the operator as "I re-enabled it and it broke again".
+    const operatorReenabled = patch.status === "active" && current.status !== "active";
     const rows = await this.db
       .update(networkPools)
       .set({
@@ -151,13 +164,14 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         // PATCH truly leaves un-mentioned fields alone.
         maxInflight: patch.maxInflight ?? current.maxInflight,
         weight: patch.weight ?? current.weight,
-        ...(clearsProxyResponseFailure
+        ...(operatorReenabled
           ? {
               consecutiveFailures: 0,
               cooldownUntil: null,
               lastError: null,
               lastErrorCategory: null,
               lastErrorAt: null,
+              lastRecoveredAt: new Date(),
             }
           : {}),
         status: patch.status ?? current.status,
@@ -220,6 +234,7 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       .limit(1);
     const row = rows[0];
     if (!row) return { poolId, status: "unhealthy", errorMessage: "Pool not found" };
+    const started = performance.now();
     // Resolve the pool's dispatch agent and dial a public canary THROUGH it.
     // This fixes the prior dual bug: `socks5://` endpoints were fed to
     // `createValidatedFetch` as a target URL (TypeError), and HTTP endpoints
@@ -230,13 +245,15 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       // per-connect SSRF revalidation instead of a second, weaker path.
       agent = await this.poolAgents.resolveAgent(poolId, tenantId);
     } catch (error) {
-      return {
-        poolId,
+      // A build failure is still a probe result the operator asked for, so it
+      // goes through the same funnel — a diagnostic row, never a status flip.
+      const message = error instanceof Error ? error.message : "Failed to build pool agent";
+      await recordPoolProbeOutcome(this.db, tenantId, poolId, {
         status: "unhealthy",
-        errorMessage: error instanceof Error ? error.message : "Failed to build pool agent",
-      };
+        latencyMs: Math.round(performance.now() - started),
+      });
+      return { poolId, status: "unhealthy", errorMessage: message };
     }
-    const started = performance.now();
     let result: HealthCheckResult;
     try {
       const { response, latencyMs } = await this.dialPoolCanary(agent);
@@ -261,21 +278,16 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
         };
       }
     }
-    // Manual probes update check diagnostics, not dispatch-health state. A
-    // proxy-auth answer here is not proof the credential is wrong: a provider
-    // that has just added an exit can answer 407 while the new endpoint is
-    // still provisioning, and disabling on that single probe parked 46 of 100
-    // newly imported pools even though every one of them tunneled fine
-    // moments later. Only real dispatch evidence (attempt-finalize) disables
-    // a pool for 402/407.
-    const now = new Date();
-    await this.db
-      .update(networkPools)
-      .set({
-        lastHealthCheckAt: now,
-        lastLatencyMs: result.latencyMs ?? null,
-      })
-      .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.id, poolId)));
+    // A probe that fails only refreshes diagnostics; a probe that succeeds is
+    // dispatch-grade evidence and clears a pool parked by dispatch faults. See
+    // `recordPoolProbeOutcome` for why the two directions differ.
+    const promoted = await recordPoolProbeOutcome(this.db, tenantId, poolId, {
+      status: result.status,
+      ...(result.latencyMs === undefined ? {} : { latencyMs: result.latencyMs }),
+    });
+    // A promoted pool is eligible again, so the cached route snapshot that
+    // excluded it has to be rebuilt before the next dispatch reads it.
+    if (promoted) await this.snapshotInvalidator?.invalidate();
     return result;
   }
   /**
@@ -301,12 +313,18 @@ export class DrizzleNetworkPoolStore implements NetworkPoolStore {
       const { response, latencyMs } = await this.dialPoolCanary(agent);
       return classifyPoolProbeResponse("adhoc", response, latencyMs);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Probe failed";
+      const latencyMs = Math.round(performance.now() - started);
+      // The same CONNECT rejection has to read the same in both console entry
+      // points: the add form used to call a 407 "unhealthy" while the saved
+      // pool called it "reachable", so the operator got two verdicts for one
+      // proxy depending on which button he pressed.
+      const proxyResponse = classifyPoolConnectError("adhoc", error, latencyMs);
+      if (proxyResponse) return proxyResponse;
       return {
         poolId: "adhoc",
         status: "unhealthy",
-        latencyMs: Math.round(performance.now() - started),
-        errorMessage: message,
+        latencyMs,
+        errorMessage: error instanceof Error ? error.message : "Probe failed",
       };
     }
   }

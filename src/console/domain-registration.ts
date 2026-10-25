@@ -183,7 +183,11 @@ export function registerConsoleDomains(
     poolSelector: ctx.poolSelector,
   });
   const providerDetailStore = new DrizzleProviderDetailStore(ctx.db);
-  const networkPoolStore = new DrizzleNetworkPoolStore(ctx.db, resolveSsrfPolicy());
+  const networkPoolStore = new DrizzleNetworkPoolStore(
+    ctx.db,
+    resolveSsrfPolicy(),
+    ctx.routeSnapshotService,
+  );
   const runtimeSettingsStore = new DrizzleRuntimeSettingsStore(ctx.db);
   const modelRoutingStore = new DrizzleModelRoutingStore(ctx.db);
   const apiKeyStore = new DrizzleApiKeyStore(ctx.db);

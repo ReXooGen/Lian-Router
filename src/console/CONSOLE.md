@@ -267,15 +267,25 @@ hops, matching the engine's `resolveAlias`; a pool advertises the minimum across
 reach, and only the modalities every member shares, because dispatch may pick any of them.
 
 Pools are CRUD plus health checks that dial a public canary through the pool's real dispatch agent.
-HTTP 402 and 407 mean the proxy answered, so checks report `Proxy reachable` with the response
-code; because the pool is unusable, it is disabled from routing and the reason is recorded in
-`health_events`. The same response during dispatch disables the bound pool instead of flagging
-the provider account. Operators must explicitly re-enable it after fixing payment or credentials.
+HTTP 402 and 407 mean the proxy answered but refused the tunnel, so checks report `reachable` with
+the response code and the console labels it "Proxy refuses tunnel" — the proxy is up, nothing routes
+through it. Because the pool is unusable for dispatch, that response during dispatch disables it from
+routing and records the reason in `health_events`; the same response during a manual probe does not,
+so a freshly provisioned exit that answers 407 for a moment is not parked. The asymmetry runs the
+other way too: a *successful* probe is dispatch-grade evidence, so it resets `consecutiveFailures`,
+clears `cooldownUntil`/`lastError*`, sets `lastSuccessAt`, and promotes a `degraded`/`cooldown` pool
+back to `active` with a health event and an SSE publish. A `disabled` pool is never resurrected by a
+probe; operators re-enable it explicitly after fixing payment or credentials, and re-enabling clears
+the same fields from any parked state.
 Other transport failures remain `Unhealthy`/`Timeout` and dispatch health is maintained by
 pool-bound requests. A successful pooled dispatch recovers degraded/cooldown pools immediately.
 Operators can inspect `GET /:poolId/health-events`; mutations release the cached dial agent
 (`poolAgentReleaser`), and responses redact legacy secret config keys and surface only
-`hasCredential`.
+`hasCredential`. The pool row shows `lastSuccessAt` as `Last success …` or `Never` beside the
+failure count, and the row's `cooldownUntil` is carried out of the store rather than dropped, so a
+parked pool states its reason. `Never` is not the same fact as "healthy": an `active` row with zero
+failures may simply have never carried a request, and `lastSuccessAt` is the only field that
+separates the two.
 
 Pool selection strategy is per-tenant (`GET`/`PATCH /strategy`): `least_loaded` (default, absent
 row reads as default) or `round_robin`, striding the per-tenant pool cursor by `rotateCount`
@@ -289,9 +299,14 @@ strategy (`invalid_pool`) and clamp `rotateCount` to 1..1000 (`invalid_pool_limi
 again in store queries (`globalOrOwnedBy` / `ownedByOnly`), and pool endpoints can never point
 at loopback or internal hosts. Operators may set `active`/`disabled`; health policy may also
 disable a pool after HTTP 402/407. `degraded` and `cooldown` remain health-machine-owned.
-Manual checks do not mutate dispatch health except for the explicit 402/407 disable policy.
+Manual checks are asymmetric by design: a failing probe records diagnostics only, while a
+successful one is dispatch-grade evidence and promotes a parked pool, so "a manual check never
+touches dispatch health" is not the invariant — "a manual check never *demotes* on failure" is.
 Credentials are encrypted on write (`encryptCredential`) and never rehydrated on read; only
-prefix-length hints leave the store.
+prefix-length hints leave the store. A credential pasted inside the endpoint
+(`http://user:pass@host:port`) is split out before validation so it lands in the encrypted column
+rather than in `endpoint_config`, which the transport would read as "no credential" and dial
+without a `Proxy-Authorization`.
 
 ## Prompt injection (`prompt-injection/`)
 

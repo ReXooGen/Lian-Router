@@ -57,10 +57,43 @@ export interface ProbeModelRequest {
   reasoningEffort?: (typeof PROBE_REASONING_EFFORTS)[number];
   maxOutputTokens?: number;
   stream?: boolean;
+  /**
+   * Opt into a real completion for a provider whose quota is keyed on the
+   * egress address.
+   *
+   * For such a provider the default probe answers from the published catalog
+   * because a completion costs one unit of an allowance that a spent address
+   * cannot get back. Set this only when the question is genuinely "does this
+   * model generate", and accept that the attempt may spend the exit it runs
+   * through. Providers whose quota is keyed on a credential ignore this field:
+   * their probe always dispatches, which is what it always did.
+   */
+  spendQuota?: boolean;
 }
 export interface ProbeModelResult {
   accountId?: string;
+  /**
+   * Whether the probe proved what the operator asked about.
+   *
+   * Read this together with `mode`: `ok` on a `catalog` result means the model
+   * is published upstream, not that it generated. A catalog hit must never be
+   * rendered as a successful generation.
+   */
   ok: boolean;
+  /**
+   * What the probe actually exercised.
+   *
+   * - `dispatch` — a real completion went upstream and `ok` means output came
+   *   back. This is the only mode that proves generation.
+   * - `catalog` — the provider's published model list was fetched through the
+   *   same egress binding and the requested id was looked up in it. No
+   *   completion was sent, so no allowance was spent; `ok` means the id is
+   *   listed upstream.
+   *
+   * Absent on the early failures that answer before either question is asked
+   * (no usable account, no registered adapter), where neither mode ran.
+   */
+  mode?: "dispatch" | "catalog";
   latencyMs: number;
   ttfbMs?: number;
   sample?: string;
@@ -74,6 +107,23 @@ export interface ProbeModelResult {
   /** Failure category (`GatewayError` code); absent on success. */
   code?: string;
   error?: string;
+  /**
+   * Network pool that served the attempt; absent on a direct dial.
+   *
+   * A probe is the operator's only window into egress rotation, and a
+   * free-tier 429 is keyed on the exit address rather than the credential.
+   * Without this field a repeated failure is indistinguishable from a
+   * gateway that never left through a pool at all. A catalog probe acquires
+   * its pool the same way, so the field is populated in both modes.
+   */
+  networkPoolId?: string;
+  /**
+   * The pool's `host:port`, never its credentials.
+   *
+   * Rendered in the console so the operator can watch rotation happen; the
+   * credential is deliberately unreachable from here.
+   */
+  poolHost?: string;
 }
 
 /**
@@ -106,6 +156,8 @@ export interface ProbeAllModelsResult {
   results: ReadonlyArray<{
     modelId: string;
     ok: boolean;
+    /** Same discriminator as `ProbeModelResult.mode`; absent when neither ran. */
+    mode?: "dispatch" | "catalog";
     latencyMs: number;
     error?: string;
   }>;

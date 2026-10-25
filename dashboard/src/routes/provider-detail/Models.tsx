@@ -91,6 +91,7 @@ export function AddModelModal({
   );
   const [testState, setTestState] = useState<"idle" | "testing" | "passed" | "failed">("idle");
   const [testError, setTestError] = useState("");
+  const [testMode, setTestMode] = useState<"dispatch" | "catalog" | undefined>(undefined);
 
   const trimmed = modelId.trim();
   // Accept a pasted qualified id (`cline/cline-free/…`): the provider is
@@ -106,10 +107,12 @@ export function AddModelModal({
     if (!normalized) return;
     setTestState("testing");
     setTestError("");
+    setTestMode(undefined);
     probe.mutate(
       { providerId, request: { modelId: normalized, wireFamily } },
       {
         onSuccess: (result) => {
+          setTestMode(result.mode);
           if (result.ok) {
             setTestState("passed");
           } else {
@@ -156,6 +159,7 @@ export function AddModelModal({
               setModelId(event.target.value);
               setTestState("idle");
               setTestError("");
+              setTestMode(undefined);
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && normalized.length > 0) runTest();
@@ -194,6 +198,7 @@ export function AddModelModal({
               setWireFamily(value);
               setTestState("idle");
               setTestError("");
+              setTestMode(undefined);
             }}
             options={(selectableWires ?? ["chat", "responses", "messages", "embeddings", "native"]).map(
               (value) => ({ value, label: wireLabel(value) }),
@@ -211,7 +216,9 @@ export function AddModelModal({
               color: "var(--green)",
             }}
           >
-            Model test passed — ready to add.
+            {testMode === "catalog"
+              ? "Model is listed in the provider's published catalog — ready to add. No completion was sent, so this does not prove it generates."
+              : "Model test passed — ready to add."}
           </div>
         )}
         {testState === "failed" && (
@@ -262,23 +269,60 @@ function ModelCard({
   const probe = useProbeModel();
   const setEnabled = useSetModelEnabled();
   const [copied, setCopied] = useState(false);
-  const [probeResult, setProbeResult] = useState<{ ok: boolean; latencyMs: number } | null>(null);
+  const [probeResult, setProbeResult] = useState<{
+    ok: boolean;
+    latencyMs: number;
+    poolHost?: string;
+    mode?: "dispatch" | "catalog";
+  } | null>(null);
   const scheduleCopyReset = useTrackedTimeout();
 
 
-  const runProbe = () => {
+  const runProbe = (spendQuota: boolean) => {
     probe.mutate(
-      { providerId, request: { modelId: model.modelId, route: model.route } },
+      {
+        providerId,
+        request: {
+          modelId: model.modelId,
+          route: model.route,
+          ...(spendQuota ? { spendQuota: true } : {}),
+        },
+      },
       {
         onSuccess: (result) => {
-          setProbeResult({ ok: result.ok, latencyMs: result.latencyMs });
+          setProbeResult({
+            ok: result.ok,
+            latencyMs: result.latencyMs,
+            ...(result.poolHost ? { poolHost: result.poolHost } : {}),
+            ...(result.mode ? { mode: result.mode } : {}),
+          });
+          // The exit is the point of a free-tier probe: the same account can
+          // fail on one address and succeed on the next, so the operator needs
+          // to see which pool answered instead of reading the result as a
+          // provider-wide verdict.
+          const via = result.poolHost ? `via ${result.poolHost}` : "direct";
+          // A catalog hit says the model is published upstream, not that it
+          // generates. Reporting it as a pass would be the misleading green
+          // tick this probe exists to avoid, so it gets its own wording and the
+          // operator is told what it would cost to find out for real.
+          if (result.mode === "catalog") {
+            if (!result.ok) {
+              toast.error(`${model.modelId} not in the published catalog · ${via}`, result.error ?? "Unknown error");
+              return;
+            }
+            toast.success(
+              `${model.modelId} · listed upstream · ${via}`,
+              "No completion was sent, so no allowance was spent. Run a real dispatch to prove it generates.",
+            );
+            return;
+          }
           if (!result.ok) {
-            toast.error(`${model.modelId} probe failed`, result.error ?? "Unknown error");
+            toast.error(`${model.modelId} probe failed · ${via}`, result.error ?? "Unknown error");
             return;
           }
           const sample = result.sample?.trim() ?? "";
           toast.success(
-            `${model.modelId} · END ${formatProbeDuration(result.latencyMs)}`,
+            `${model.modelId} · END ${formatProbeDuration(result.latencyMs)} · ${via}`,
             sample || "No sample text in the response.",
           );
         },
@@ -512,16 +556,20 @@ function ModelCard({
             variant="secondary"
             size="sm"
             disabled={probe.isPending}
-            onClick={runProbe}
+            onClick={() => runProbe(false)}
             aria-label={`Test ${model.modelId}`}
             title={
               probe.isPending
                 ? `Probing ${model.modelId}…`
-                : probeResult?.ok
-                  ? `Last probe OK in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
-                  : probeResult
-                    ? "Last probe failed — click to retry"
-                    : `Test ${model.modelId}`
+                : probeResult?.mode === "catalog"
+                  ? probeResult.ok
+                    ? `Listed upstream in ${formatProbeDuration(probeResult.latencyMs)} — catalog check, no allowance spent`
+                    : "Not in the published catalog — click to re-check"
+                  : probeResult?.ok
+                    ? `Last probe OK in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
+                    : probeResult
+                      ? "Last probe failed — click to retry"
+                      : `Test ${model.modelId}`
             }
             style={{ flex: 1, justifyContent: "center" }}
             icon={
@@ -529,9 +577,15 @@ function ModelCard({
                 <Loader2 size={12} className="animate-spin" />
               ) : probeResult ? (
                 probeResult.ok ? (
-                  <span style={{ display: "inline-flex", color: "var(--green)" }}>
-                    <CheckCircle2 size={12} />
-                  </span>
+                  probeResult.mode === "catalog" ? (
+                    <span style={{ display: "inline-flex", color: "var(--text-secondary)" }}>
+                      <Check size={12} />
+                    </span>
+                  ) : (
+                    <span style={{ display: "inline-flex", color: "var(--green)" }}>
+                      <CheckCircle2 size={12} />
+                    </span>
+                  )
                 ) : (
                   <span style={{ display: "inline-flex", color: "var(--red)" }}>
                     <AlertTriangle size={12} />
@@ -544,11 +598,27 @@ function ModelCard({
           >
             {probe.isPending
               ? "Thinking…"
-              : probeResult?.ok
-                ? formatProbeDuration(probeResult.latencyMs)
-                : probeResult
-                  ? "Fail"
-                  : "Test"}
+              : probeResult?.mode === "catalog"
+                ? probeResult.ok
+                  ? "Listed"
+                  : "Absent"
+                : probeResult?.ok
+                  ? formatProbeDuration(probeResult.latencyMs)
+                  : probeResult
+                    ? "Fail"
+                    : "Test"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={probe.isPending}
+            onClick={() => runProbe(true)}
+            aria-label={`Spend quota to prove ${model.modelId} generates`}
+            title="Send one real completion. Costs one allowance unit on an address-keyed provider."
+            style={{ flexShrink: 0 }}
+            icon={<FlaskConical size={12} />}
+          >
+            Generate
           </Button>
           <Button
             variant="ghost"

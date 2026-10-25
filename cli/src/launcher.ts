@@ -20,6 +20,8 @@ import { installShutdownHandlers, shutdownSessionFiles } from "./shutdown";
 import { GatewaySupervisor, type ServerStatus } from "./supervisor";
 import { assertGatewayConfigured, resolveGatewayConfig, writeStarterConfig } from "./install-config";
 import { resolveGatewayVersion, runUpdateSequence } from "./update-flow";
+import { renderUpdateNotices } from "./update-notice";
+import { checkLauncherVersion, updateCheckDisabled } from "../update/npm-source";
 import { hideConsoleWindow, isTrayRunning, startTray, stopTray } from "./tray-launcher";
 import type { TrayStartResult } from "./tray-launcher";
 
@@ -535,7 +537,32 @@ async function runInteractive(
   options: CliOptions,
   runtime: Runtime,
 ): Promise<number> {
+  // One authority decides whether startup talks to the network at all: the
+  // registry check and the release-feed check are skipped together, so a
+  // disabled environment cannot half-report.
+  const checkDisabled = updateCheckDisabled();
+  // `--background` and `--headless` print no notice because no menu follows
+  // them: the tray spawns `--headless` to resurrect a launcher, and that spawn
+  // must not sit on a registry deadline before it can hand over the control
+  // port. Skipping the request is the only way to guarantee that.
+  const noticesApply = !options.background && !options.headless;
+  // The registry check is started before the gateway boot and awaited after it,
+  // so its deadline overlaps the seconds the boot already costs instead of
+  // being added to them. `.catch` is belt and braces: the source already
+  // returns `unavailable` rather than throwing, and a notice must never be the
+  // reason a start fails.
+  const launcherCheck =
+    checkDisabled || !noticesApply
+      ? undefined
+      : checkLauncherVersion({ currentVersion: CLI_VERSION }).catch(() => undefined);
+
   await ensureStarted(supervisor);
+
+  const launcher = await launcherCheck;
+  const launcherNotice =
+    launcher?.status === "outdated"
+      ? { launcher: { current: launcher.current, latest: launcher.latest } }
+      : {};
 
   const session = await openSession(supervisor, runtime, options.host);
   if (options.background) {
@@ -555,7 +582,20 @@ async function runInteractive(
     return await blockUntilTrayExit(supervisor, session, runtime);
   }
 
-  const update = await readUpdateInfo(runtime.installRoot);
+  const update = checkDisabled ? null : await readUpdateInfo(runtime.installRoot);
+  // Printed after the gateway answered and before the menu, so an invocation
+  // that goes on to open the menu first states what is out of date. The notice
+  // and the menu row are different surfaces on purpose: the line is the
+  // notification, the row is the action.
+  for (const line of renderUpdateNotices({
+    ...launcherNotice,
+    ...(update !== null && update.available
+      ? { gateway: { current: update.current, latest: update.latest } }
+      : {}),
+  })) {
+    console.log(line);
+  }
+
   const action = await promptMenu({
     version: CLI_VERSION,
     port: supervisor.status.port,

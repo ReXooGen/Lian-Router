@@ -72,6 +72,19 @@ dbDescribe("DrizzleNetworkPoolStore — tenant isolation", () => {
   });
 
 
+  test("list carries the pool cooldown deadline through the row map", async () => {
+    const cooldownUntil = new Date(Date.now() + 60_000);
+    await db.update(networkPools).set({ cooldownUntil }).where(eq(networkPools.id, poolId));
+    try {
+      const listed = await store.list(tenantA);
+      expect(listed.find((pool) => pool.id === poolId)?.cooldownUntil).toBe(
+        cooldownUntil.toISOString(),
+      );
+    } finally {
+      await db.update(networkPools).set({ cooldownUntil: null }).where(eq(networkPools.id, poolId));
+    }
+  });
+
   test("update against another tenant's pool is a no-op", async () => {
     const result = await store.update(tenantB, poolId, { weight: 50 });
     expect(result).toBeUndefined();

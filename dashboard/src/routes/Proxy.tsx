@@ -101,6 +101,7 @@ function PoolEditForm({
   const [endpoint, setEndpoint] = useState(pool.endpoint ?? "");
   const [cap, setCap] = useState(String(pool.maxInflight ?? 10));
   const [weight, setWeight] = useState(String(pool.weight ?? 100));
+  const [credential, setCredential] = useState("");
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
 
@@ -110,7 +111,10 @@ function PoolEditForm({
     try {
       const result = await healthCheck.mutateAsync(pool.id);
       if (result.status === "reachable") {
-        setTestResult({ ok: true, message: result.errorMessage ?? "Proxy reachable" });
+        // The proxy answered and refused the tunnel: it is up, but nothing
+        // routes through it. Reporting that as a successful test is what made
+        // "reachable" read as "working" in the console.
+        setTestResult({ ok: false, message: result.errorMessage ?? "Proxy refused the tunnel" });
       } else {
         setTestResult(
           result.status === "healthy"
@@ -135,6 +139,10 @@ function PoolEditForm({
           : {}),
         ...(Number(cap) !== pool.maxInflight ? { maxInflight: Number(cap) } : {}),
         ...(Number(weight) !== pool.weight ? { weight: Number(weight) } : {}),
+        // A 407 pool is repaired here: the store encrypts the value into
+        // `credential_ciphertext`, which is the only column the transport
+        // reads when it builds `Proxy-Authorization`.
+        ...(credential.trim() ? { credential: credential.trim() } : {}),
       },
     });
     toast.success("Proxy updated");
@@ -158,6 +166,18 @@ function PoolEditForm({
           label="Endpoint"
           value={endpoint}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEndpoint(e.target.value)}
+          style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+        />
+      </div>
+      <div>
+        <Input
+          label={CREDENTIAL_LABEL}
+          type="password"
+          value={credential}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCredential(e.target.value)}
+          placeholder={
+            pool.hasCredential ? "stored — type to replace" : "required when the proxy answers 407"
+          }
           style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
         />
       </div>
@@ -407,7 +427,10 @@ function MultiProtocolForm({ onClose }: { readonly onClose: () => void }): React
         ...(credential.trim() ? { credential: credential.trim() } : {}),
       });
       if (result.status === "reachable") {
-        setTestResult({ ok: true, message: result.errorMessage ?? "Proxy reachable" });
+        // The proxy answered and refused the tunnel: it is up, but nothing
+        // routes through it. Reporting that as a successful test is what made
+        // "reachable" read as "working" in the console.
+        setTestResult({ ok: false, message: result.errorMessage ?? "Proxy refused the tunnel" });
       } else {
         setTestResult(
           result.status === "healthy"
@@ -618,12 +641,12 @@ function PoolRow({
   const statusText = isTesting
     ? "Testing…"
     : proxyResponseDisabled
-      ? "Proxy reachable"
+      ? "Proxy refuses tunnel"
       : checkResult
         ? checkResult.status === "healthy"
           ? "Connected"
           : checkResult.status === "reachable"
-            ? "Proxy reachable"
+            ? "Proxy refuses tunnel"
             : checkResult.status === "timeout"
               ? "Timeout"
               : "Unhealthy"
@@ -672,6 +695,19 @@ function PoolRow({
               {cooldowns.length} cooldown{cooldowns.length > 1 ? "s" : ""}
             </Badge>
           ) : null}
+          {pool.consecutiveFailures > 0 ? (
+            <span
+              style={{
+                fontSize: "10.5px",
+                fontFamily: "var(--font-mono)",
+                color: "var(--orange)",
+                whiteSpace: "nowrap",
+              }}
+              title="Consecutive failures attributed to the proxy itself"
+            >
+              {pool.consecutiveFailures} fail{pool.consecutiveFailures === 1 ? "" : "s"}
+            </span>
+          ) : null}
         </div>
         <code
           style={{
@@ -687,6 +723,37 @@ function PoolRow({
         >
           {display.endpoint}
         </code>
+        {/* A pool row can read `active` with zero failures and still never have
+            carried a request; `lastSuccessAt` is the only field that separates
+            that from a working exit, so it is shown even when it is empty. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+            marginTop: "2px",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "10.5px",
+              color: pool.lastSuccessAt ? "var(--text-tertiary)" : "var(--orange)",
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={
+              pool.lastSuccessAt
+                ? `Last completed request through this pool: ${new Date(pool.lastSuccessAt).toLocaleString()}`
+                : "This pool has never completed a request. Its active status and zero failure count reflect only dispatch attempts that were never attributed to the proxy."
+            }
+          >
+            {pool.lastSuccessAt
+              ? `Last success ${new Date(pool.lastSuccessAt).toLocaleString()}`
+              : "Never"}
+          </span>
+        </div>
       </td>
       <td>
         <Badge tone="default">{pool.kind}</Badge>
@@ -857,7 +924,7 @@ function PoolHealthDialog({
               Proxy health
             </div>
             <div style={{ fontSize: "18px", fontWeight: 700, lineHeight: 1.3 }}>
-              {disabledForProxyResponse ? "Proxy reachable" : `Proxy ${pool.status}`}
+              {disabledForProxyResponse ? "Proxy refuses tunnel" : `Proxy ${pool.status}`}
             </div>
             <p
               style={{

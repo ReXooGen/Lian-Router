@@ -58,6 +58,74 @@ export function splitEndpointConfig(config: Record<string, unknown>): {
   };
 }
 
+/**
+ * Splits `user:pass@` userinfo out of a proxy endpoint URL.
+ *
+ * A pasted proxy line frequently carries its credential in the URL. The
+ * endpoint string is persisted in `endpoint_config` and echoed back through
+ * the console API, so leaving the userinfo there stores a plaintext secret and
+ * leaves `credential_ciphertext` null — which the transport reads as "no
+ * credential" and dials with no `Proxy-Authorization`, producing the 407 the
+ * operator sees. Callers persist the returned credential through the encrypted
+ * column and keep the endpoint clean.
+ *
+ * A scheme-less `host:port` endpoint cannot carry userinfo, so it is returned
+ * unchanged; only a URL with a scheme is parsed.
+ */
+export function splitEndpointCredential(endpoint: string): {
+  endpoint: string;
+  credential?: string;
+} {
+  if (!endpoint.includes("://")) return { endpoint };
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return { endpoint };
+  }
+  if (!url.username && !url.password) return { endpoint };
+  const username = decodeURIComponent(url.username);
+  const password = decodeURIComponent(url.password);
+  url.username = "";
+  url.password = "";
+  return { endpoint: url.toString(), credential: `${username}:${password}` };
+}
+
+/**
+ * Reduces a pool endpoint to the `host:port` an operator can be shown.
+ *
+ * A probe result and its failure message are operator-facing, so they must
+ * identify which egress served an attempt without ever carrying the proxy
+ * credential. Credential material lives either in the URL userinfo of a pasted
+ * endpoint or in `credential_ciphertext`, and only the former can reach this
+ * function — dropping the userinfo here is what keeps the identity safe to
+ * return, log, and render.
+ *
+ * A scheme-less `host:port` is already the answer and is returned unchanged
+ * apart from any `user:pass@` prefix. A malformed endpoint yields `undefined`
+ * so callers report "identity unknown" instead of a truncated string.
+ */
+export function proxyHostPort(endpoint: string | undefined): string | undefined {
+  if (!endpoint) return undefined;
+  const trimmed = endpoint.trim();
+  if (trimmed === "") return undefined;
+  const credentialFree = splitEndpointCredential(trimmed).endpoint;
+  if (!credentialFree.includes("://")) {
+    const bare = credentialFree.includes("@")
+      ? credentialFree.slice(credentialFree.lastIndexOf("@") + 1)
+      : credentialFree;
+    return bare === "" ? undefined : bare;
+  }
+  try {
+    const url = new URL(credentialFree);
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    if (host === "") return undefined;
+    return url.port === "" ? host : `${host}:${url.port}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Derives the application-level `https` distinction the DB enum collapses into `http`. */
 export function deriveKind(dbKind: string, endpoint: string): TransportKind {
   if (dbKind === "http") return endpoint.startsWith("https:") ? "https" : "http";
