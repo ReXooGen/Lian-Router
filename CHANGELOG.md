@@ -1,5 +1,91 @@
 # Changelog
 
+## 2.2.2
+
+A patch across the launcher/gateway boundary. The gateway half fixes the free
+tier's diagnostic surface, which was spending an allowance the operator cannot
+buy back, and corrects the roster it reads; the launcher half adds one thing —
+it now says when something newer exists. `2.2.2` is the launcher's version; the
+gateway archive ships under its own release tag.
+
+### A console Test spent a free-tier allowance unit, every click
+
+The free tier's allowance is keyed on the source address, so one completion
+through a spent exit is a unit gone for the day. The console's Test button
+dispatched a real completion per click and "Test all" dispatched one per model,
+so the diagnostic surface was what emptied the address pool — and it did it
+again every time a cooldown expired and the pools came back.
+
+An egress-scoped provider's probe now answers from the published catalog
+(`GET /zen/v1/models`), fetched through the same outbound binding dispatch would
+have used: it still exercises the exit and still reports which pool served it,
+but no completion is sent and nothing is charged. `probeAllModels` reads that
+catalog once for the whole batch. The result states which question it answered —
+`mode: "catalog"` means the id is published upstream, `mode: "dispatch"` means a
+completion went upstream — so a listing can no longer render as a successful
+generation. A real dispatch stays available behind `spendQuota: true`, because
+only generation proves a model works and the operator decides when that proof is
+worth an exit. Credential-keyed providers are untouched. The result also carries
+`networkPoolId` and `poolHost`, so a repeated failure is no longer
+indistinguishable from a gateway that never left through a pool.
+
+The refusal message was wrong in the same way: a `FreeUsageLimitError` now states
+the cooldown the gateway actually applies, derived from the upstream
+`Retry-After`, instead of claiming that adding pools is the only remedy. That
+header is a fixed deadline — measured at 61323 → 61217 across 106 s elapsed, a
+delta of zero — so it is reported as the absolute window it is.
+
+### The free roster named five ids upstream no longer serves
+
+`OPENCODE_FREE_MODELS` carried rows that do not generate:
+`minimax-m3.1-flash-free` and both `muse-spark-*` contributor ids answer `410
+ModelDeprecated`, and `union-alpha` answers `400 "Model is unavailable"` on
+`/chat/completions` and `/messages` alike. A `403` from the gate means the id was
+*accepted*, which is why they survived this long — the tombstone is `410`, and
+generation is the only proof.
+
+The roster is nine rows now, re-measured by generating once per id through the
+real `opencode.exe` 1.18.34, with `flint-40b-free` added (262144/65536,
+text-only, reasoning). `longcat-2.5-preview-free` is retired as unverified rather
+than dead. The `messages` family was dropped from `opencodeft` because
+`union-alpha` was its only model, and a declared family with no model behind it
+makes the adapter post an Anthropic-shaped payload at a route nothing on this
+catalog serves; `responses` stays, since a served wire without a current row is a
+different fact. The version floor is declared rather than implied —
+`minVersion: "1.18.0"` on the opencode source — because the gate answers `426
+UpgradeRequired` below it and a registry publishing an older artifact must never
+be stamped on a dispatch.
+
+### The pool row could not say why a pool was parked
+
+The row showed status, failures, and latency, but not whether the exit had ever
+carried a request: an `active` row with zero failures and one that had never
+completed anything looked identical. And `cooldownUntil` was dropped when a row
+was mapped out of the store, so a pool in a live cooldown had no visible reason
+for it.
+
+The row now renders `Last success …` or `Never` beside the failure count, and
+`cooldownUntil` survives the store map. A successful probe is dispatch-grade
+evidence and promotes a parked pool back to `active`, with the route snapshot
+invalidated so the recovery applies immediately rather than after some unrelated
+mutation.
+
+### The launcher said nothing when a newer build existed
+
+`lianrouter` opened the menu with no indication that either artifact was behind.
+The menu row covers a gateway archive; nothing covered the package that was
+running, because `checkForUpdate()` never asks about it.
+
+Startup now prints at most two lines before the menu — one when a newer
+`lianrouter` is published on npm, one when a newer gateway archive is released.
+The registry check is bounded at 2.5 s and starts before the gateway boot, so its
+deadline overlaps seconds the boot already costs; every failure is silent and
+changes no exit code. `LIANROUTER_NO_UPDATE_CHECK=1` disables both checks through
+one authority. The lines do not print for `status`, `stop`, `update`, `init`,
+`--version`, `--help`, `--background`, or `--headless` — the first group answers
+a question or is itself the update path, and the last two print no menu to read a
+notice from.
+
 ## 2.2.1
 
 A launcher-side patch: no gateway binary, dashboard bundle, or configuration
