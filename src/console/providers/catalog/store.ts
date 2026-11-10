@@ -12,6 +12,7 @@ import type { TelemetryBatchBuffer } from "../../../observability/telemetry-buff
 import type { BundledProviderCatalog } from "../../../providers/operations/provider-catalog-service";
 import { validateCompatibilityProfile, type ByokConnectionTestRequest, type ByokConnectionTestResult, type CreateProviderAccountRequest, type ModelCatalogEntry, type ProbeAllAccountsResult, type ProbeAllModelsResult, type ProbeModelRequest, type ProbeModelResult, type ProviderAccountResponse, type ProviderAccountTokenUsage, type ProviderCatalogStore, type ProviderRecord, type SetModelEnabledRequest, type UpdateProviderAccountRequest, ACCOUNT_MAX_INFLIGHT_BOUNDS } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
+import type { ProbeDispatchFn } from "../../../providers/discovery/probe-dispatch";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
 import type { ProxyConnectError } from "../../../network/pool/agent";
 import { resolveManualModelMetadata } from "../../../providers/model-definition";
@@ -112,6 +113,8 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       readonly poolSelector?: NetworkPoolSelector | undefined;
       /** Cools a (pool, provider) pair after a refused CONNECT; see probing-service. */
       readonly coolPool?: (poolId: string, providerId: string, error: ProxyConnectError) => void;
+      /** The paid probe path; a real completion through the shared lease layer. */
+      readonly dispatchProbe: ProbeDispatchFn;
     },
   ) {
     this.bundledModelCatalog = options.bundledModelCatalog.modelsByProvider;
@@ -126,6 +129,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       providerRegistry: options.providerRegistry,
       ...(options.poolSelector ? { poolSelector: options.poolSelector } : {}),
       ...(options.coolPool ? { coolPool: options.coolPool } : {}),
+      dispatchProbe: options.dispatchProbe,
     });
   }
   async list(tenantId: string): Promise<readonly ProviderRecord[]> {

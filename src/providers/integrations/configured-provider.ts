@@ -51,6 +51,13 @@ export interface ApiKeyProviderSpec {
   /** `"never"` withholds `Authorization` for genuinely public endpoints (OpenCode Free). */
   readonly credential_forwarding?: "account" | "never";
   /**
+   * Declares that upstream never receives a caller identity, so a 429 is keyed
+   * on the source address. Only for endpoints that accept no credential at all
+   * — not a restatement of `credential_forwarding`, which also covers providers
+   * that stamp their own credential header.
+   */
+  readonly presentsCredential?: boolean;
+  /**
    * Opts this provider into the gateway identity (`LianRouter/<version>` as
    * the upstream `user-agent`). Explicit only: providers with their own
    * first-party identity (Codex, Claude Code) and unprovisioned BYOK rows
@@ -103,6 +110,9 @@ export function createApiKeyAdapter(
       ...(spec.extra_headers ? { extra_headers: spec.extra_headers } : {}),
       ...(spec.buildExtraHeaders ? { buildExtraHeaders: spec.buildExtraHeaders } : {}),
       ...(spec.credential_forwarding ? { credential_forwarding: spec.credential_forwarding } : {}),
+      ...(spec.presentsCredential === undefined
+        ? {}
+        : { presents_credential: spec.presentsCredential }),
       ...(spec.promptCache === false ? { supports_prompt_caching: false } : {}),
       ...(spec.streaming_usage_mode === undefined
         ? {}

@@ -19,6 +19,7 @@ async function capture429(
   providerId: string,
   headers: Record<string, string> = {},
   status = 429,
+  evidence: { readonly presentsCredential?: boolean; readonly poolLeased?: boolean } = {},
 ): Promise<GatewayError> {
   try {
     await mapUpstreamHttpError(
@@ -27,6 +28,7 @@ async function capture429(
         headers,
       }),
       providerId,
+      evidence,
     );
     throw new Error("expected the mapper to throw");
   } catch (error) {
@@ -127,6 +129,53 @@ describe("429 rate-limit scope", () => {
     // same class of lie as the removed remedy sentence.
     expect(error.message).not.toMatch(/\bfor \d/);
     expect(error.message).toContain("cools this (pool, provider) pair so the next request");
+  });
+
+  test("the free-tier gate claims no cooldown when the request dialed direct", async () => {
+    // A direct dial holds no pool slot, so `flagPoolCooldown` is skipped for it.
+    // The message must not describe an action that was not taken.
+    const error = await capture429(
+      { error: { type: "FreeUsageLimitError", message: "free usage limit reached" } },
+      "opencodeft",
+      {},
+      429,
+      { presentsCredential: false, poolLeased: false },
+    );
+
+    expect(error.details["rateLimitScope"]).toBe("network");
+    expect(error.message).not.toContain("cools this (pool, provider) pair");
+    expect(error.message).toContain("This request dialed direct, so there is no proxy exit to cool");
+    // The rest of the message is unchanged: the gate, the per-address keying,
+    // and the paid-tier remedy are still the operator's answer.
+    expect(error.message).toContain("keyed on the egress address");
+    expect(error.message).toContain("only a different egress network changes that");
+    expect(error.message).toContain("opencodego");
+  });
+
+  test("the free-tier gate states the cooldown when a pool was actually leased", async () => {
+    const error = await capture429(
+      { error: { type: "FreeUsageLimitError", message: "free usage limit reached" } },
+      "opencodeft",
+      { "retry-after": "65256" },
+      429,
+      { presentsCredential: false, poolLeased: true },
+    );
+
+    expect(error.message).toContain("cools this (pool, provider) pair for 18h 8m");
+    expect(error.message).not.toContain("dialed direct");
+  });
+
+  test("a caller that cannot say whether a pool was leased keeps the cooldown sentence", async () => {
+    // Token exchanges and wire-level frames have no dispatch context. Dropping
+    // the remedy for them would hide it in the pooled case that is the common
+    // one, so an unknown answer keeps the existing text.
+    const error = await capture429(
+      { error: { type: "FreeUsageLimitError", message: "free usage limit reached" } },
+      "opencodeft",
+    );
+
+    expect(error.message).toContain("cools this (pool, provider) pair");
+    expect(error.message).not.toContain("dialed direct");
   });
 
   test("a bare 429 or a 5xx does not claim the allowance was exhausted", async () => {

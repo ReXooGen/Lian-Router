@@ -15,6 +15,7 @@ import { ConsoleDomainError, requireTenantScope } from "../shared/errors";
 import type { AccessDecision } from "../../security/access-control";
 import { LIANROUTER_VERSION } from "../../transport/version";
 import {
+  checkLauncherUpdate,
   fetchLauncherUpdateState,
   readLauncherHandshake,
   startLauncherUpdate,
@@ -57,6 +58,22 @@ export interface UpdateStartResponse {
   readonly accepted: true;
 }
 
+/**
+ * `POST /update/check`: the snapshot the launcher just read.
+ *
+ * Only the snapshot, not the whole status: `running` and `progress` describe an
+ * install this route cannot observe, and the dashboard refetches `GET /update`
+ * straight after a check anyway. Returning the status shape here would mean
+ * inventing those two fields.
+ */
+export interface UpdateCheckResponse {
+  readonly current: string;
+  readonly latest: string;
+  readonly available: boolean;
+  readonly notesUrl: string | null;
+  readonly publishedAt: string | null;
+}
+
 export interface UpdateRoutesConfig {
   readonly accessResolver: ConsoleAccessResolver;
   readonly auditSink?: AuditSink;
@@ -65,6 +82,7 @@ export interface UpdateRoutesConfig {
 /** The access-checked operations the routes call; each takes the caller's decision. */
 export interface UpdateOperations {
   status(access: AccessDecision | undefined): Promise<UpdateStatusResponse>;
+  check(access: AccessDecision | undefined): Promise<UpdateCheckResponse>;
   start(access: AccessDecision | undefined): Promise<UpdateStartResponse>;
 }
 
@@ -122,6 +140,49 @@ export function createUpdateOperations(config: UpdateRoutesConfig): UpdateOperat
       // whether the launcher never existed or just exited.
       if (!state.ok) return toStatus(false, null, false, null);
       return toStatus(true, state.data.snapshot, state.data.running, state.data.progress);
+    },
+
+    async check(access: AccessDecision | undefined): Promise<UpdateCheckResponse> {
+      // `dashboard:read`, not `dashboard:write`: a check reads the release feed
+      // and publishes the answer. It installs nothing, replaces no file, and is
+      // idempotent — the same call the launcher makes for itself at boot. It
+      // also returns exactly what `GET /update` already exposes to this scope,
+      // so requiring write here would demand more authority than the data it
+      // hands back.
+      requireTenantScope(access, "dashboard:read");
+      const handshake = await currentHandshake();
+      if (handshake === undefined) {
+        throw new ConsoleDomainError(
+          "launcher_unavailable",
+          503,
+          "The launcher is not running; start LianRouter from the CLI to check for updates",
+        );
+      }
+      const checked = await checkLauncherUpdate(handshake);
+      if (!checked.ok) {
+        if (checked.status === 409) {
+          throw new ConsoleDomainError("update_in_progress", 409, checked.error);
+        }
+        if (checked.status === undefined) {
+          // Readable handshake, dead socket: the launcher exited between the
+          // file read and the call, which is the same operator-facing fact as
+          // "no launcher at all".
+          throw new ConsoleDomainError("launcher_unavailable", 503, checked.error);
+        }
+        throw new ConsoleDomainError("launcher_error", 502, checked.error);
+      }
+      // No audit row. `start` is recorded because it changes the installation
+      // and the operator may need to explain it later; a check changes nothing
+      // durable, and the launcher performs the identical check unattended at
+      // boot. Recording it would log a read as an action and make the audit
+      // trail noisier than the events it exists to describe.
+      return {
+        current: checked.data.current,
+        latest: checked.data.latest,
+        available: checked.data.available,
+        notesUrl: checked.data.notesUrl,
+        publishedAt: checked.data.publishedAt,
+      };
     },
 
     async start(access: AccessDecision | undefined): Promise<UpdateStartResponse> {

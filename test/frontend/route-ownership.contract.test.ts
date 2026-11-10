@@ -26,6 +26,9 @@ const consoleApi = {
   },
   networkBindingFactory: {} as never,
   admissionService: { purgeKey: async () => {} } as never,
+  probeDispatcher: async () => {
+    throw new Error("route ownership contract: probe dispatch not wired");
+  },
   redis: {} as never,
   oauthRefreshService: {} as never,
 };

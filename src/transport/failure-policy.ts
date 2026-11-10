@@ -379,6 +379,14 @@ const CAPACITY_SCOPE_IDENTIFIERS: Readonly<Record<string, true>> = {
  * and cooling that (pool, provider) pair is what moves the next request to an
  * exit that may still have quota.
  *
+ * The live deployment serves this traffic through a BYOK row (`id:
+ * "ocfree-ft"`, `requires_account: false`) rather than the bundled id, and a
+ * BYOK id is not in this table. The dispatch path therefore answers the
+ * question from the request itself (`presentsCredential` below); this set is
+ * the fallback for callers that have no request in hand, and the answer the
+ * probe path needs *before* any request exists so it does not spend an
+ * allowance unit to learn what the catalog already states.
+ *
  * Measured, not assumed: the fingerprint itself is not the limit. The adapter's
  * own captured outbound bytes (headers and body) were replayed to the live
  * endpoint and returned `200` with a real stream, while a malformed
@@ -404,6 +412,12 @@ const EGRESS_SCOPED_PROVIDER_IDS: Readonly<Record<string, true>> = { opencodeft:
  * against an egress-scoped provider must not spend an allowance unit to answer
  * a question the free catalog already answers, so the probe path branches on
  * exactly this predicate instead of keeping a second list that could drift.
+ *
+ * This answers from the *catalog* alone and is therefore only authoritative for
+ * bundled ids. The dispatch path knows something better — whether the request
+ * actually carried a credential — and passes that to
+ * {@link classifyRateLimitScope}; a BYOK row serving a public endpoint is not a
+ * bundled id and cannot be recognized here.
  */
 export function isEgressScopedProvider(providerId: string | undefined): boolean {
   if (providerId === undefined) return false;
@@ -428,19 +442,28 @@ function rateLimitIdentifiers(body: unknown, providerCode?: string): readonly st
  * limited. Status alone is not evidence: a bare 429 is the caller's window
  * until something says otherwise, so it stays `account` rather than taking a
  * pool out of service on a guess.
+ *
+ * `presentsCredential` is the property that actually makes a limit
+ * egress-scoped: a request with no credential gives upstream no identity to key
+ * an allowance on, so it keys on the source address instead. Callers holding the
+ * dispatched request pass what they sent; callers that only have a provider id
+ * (a probe deciding whether to spend a unit, a wire-level error frame) omit it
+ * and fall back to the bundled-id table, which is the same fact stated for the
+ * catalog. A BYOK id is not in that table, which is exactly why the dispatch
+ * path must pass the property rather than the id.
  */
 export function classifyRateLimitScope(input: {
   readonly status: number;
   readonly providerId?: string;
   readonly providerCode?: string;
   readonly body?: unknown;
+  readonly presentsCredential?: boolean;
 }): UpstreamRateLimitScope {
   if (input.status === 529) return "provider";
   const identifiers = rateLimitIdentifiers(input.body, input.providerCode);
   if (identifiers.some((identifier) => Object.hasOwn(CAPACITY_SCOPE_IDENTIFIERS, identifier))) return "provider";
-  const providerId = input.providerId?.toLowerCase();
-  if (isEgressScopedProvider(providerId)) return "network";
-  return "account";
+  const presentsCredential = input.presentsCredential ?? !isEgressScopedProvider(input.providerId);
+  return presentsCredential ? "account" : "network";
 }
 
 /**
@@ -468,31 +491,64 @@ function cooldownLabel(retryAfterMs: number | null | undefined): string | undefi
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
+/**
+ * `poolLeased` says whether this attempt actually held a pool slot, because the
+ * cooldown sentence is a claim about an action the gateway takes and only a
+ * pooled attempt takes it. A direct dial has no (pool, provider) pair to cool —
+ * `flagPoolCooldown` is skipped for it — so asserting the cooldown there told
+ * the operator a remedy was applied when nothing was. `undefined` means the
+ * caller cannot say (a token exchange, a wire-level frame); the sentence then
+ * stays, because removing the remedy from every caller that omits the flag
+ * would hide it for the pooled case that is the common one.
+ */
 function openCodeFreeTierMessage(
-  providerId: string,
+  rateLimitScope: UpstreamRateLimitScope,
   identifiers: readonly string[],
   retryAfterMs: number | null | undefined,
+  poolLeased: boolean | undefined,
 ): string | undefined {
-  if (providerId !== "opencodeft") return undefined;
+  // Keyed on the *scope*, not the id: a BYOK row serving the same public
+  // endpoint is refused by the same gate, and naming the remedy only for the
+  // bundled id left that deployment reading raw sales copy.
+  if (rateLimitScope !== "network") return undefined;
   if (!identifiers.includes(FREE_TIER_GATE_IDENTIFIER)) return undefined;
   // The header is the operator's only actionable number: the gateway applies
   // this TTL verbatim, so a message that omits it invites retries inside a
   // window that cannot succeed.
   const cooldown = cooldownLabel(retryAfterMs);
+  const cooldownClause =
+    poolLeased === false
+      ? "This request dialed direct, so there is no proxy exit to cool; "
+      : cooldown === undefined
+        ? "The gateway cools this (pool, provider) pair so the next request leaves through a different exit; "
+        : `The gateway cools this (pool, provider) pair for ${cooldown}, so the next request leaves through a different exit; `;
   return (
     "OpenCode Free usage limit reached (upstream 429 FreeUsageLimitError). The free allowance is " +
     "keyed on the egress address, so this proxy exit is spent, not the account — the endpoint " +
     "accepts only the public credential. " +
-    (cooldown === undefined
-      ? "The gateway cools this (pool, provider) pair so the next request leaves through a different exit; "
-      : `The gateway cools this (pool, provider) pair for ${cooldown}, so the next request leaves through a different exit; `) +
+    cooldownClause +
     "when every exit is spent the request fails, and only a different egress network changes that. " +
     "Paid tier: `opencodego` serves the same MiMo-V2.6-Flash family."
   );
 }
 
 /** Converts one failed upstream response into the shared GatewayError contract. */
-export async function mapUpstreamHttpError(response: Response, providerId: string): Promise<never> {
+export async function mapUpstreamHttpError(
+  response: Response,
+  providerId: string,
+  evidence: {
+    readonly presentsCredential?: boolean;
+    /**
+     * Whether this dispatch actually held a proxy pool slot.
+     *
+     * Supplied by callers that hold the dispatch context, where
+     * `network_pool_id` is set only when a slot was leased. Omitted by callers
+     * that cannot know (a token exchange), which keeps the cooldown sentence
+     * rather than silently dropping it for the pooled case.
+     */
+    readonly poolLeased?: boolean;
+  } = {},
+): Promise<never> {
   const text = await response.text().catch(() => "");
   let providerCode: string | undefined;
   let parsedBody: unknown;
@@ -507,6 +563,9 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
     status: response.status,
     providerId,
     ...(providerCode === undefined ? {} : { providerCode }),
+    ...(evidence.presentsCredential === undefined
+      ? {}
+      : { presentsCredential: evidence.presentsCredential }),
     body: parsedBody,
   });
   // A named overflow outranks the status bucket: the upstream may send it as a
@@ -530,7 +589,7 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
     channelVerification
       ? "CodeBuddy channel verification failed (11128 \"conversation id missing\"): the upstream gateway requires the X-Conversation-ID / X-Conversation-Request-ID / X-Conversation-Message-ID header family on every request. If this appears, the gate likely changed (e.g. a new required header)."
       : response.status === 429
-        ? openCodeFreeTierMessage(providerId, identifiers, retryAfterMs) ?? (extracted.length > 0 ? extracted : text.trim() || `Provider returned HTTP ${status}.`)
+        ? openCodeFreeTierMessage(rateLimitScope, identifiers, retryAfterMs, evidence.poolLeased) ?? (extracted.length > 0 ? extracted : text.trim() || `Provider returned HTTP ${status}.`)
         : extracted.length > 0
           ? extracted
           : text.trim() || `Provider returned HTTP ${status}.`
@@ -539,9 +598,14 @@ export async function mapUpstreamHttpError(response: Response, providerId: strin
   // A spent free-tier allowance is attributed to the client handle the request
   // presented, so the retry has to present a different one. That decision
   // belongs to the adapter that owns the handle, not to this classifier, which
-  // only reports what upstream's own structured body said.
+  // only reports what upstream's own structured body said. Keyed on the scope
+  // for the same reason the message is: a BYOK row serving the public endpoint
+  // spends its handle identically, and gating on the bundled id would leave
+  // that deployment handing the spent handle to the next conversation.
   const freeTierAllowanceExhausted =
-    response.status === 429 && identifiers.includes(FREE_TIER_GATE_IDENTIFIER);
+    response.status === 429 &&
+    rateLimitScope === "network" &&
+    identifiers.includes(FREE_TIER_GATE_IDENTIFIER);
   throw new GatewayError(code, status, message, {
     providerId,
     providerStatus: response.status,
@@ -587,6 +651,36 @@ export async function throwIfHtmlResponse(response: Response): Promise<void> {
 /** True when fallback routing should try another candidate. */
 export function isRetryableFailure(error: unknown): boolean {
   return classifyUpstreamFailure(error).retryable;
+}
+
+/**
+ * A refusal that is a statement about *this candidate*, not about the request.
+ *
+ * `acquirePoolSlot` refuses an unpooled candidate when the same plan carries a
+ * pooled sibling for the same provider (`proxy_pool_unhealthy` /
+ * `candidate_pool_missing`). The refusal is correct — that candidate must never
+ * dial direct — but it says nothing about whether the request can be served:
+ * the sibling it was refused *for* is the candidate that can serve it. The
+ * attempt loop therefore skips such an attempt instead of letting it end the
+ * request, because at the last index it otherwise did exactly that and replaced
+ * the sibling's real failure with this refusal, so an operator saw
+ * `candidate_pool_missing` for a request whose actual fault was a saturated or
+ * cooling pool.
+ *
+ * Deliberately narrow. Only this one reason, on this one code, from the network
+ * origin: `no_healthy_pool` (every configured pool unusable) and
+ * `proxy_pool_capacity_exceeded` / `proxy_pool_cooldown` stay terminal-shaped,
+ * because retrying an exhausted pool set is what those codes exist to prevent —
+ * and a plan whose *only* candidate is refused still surfaces this error, since
+ * there is nothing left to skip to.
+ */
+export function isCandidateScopedPoolRefusal(error: unknown): boolean {
+  return (
+    error instanceof GatewayError &&
+    error.code === "proxy_pool_unhealthy" &&
+    error.origin === "network" &&
+    error.details.reason === "candidate_pool_missing"
+  );
 }
 
 /**

@@ -323,7 +323,7 @@ describe("runAttemptLoop — failover accounting", () => {
     estimated_cost: ((5 * (gpt5Cost.input ?? 0)) + (5 * (gpt5Cost.output ?? 0))) / 1_000_000,
   };
 
-  test("records the successful attempt's outcome, commits usage per attempt, emits one telemetry row", async () => {
+  test("records the successful attempt's outcome, commits only the served attempt's usage, emits one telemetry row", async () => {
     const accountId = "account-fixed-id";
     const failingRouteCandidate = {
       provider_id: "anthropic",
@@ -459,10 +459,12 @@ describe("runAttemptLoop — failover accounting", () => {
     // Exactly one telemetry row per request, however many candidates it tried.
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: "completed", providerId: "openai" });
-    // Both attempts held a lease, so both reconcile their usage: the failed
-    // attempt charges its estimate, the successful one its actual usage.
-    expect(commits).toHaveLength(2);
-    expect(commits[1]).toEqual(SUCCESS_USAGE);
+    // Only the served attempt reconciles its lease. The failed attempt threw a
+    // plain Error, which is not a GatewayError, so it never delivered the
+    // request: its reservation is refunded by the lease release instead of
+    // being committed as usage.
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toEqual(SUCCESS_USAGE);
   });
 });
 

@@ -42,6 +42,9 @@ function compositionDeps(
     redis: {} as never,
     oauthRefreshService: {} as never,
     admissionService: {} as never,
+    probeDispatcher: async () => {
+      throw new Error("console router test: probe dispatch not wired");
+    },
     ...overrides,
   };
 }

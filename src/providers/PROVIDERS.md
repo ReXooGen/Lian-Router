@@ -153,7 +153,31 @@ Three layers combine in `default-registry.ts: BUNDLED_PROVIDER_MODULES`, then `c
    and `ok` is the generation verdict. A real dispatch stays available — `spendQuota: true` on the
    probe request, surfaced in the console as its own action — because only generation proves a model
    works, and the operator decides when that proof is worth an exit. Providers whose quota is keyed
-   on a credential are untouched: their probe still dispatches by default.
+   on a credential are untouched: their probe still dispatches by default, and the flag is a no-op
+   for them.
+   **The opt-in runs the shared dispatch path, not a bespoke fetch.** `spendQuota: true` on an
+   egress-scoped provider routes through `discovery/probe-dispatch.ts`, which calls
+   `ProxyRequestPreparer.prepare` and then `acquireAttemptLeases` — the same admission lease, pool
+   slot, sibling guard, and routing reservation live traffic takes — before handing the canonical
+   request to the provider adapter. That is deliberate: the previous paid path resolved its own
+   outbound binding, so it could report a provider fault for a request the gateway refuses locally.
+   Measured 2026-10-25, a real dispatch of `opencodeft/mimo-v2.6-flash-free` answers `503
+   proxy_pool_unhealthy` with `details.reason: "candidate_pool_missing"` and origin `network` in
+   ~1.7 s without leaving the box: the requesting tenant owns no pool, while the pool-owning
+   tenant's pooled candidate is in the plan, so `acquirePoolSlot` fails closed rather than dialing
+   direct from the host address. The probe reports that verbatim — `kind: "refused"`, `code`,
+   `errorOrigin`, `reason` — and `allowanceSpent` is absent because nothing was charged. A refusal
+   that did reach the adapter (including a 429) carries `allowanceSpent: true`. One probe is one
+   candidate: no candidate failover, no retry-after-backoff, and no batch equivalent —
+   `probeAllModels` still reads the catalog once and never dispatches. The one retry is
+   same-candidate egress failover, and it exists because the first attempt produced no answer:
+   an egress-keyed 429 is refused by *that address*, the next exit has its own untouched
+   allowance, and re-leasing after `flagPoolCooldown` is what live traffic does. It is bounded by
+   `MAX_EGRESS_FAILOVERS` from the attempt loop, never re-runs for an account-scoped 429, a 5xx, a
+   transport error, or a candidate with a single exit, and `exitsTried` on the outcome reports how
+   many exits the probe actually burned. Each exit attempt gets a freshly armed deadline and
+   signal so a retry cannot inherit a consumed budget; the probe's own budget remains the outer
+   bound.
    > **Koreksi.** Two earlier readings in this doc were wrong and are retracted here. First, that
    > this was purely a per-address cap with the handle irrelevant: the handle sharing was real
    > (every caller collided on `opencode:default`) but it was not the cause of the observed 429s.

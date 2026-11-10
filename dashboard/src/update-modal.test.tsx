@@ -54,12 +54,21 @@ mock.module("./lib/api", () => ({
   consoleRequest: async (path: string, init?: RequestInit) => {
     requestCalls.push({ path, method: (init?.method ?? "GET").toUpperCase() });
     if (path === "/update/start") return { accepted: true };
+    if (path === "/update/check") {
+      return {
+        current: "2.0.0",
+        latest: "2.0.5",
+        available: true,
+        notesUrl: null,
+        publishedAt: null,
+      };
+    }
     return await realConsoleRequest(path, init);
   },
 }));
 
 const { UpdateModal } = await import("./components/UpdateModal");
-const { useStartUpdate } = await import("./lib/hooks/update");
+const { useCheckUpdate, useStartUpdate } = await import("./lib/hooks/update");
 const { queryKeys } = await import("./lib/query-keys");
 
 const AVAILABLE: UpdateStatus = {
@@ -82,6 +91,21 @@ function render(status: UpdateStatus | undefined): string {
   if (status) client.setQueryData(queryKeys.update.status, status);
   return renderToStaticMarkup(
     createElement(QueryClientProvider, { client }, createElement(UpdateModal)),
+  );
+}
+
+/**
+ * Renders the manual-open path, which is the only one that shows the idle
+ * "no update available" view — the automatic path returns null when there is
+ * nothing installable.
+ */
+function renderManual(status: UpdateStatus): string {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(queryKeys.update.status, status);
+  return renderToStaticMarkup(
+    <QueryClientProvider client={client}>
+      <UpdateModal open />
+    </QueryClientProvider>,
   );
 }
 
@@ -133,6 +157,29 @@ describe("update modal", () => {
     if (!run) throw new Error("mutation was not captured");
     await run();
     expect(requestCalls).toContainEqual({ path: "/update/start", method: "POST" });
+  });
+
+  test("the no-update view offers a check that calls the check endpoint", () => {
+    // The automatic path returns null when nothing is available, so the idle
+    // view is only reachable through a manual open.
+    expect(render(statusWith({ available: false }))).toBe("");
+    const manual = renderManual(statusWith({ available: false }));
+    expect(manual).toContain("No update available");
+    expect(manual).toContain("Check again");
+  });
+
+  test("the check hook posts to the check endpoint", async () => {
+    let run: (() => Promise<unknown>) | undefined;
+    function Probe(): null {
+      const mutation = useCheckUpdate();
+      run = () => mutation.mutateAsync();
+      return null;
+    }
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(Probe)));
+    if (!run) throw new Error("mutation was not captured");
+    await run();
+    expect(requestCalls).toContainEqual({ path: "/update/check", method: "POST" });
   });
 
   test("a gateway without the launcher points at the terminal and offers no action", () => {

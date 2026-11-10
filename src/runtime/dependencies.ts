@@ -24,6 +24,8 @@ import {
 } from "../security/model-abuse";
 import { checkReadiness, resolveRedisMode } from "../persistence/readiness";
 import { ProxyRequestPreparer } from "../transport/request/preparer";
+import { createProbeDispatcher } from "../providers/discovery/probe-dispatch";
+import type { ProbeDispatchFn } from "../providers/discovery/probe-dispatch";
 import { DrizzleNetworkPoolLoader } from "../network/pool/loader";
 import {
   PoolAgentResolver,
@@ -80,6 +82,12 @@ export interface ProductionDeps {
   resolveOAuthRefresher: (providerId: string) => Promise<OAuthTokenRefresher | undefined>;
   oauthRefreshService: OAuthRefreshService;
   admissionService: ApiKeyAdmissionService;
+  /**
+   * The paid probe path, bound once at composition: a real completion through
+   * the shared lease layer, so an opted-in console probe reproduces live
+   * traffic's routing and egress refusals instead of a bespoke fetch.
+   */
+  probeDispatcher: ProbeDispatchFn;
 }
 
 export async function buildProductionDeps(): Promise<ProductionDeps> {
@@ -272,6 +280,14 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // block the listener for up to the 4s fetch timeout on a blackholed network,
   // while the pinned fallback was already serving requests correctly.
   refreshClineClientVersion();
+  // The probe's paid path is bound here, not inside the catalog store: it needs
+  // the same routing engine, snapshot service, and validated binding factory
+  // live dispatch uses, and the console must not construct a second copy.
+  const proxyPreparer = new ProxyRequestPreparer({
+    snapshotService,
+    routingEngine,
+    admissionService,
+  });
   return {
     db,
     redis,
@@ -279,11 +295,7 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     resolveProviderAdapter: (providerId) => registry.resolve(providerId),
     bundledModelCatalog: bundledCatalog,
     byokUpstreamHosts,
-    proxyPreparer: new ProxyRequestPreparer({
-      snapshotService,
-      routingEngine,
-      admissionService,
-    }),
+    proxyPreparer,
     networkBindingFactory,
     ipAbuseProtection,
     modelStrikes,
@@ -293,6 +305,12 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
     telemetryBuffer,
     poolSelector,
     admissionService,
+    probeDispatcher: createProbeDispatcher({
+      planner: proxyPreparer,
+      networkBindingFactory,
+      poolSelector,
+      db,
+    }),
     trustedProxyBoundary: resolveTrustedProxyBoundary(),
     providerRegistry: registry,
     resolveOAuthRefresher: (providerId) => registry.resolveRefresher(providerId),

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProviderDispatchTarget, ProviderAdapter } from "../../../src/providers/provider-registry";
 import { candidateFor, canonicalRequest, dispatchContext, dispatchJson } from "../../helpers/provider-dispatch";
 import { createApiKeyAdapter } from "../../../src/providers/integrations/configured-provider";
+import { GENERIC_API_KEY_SPECS } from "../../../src/providers/integrations/configured-openai-providers";
 import { modelsDevCatalog } from "../../../src/providers/discovery/models-dev-catalog";
 import {
   OPENCODE_FREE_MODELS,
@@ -17,6 +18,14 @@ import { VERSION_SOURCES, _resetOpenCodeVersion, getOpenCodeVersion, resolveOpen
 const CHAT_OK: Record<string, unknown> = {
   choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
 };
+
+/**
+ * A real 1x1 red PNG, not a placeholder string. Image passthrough is only
+ * proven when the exact bytes the caller sent reach the wire, so the fixture
+ * has to be decodable to make "byte-identical" a meaningful assertion.
+ */
+const PNG_1X1_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
 const TIERS: readonly {
   readonly id: ProviderDispatchTarget["provider_id"];
@@ -261,6 +270,157 @@ describe("OpenCode provider header policy", () => {
       "grep",
     ]);
   });
+
+  test("carries caller tools alongside the fingerprint quartet on Free chat payloads", async () => {
+    // The Free gate requires the quartet, but the caller's own tools are what
+    // the conversation actually runs on. Both must reach the wire in one body,
+    // and the caller's schema must survive `completeOpenCodeToolSchemas`
+    // intact — completed, not stripped to an empty object.
+    const callerSchema = {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        token: { type: "string" },
+        options: {
+          type: "object",
+          properties: { ttl: { type: "number" } },
+        },
+      },
+      required: ["name"],
+    };
+    const captured = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      request: {
+        ...canonicalRequest(),
+        tools: [
+          {
+            name: "get_secret",
+            description: "Read a secret by name.",
+            jsonSchema: callerSchema,
+          },
+        ],
+        tool_choice: { type: "tool", name: "get_secret" },
+      },
+      context: dispatchContext("opencodeft", { credential_kind: "none" }),
+    });
+
+    const tools = captured.body["tools"] as Array<Record<string, unknown>>;
+    const functionsByName = Object.fromEntries(
+      tools.map((tool) => {
+        const fn = tool["function"] as Record<string, unknown>;
+        return [fn["name"] as string, fn];
+      }),
+    ) as Record<string, Record<string, unknown>>;
+    expect(tools.map((tool) => (tool["function"] as Record<string, unknown>)?.["name"])).toEqual([
+      "get_secret",
+      "bash",
+      "glob",
+      "grep",
+      "read",
+    ]);
+
+    const callerTool = functionsByName["get_secret"] as Record<string, unknown>;
+    expect(callerTool["description"]).toBe("Read a secret by name.");
+    const parameters = callerTool["parameters"] as Record<string, unknown>;
+    expect(parameters).toBeInstanceOf(Object);
+    expect(parameters["type"]).toBe("object");
+    expect(parameters["required"]).toEqual(["name", "token", "options"]);
+    const properties = parameters["properties"] as Record<string, unknown>;
+    expect((properties["token"] as Record<string, unknown>)["type"]).toBe("string");
+    const options = properties["options"] as Record<string, unknown>;
+    expect(options["required"]).toEqual(["ttl"]);
+
+    for (const name of ["bash", "glob", "grep", "read"]) {
+      expect(functionsByName[name]?.["description"]).toBe(
+        "This tool is currently unavailable and must not be used.",
+      );
+    }
+    expect(captured.body["tool_choice"]).toEqual({
+      type: "function",
+      function: { name: "get_secret" },
+    });
+    expect(captured.body["stream"]).toBe(true);
+
+    // Case variants of a quartet member collapse to one lowercase entry; a
+    // duplicate `Bash` + `bash` pair is rejected upstream as duplicate tools.
+    const variants = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      request: {
+        ...canonicalRequest(),
+        tools: [
+          { name: "Bash", jsonSchema: { type: "object" } },
+          { name: "bash", jsonSchema: { type: "object" } },
+        ],
+      },
+      context: dispatchContext("opencodeft", { credential_kind: "none" }),
+    });
+    const variantNames = (variants.body["tools"] as Array<Record<string, unknown>>).map(
+      (tool) => (tool["function"] as Record<string, unknown>)?.["name"],
+    );
+    expect(variantNames.filter((name) => name === "bash")).toHaveLength(1);
+    expect(variantNames).toEqual(["bash", "glob", "grep", "read"]);
+  });
+
+  test("carries image parts to the Free chat wire byte for byte", async () => {
+    // Vision input must survive canonical → chat serialization untouched: the
+    // data URL is opaque caller bytes, and a re-encoded or truncated value is
+    // a different image.
+    const captured = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(OPENCODE_FREE_SPEC, fetchImpl),
+      candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+      request: {
+        ...canonicalRequest(),
+        messages: [
+          {
+            role: "user",
+            content: [
+              { kind: "text", text: "what is in this image" },
+              { kind: "image", payload: { url: PNG_1X1_DATA_URL, detail: "high" } },
+            ],
+          },
+        ],
+      },
+      context: dispatchContext("opencodeft", { credential_kind: "none" }),
+    });
+
+    const messages = captured.body["messages"] as Array<Record<string, unknown>>;
+    const content = messages[0]?.["content"] as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(2);
+    expect(content[0]).toEqual({ type: "text", text: "what is in this image" });
+    expect(content[1]).toEqual({
+      type: "image_url",
+      image_url: { url: PNG_1X1_DATA_URL, detail: "high" },
+    });
+    // The bytes, not just the shape: the URL is passed through verbatim.
+    const imageUrl = (content[1]?.["image_url"] as Record<string, unknown>)["url"];
+    expect(imageUrl).toBe(PNG_1X1_DATA_URL);
+    expect(imageUrl).toContain("data:image/png;base64,");
+    expect(captured.body["stream"]).toBe(true);
+  });
+
+  test("does not inject the fingerprint quartet on other providers", async () => {
+    // The quartet is Free-specific gate behaviour. A generic OpenAI-compatible
+    // provider must receive exactly the caller's tools — hoisting the hook to
+    // every provider would silently rewrite every other upstream's tool list.
+    const captured = await dispatchJson({
+      create: (fetchImpl) => createApiKeyAdapter(GENERIC_API_KEY_SPECS.groq, fetchImpl),
+      candidate: candidateFor("groq", "chat", "/chat/completions"),
+      request: {
+        ...canonicalRequest(),
+        tools: [{ name: "get_secret", jsonSchema: { type: "object" } }],
+      },
+    });
+
+    const tools = captured.body["tools"] as Array<Record<string, unknown>>;
+    const names = tools.map((tool) => (tool["function"] as Record<string, unknown>)?.["name"]);
+    expect(names).toEqual(["get_secret"]);
+    for (const name of ["bash", "glob", "grep", "read"]) {
+      expect(names).not.toContain(name);
+    }
+    expect(captured.body["stream"]).toBe(false);
+  });
 });
 
 /**
@@ -368,6 +528,54 @@ describe("OpenCode session identity", () => {
 
     expect(sessions).toHaveLength(2);
     expect(sessions[0]).not.toBe(sessions[1]);
+  });
+
+  test("a direct-dial free-tier 429 does not claim a pool was cooled", async () => {
+    // The dispatch context carries `network_pool_id` only when a pool slot was
+    // leased. A direct dial is refused by the same gate, and the gateway skips
+    // `flagPoolCooldown` for it — so the message must not describe that action.
+    const limitBody = {
+      type: "error",
+      error: {
+        type: "FreeUsageLimitError",
+        message: "Free usage limit reached. Subscribe to OpenCode Go to keep going.",
+      },
+    };
+    const adapter = createApiKeyAdapter(OPENCODE_FREE_SPEC, (async () =>
+      new Response(JSON.stringify(limitBody), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch);
+    const target = candidateFor("opencodeft", "chat", "/zen/v1/chat/completions");
+
+    for (const [egress, expectsCooldown] of [
+      [undefined, false],
+      ["pool-a", true],
+    ] as const) {
+      const failure = await (async () => {
+        try {
+          for await (const _event of adapter.dispatch(
+            canonicalRequest(),
+            target,
+            dispatchContext("opencodeft", { credential_kind: "none" }, egress),
+          )) {
+            // drain
+          }
+        } catch (error) {
+          return error as Error;
+        }
+        throw new Error("expected the free-tier gate to throw");
+      })();
+
+      expect(failure.message).toContain("keyed on the egress address");
+      expect(failure.message).toContain("only a different egress network changes that");
+      if (expectsCooldown) {
+        expect(failure.message).toContain("cools this (pool, provider) pair");
+      } else {
+        expect(failure.message).not.toContain("cools this (pool, provider) pair");
+        expect(failure.message).toContain("dialed direct");
+      }
+    }
   });
 
   test("a plain 429 and a 500 keep the session", async () => {

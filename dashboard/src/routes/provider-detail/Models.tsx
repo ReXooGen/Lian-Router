@@ -30,6 +30,7 @@ import {
   useSetModelEnabled,
 } from "../../lib/hooks/providers";
 import { UNKNOWN_LIMITS_TOOLTIP } from "../../lib/model-limits";
+import { probeRowView, type ProbeRowResult } from "../../lib/probe-view";
 import { toast } from "../../lib/toast";
 import { useTrackedTimeout } from "../../lib/use-timeout";
 import type { ModelCatalogEntry } from "../../lib/contracts";
@@ -269,12 +270,8 @@ function ModelCard({
   const probe = useProbeModel();
   const setEnabled = useSetModelEnabled();
   const [copied, setCopied] = useState(false);
-  const [probeResult, setProbeResult] = useState<{
-    ok: boolean;
-    latencyMs: number;
-    poolHost?: string;
-    mode?: "dispatch" | "catalog";
-  } | null>(null);
+  const [probeResult, setProbeResult] = useState<ProbeRowResult | null>(null);
+  const probeView = probeRowView(probeResult, probe.isPending);
   const scheduleCopyReset = useTrackedTimeout();
 
 
@@ -293,8 +290,15 @@ function ModelCard({
           setProbeResult({
             ok: result.ok,
             latencyMs: result.latencyMs,
-            ...(result.poolHost ? { poolHost: result.poolHost } : {}),
+            ...(result.kind ? { kind: result.kind } : {}),
             ...(result.mode ? { mode: result.mode } : {}),
+            ...(result.poolHost ? { poolHost: result.poolHost } : {}),
+            ...(result.sample ? { sample: result.sample } : {}),
+            ...(result.code ? { code: result.code } : {}),
+            ...(result.reason ? { reason: result.reason } : {}),
+            ...(result.errorOrigin ? { errorOrigin: result.errorOrigin } : {}),
+            ...(result.error ? { error: result.error } : {}),
+            ...(result.allowanceSpent ? { allowanceSpent: result.allowanceSpent } : {}),
           });
           // The exit is the point of a free-tier probe: the same account can
           // fail on one address and succeed on the next, so the operator needs
@@ -304,7 +308,7 @@ function ModelCard({
           // A catalog hit says the model is published upstream, not that it
           // generates. Reporting it as a pass would be the misleading green
           // tick this probe exists to avoid, so it gets its own wording and the
-          // operator is told what it would cost to find out for real.
+          // row carries the control that answers the real question.
           if (result.mode === "catalog") {
             if (!result.ok) {
               toast.error(`${model.modelId} not in the published catalog · ${via}`, result.error ?? "Unknown error");
@@ -312,12 +316,18 @@ function ModelCard({
             }
             toast.success(
               `${model.modelId} · listed upstream · ${via}`,
-              "No completion was sent, so no allowance was spent. Run a real dispatch to prove it generates.",
+              "No completion was sent, so no allowance was spent.",
             );
             return;
           }
           if (!result.ok) {
-            toast.error(`${model.modelId} probe failed · ${via}`, result.error ?? "Unknown error");
+            // The code and the sub-reason are the actionable part: a
+            // `proxy_pool_unhealthy` refusal is a routing fault the operator
+            // fixes in provider settings, not a provider outage.
+            toast.error(
+              `${model.modelId} · refused · ${result.code ?? "unknown_error"} · ${via}`,
+              result.error ?? "Unknown error",
+            );
             return;
           }
           const sample = result.sample?.trim() ?? "";
@@ -550,6 +560,107 @@ function ModelCard({
           </span>
         </div>
 
+        {/*
+          The probe's answer lands here, not in a toast: a toast is gone in four
+          seconds and the operator is reading a classified refusal he has to act
+          on. A listing gets the secondary control beside it because "run a real
+          dispatch" was advice with no button behind it.
+        */}
+        {probeResult === null ? null : (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "flex-start",
+              gap: "8px",
+              minWidth: 0,
+              padding: "6px 8px",
+              borderRadius: "8px",
+              fontSize: "11px",
+              lineHeight: 1.45,
+              ...(probeView.tone === "bad"
+                ? {
+                    color: "var(--red)",
+                    background: "color-mix(in srgb, var(--red) 8%, transparent)",
+                  }
+                : probeView.tone === "ok"
+                  ? {
+                      color: "var(--green)",
+                      background: "color-mix(in srgb, var(--green) 8%, transparent)",
+                    }
+                  : { color: "var(--text-secondary)", background: "var(--surface-1)" }),
+            }}
+          >
+            <div
+              style={{
+                flex: "1 1 200px",
+                minWidth: 0,
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "8px",
+              }}
+            >
+              <span
+                style={{ display: "inline-flex", flexShrink: 0, marginTop: "1px" }}
+                aria-hidden="true"
+              >
+                {probeView.tone === "bad" ? (
+                  <AlertTriangle size={12} />
+                ) : probeView.tone === "ok" ? (
+                  <CheckCircle2 size={12} />
+                ) : (
+                  <Check size={12} />
+                )}
+              </span>
+              <div
+                style={{
+                  flex: "1 1 auto",
+                  minWidth: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
+                  {model.modelId} · {probeView.headline}
+                  {probeView.allowanceNote === undefined ? null : ` · ${probeView.allowanceNote}`}
+                </span>
+                {probeView.detail === undefined ? null : (
+                  <span style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}>
+                    {probeView.detail}
+                  </span>
+                )}
+              </div>
+            </div>
+            {probeView.canProve ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={probe.isPending}
+                onClick={() => runProbe(true)}
+                aria-label={`Prove ${model.modelId} generates — spends one allowance unit`}
+                title="Send one real completion through the gateway's own dispatch path. Costs one allowance unit on an address-keyed provider."
+                style={{
+                  flex: "1 1 auto",
+                  minWidth: 0,
+                  maxWidth: "100%",
+                  whiteSpace: "normal",
+                  padding: "2px 6px",
+                }}
+                icon={
+                  probe.isPending ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <FlaskConical size={11} />
+                  )
+                }
+              >
+                {probeView.proveLabel}
+              </Button>
+            ) : null}
+          </div>
+        )}
+
         {/* Actions: single row, equal weights — delete is a quiet icon, not a full-width alarm */}
         <div style={{ display: "flex", gap: "6px" }}>
           <Button
@@ -607,18 +718,6 @@ function ModelCard({
                   : probeResult
                     ? "Fail"
                     : "Test"}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={probe.isPending}
-            onClick={() => runProbe(true)}
-            aria-label={`Spend quota to prove ${model.modelId} generates`}
-            title="Send one real completion. Costs one allowance unit on an address-keyed provider."
-            style={{ flexShrink: 0 }}
-            icon={<FlaskConical size={12} />}
-          >
-            Generate
           </Button>
           <Button
             variant="ghost"

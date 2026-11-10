@@ -1090,6 +1090,86 @@ html[data-glass-enabled="true"] .card-solid {
   margin-top: 1px;
 }
 
+/* Badge and update control share one row under the brand name. `min-width: 0`
+ * plus the truncating button label keep the pair inside the collapsed drawer
+ * and the mobile rail instead of pushing "LianRouter" out of the header. */
+.brand-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The badge is short and must never wrap or shrink; the button yields first so
+ * the version stays readable in the narrow drawer. */
+.brand-version-badge {
+  flex: none;
+}
+
+/* The control only renders when it can act (see `updateButtonState().hidden`),
+ * so it has no neutral idle look: every rendered state is green. The green is
+ * mixed toward `--text-primary` because the raw token fails contrast as 10px
+ * text on the light sidebar — `#4c9368` on the composited glass surface
+ * (`#fefcf7`) is 3.6:1, while the 65/35 mix reaches 4.9:1 resting and 4.5:1 on
+ * the stronger available background. The hue is unchanged; only luminance
+ * moves, so both themes stay green rather than drifting to a different colour. */
+.brand-update-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: color-mix(in srgb, var(--green) 65%, var(--text-primary));
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  transition: all var(--dur-micro) var(--ease-spring);
+}
+
+.brand-update-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+  border-color: color-mix(in srgb, var(--green) 48%, transparent);
+}
+
+.brand-update-button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.brand-update-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Accent tone is the only signal an update exists without opening the modal.
+ * Same green as the resting state, raised in weight — background and border
+ * get stronger, not a different hue. */
+.brand-update-button--available {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+}
+
+.brand-update-button--available:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--green) 30%, transparent);
+}
+
+.brand-update-button-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-update-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--green);
+  flex: none;
+}
+
 /* Navigation Groups */
 .nav-group-section {
   margin-top: 14px;

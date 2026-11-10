@@ -58,6 +58,7 @@ import type { CliToolService } from "./cli-tools/service";
 import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { RouteSnapshotService } from "../transport/routing/route-model";
 import type { ApiKeyAdmissionService } from "../security/admission";
+import type { ProbeDispatchFn } from "../providers/discovery/probe-dispatch";
 import type { ModelStrikeService } from "../security/model-abuse";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
@@ -82,6 +83,8 @@ export interface ConsoleDomainContext {
   readonly poolSelector: NetworkPoolSelector;
   readonly telemetryBuffer: TelemetryBatchBuffer;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  /** The paid probe path; see `ConsoleApiCompositionDeps.probeDispatcher`. */
+  readonly probeDispatcher: ProbeDispatchFn;
   /** Graduated model-abuse strikes, for the ban list and its lift action. */
   readonly modelStrikes?: ModelStrikeService;
   /**
@@ -119,6 +122,7 @@ export function registerConsoleDomains(
     snapshotInvalidator: ctx.routeSnapshotService,
     poolSelector: ctx.poolSelector,
     coolPool: (poolId, providerId, error) => flagPoolCooldown(ctx.poolSelector, ctx.db, poolId, providerId, error),
+    dispatchProbe: ctx.probeDispatcher,
   });
   const generationStore = new DrizzleGenerationStore(ctx.db, {
     outboundFetchFor: providerOutbound,

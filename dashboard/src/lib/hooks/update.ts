@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { consoleRequest, isRecord } from "../api";
 import type { ApiErrorShape } from "../api";
-import type { UpdateProgress, UpdateStatus } from "../contracts";
+import type { UpdateCheck, UpdateProgress, UpdateStatus } from "../contracts";
 import { queryKeys } from "../query-keys";
 import { toast } from "../toast";
 import { QUERY_OPTIONS, querySignal } from "./common";
@@ -77,6 +77,40 @@ export function useUpdateStatus(options: { poll?: boolean } = {}) {
     refetchInterval: (query) => {
       if (!poll) return false;
       return query.state.data?.running === true ? RUNNING_POLL_MS : IDLE_POLL_MS;
+    },
+  });
+}
+
+/**
+ * Asks the launcher to re-read the release feed now.
+ *
+ * Separate from `useStartUpdate` because it is a read: it changes nothing on
+ * disk, so a failure here must not read as "the install failed", and a success
+ * must not read as "an install started". The dashboard's "Check again" button
+ * drives this and then refetches the status query, because the launcher
+ * publishes the snapshot it found and `GET /update` is what renders it.
+ */
+export function useCheckUpdate() {
+  const queryClient = useQueryClient();
+  return useMutation<UpdateCheck, ApiErrorShape, void>({
+    mutationFn: () => consoleRequest("/update/check", { method: "POST" }),
+    // Refetch on both outcomes: a check that failed leaves the launcher's
+    // previous snapshot in place, and that snapshot is still the newest truth
+    // the console has. Refetching also refreshes `running`, so a check that
+    // collided with an install shows the progress bar instead of the idle view.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.update.status });
+    },
+    onError: (error) => {
+      const description =
+        error.code === "update_in_progress"
+          ? "An update is already running."
+          : error.code === "launcher_unavailable"
+            ? "This gateway was not started by the lianrouter launcher. Run lianrouter update in the terminal."
+            : error.code === "launcher_error"
+              ? "The launcher could not read the release feed."
+              : error.message;
+      toast.error("Update check failed", description);
     },
   });
 }

@@ -1834,4 +1834,69 @@ describe("POST /providers/:providerId/models/probe", () => {
     expect(response.status).toBe(200);
   });
 });
+
+/**
+ * The all-accounts probe fans one request out across every configured account,
+ * so honouring `spendQuota` there would spend one allowance unit per account
+ * from a single click. That is the multiplication the flag exists to prevent,
+ * and the operator has no control that would show or stop it. It is refused
+ * loudly rather than silently downgraded, because a caller that asked to spend
+ * must not read a catalog answer as a paid one.
+ */
+describe("POST /providers/:providerId/accounts/probe", () => {
+  const access: AccessDecision = {
+    id: "key-1",
+    tenantId: "tenant-1",
+    scopes: ["dashboard:read", "dashboard:write", "providers:read", "providers:write", "models:read", "models:write"],
+    admissionIdentity: "key-1",
+  };
+
+  function batchApp(onProbe: () => void) {
+    const base = makeModelStore().store;
+    return createProviderCatalogRoutes({
+      store: {
+        ...base,
+        async probeAllAccounts(_tenantId: string, providerId: string) {
+          onProbe();
+          return { providerId, modelId: "mimo-v2.6-flash-free", results: [] };
+        },
+      },
+      accessResolver: () => access,
+      providerRegistry: testRegistry,
+    });
+  }
+
+  function batchRequest(body: Record<string, unknown>) {
+    return new Request("http://localhost/providers/opencodeft/accounts/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("refuses spendQuota without dispatching a single probe", async () => {
+    const calls: number[] = [];
+    const response = await batchApp(() => calls.push(1)).handle(
+      batchRequest({ modelId: "mimo-v2.6-flash-free", spendQuota: true }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { code: string; error: string };
+    expect(body.code).toBe("invalid_request");
+    expect(body.error).toContain("one completion per account");
+    // The refusal happens before the store is touched, so no account can have
+    // been probed and no unit can have been spent.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still probes every account when the flag is absent", async () => {
+    const calls: number[] = [];
+    const response = await batchApp(() => calls.push(1)).handle(
+      batchRequest({ modelId: "mimo-v2.6-flash-free" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+});
 }

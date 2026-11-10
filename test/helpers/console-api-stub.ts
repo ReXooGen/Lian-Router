@@ -27,6 +27,11 @@ export function createConsoleApiStub(db: LianRouterDatabase): ConsoleApiComposit
     },
     networkBindingFactory: {} as never,
     admissionService: { purgeKey: async () => {} } as never,
+    // No probe is dispatched by these tests; an unreachable dispatcher makes
+    // that explicit instead of fabricating a generation.
+    probeDispatcher: async () => {
+      throw new Error("console api stub: probe dispatch not wired");
+    },
     redis: {} as never,
     oauthRefreshService: {} as never,
   };

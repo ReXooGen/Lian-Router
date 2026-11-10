@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { GatewayError } from "../../../src/transport/gateway-error";
+import { mapUpstreamHttpError } from "../../../src/transport/failure-policy";
 import { encryptCredential } from "../../../src/security/crypto";
 import { models, networkPools, providerAccounts, providers } from "../../../src/persistence/schema";
 import { createProviderProbingServiceForTests } from "../../../src/providers/discovery/probing-service";
+import type { ProbeDispatchRequest } from "../../../src/providers/discovery/probe-dispatch";
 import { applyDiscoveredWire, constrainWireFamily, resolveDiscoveredWire, staticEndpointForWire, supportedWireFamiliesForProvider } from "../../../src/providers/discovery/probe-wire";
 import { CLINE_MODELS } from "../../../src/providers/integrations/cline/cline";
 import { createDefaultProviderRegistry } from "../../../src/providers/default-registry";
@@ -654,18 +656,62 @@ describe("ProviderProbingService discovery hardening", () => {
     const selector = new NetworkPoolSelector();
     const probing = probingService(db, {
       poolSelector: selector,
-      outboundFetchFor: () => ({
-        fetch: (async () =>
-          new Response(
-            typeof options.body === "string" ? options.body : JSON.stringify(options.body),
-            {
-              status: options.status,
-              headers: { "content-type": options.contentType ?? "application/json" },
-            },
-          )) as unknown as typeof fetch,
-        networkPoolId: options.poolId ?? "pool-burned",
-        release: () => {},
-      }),
+      // The pool-cooldown decision lives on the paid path, so this fixture
+      // exercises that path. The double does not invent a classification: it
+      // hands the body to the production `mapUpstreamHttpError`, which is the
+      // same classifier live dispatch uses, so a cooldown assertion here means
+      // what it means in production.
+      dispatchProbe: async () => {
+        const response = new Response(
+          typeof options.body === "string" ? options.body : JSON.stringify(options.body),
+          {
+            status: options.status,
+            headers: { "content-type": options.contentType ?? "application/json" },
+          },
+        );
+        if (!response.ok) {
+          let classified: unknown;
+          try {
+            await mapUpstreamHttpError(response.clone(), "opencodeft");
+          } catch (error) {
+            classified = error;
+          }
+          return {
+            events: [],
+            ttfbMs: undefined,
+            networkPoolId: options.poolId ?? "pool-burned",
+            reachedUpstream: true,
+            exitsTried: 1,
+            error: classified,
+          };
+        }
+        const payload = (await response.json().catch(() => undefined)) as
+          | { choices?: readonly unknown[] }
+          | undefined;
+        const hasChoices = (payload?.choices?.length ?? 0) > 0;
+        return {
+          events: hasChoices
+            ? [
+                {
+                  type: "content_delta" as const,
+                  sequence_number: 1,
+                  content: { kind: "text" as const, text: "pong" },
+                },
+                {
+                  type: "terminal" as const,
+                  sequence_number: 2,
+                  state: "complete" as const,
+                  stop_reason: "stop" as const,
+                },
+              ]
+            : [],
+          ttfbMs: hasChoices ? 5 : undefined,
+          networkPoolId: options.poolId ?? "pool-burned",
+          reachedUpstream: true,
+          exitsTried: 1,
+          error: undefined,
+        };
+      },
     });
     return { probing, selector };
   }
@@ -799,6 +845,36 @@ describe("ProviderProbingService discovery hardening", () => {
     expect(dialed).toHaveLength(1);
     expect(dialed[0]).toBe("https://opencode.ai/zen/v1/models");
     expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
+    // No dispatch was attempted, so nothing may claim a unit was spent and no
+    // generation verdict may be present.
+    expect(result.allowanceSpent).toBeUndefined();
+    expect(result.kind).toBeUndefined();
+  });
+
+  test("an explicit false is byte-identical to an absent flag", async () => {
+    // The default is the whole safety property: every existing caller omits the
+    // field, and a caller that passes `false` explicitly must not get a
+    // different probe. Both are asserted against the dispatch double, which
+    // must record zero calls.
+    const absent = paidProbe({ kind: "generated" });
+    const explicit = paidProbe({ kind: "generated" });
+
+    const absentResult = await absent.probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+    });
+    const explicitResult = await explicit.probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+      spendQuota: false,
+    });
+
+    expect(absent.calls).toHaveLength(0);
+    expect(explicit.calls).toHaveLength(0);
+    // Same shape, same verdicts: the payload must not gain a field that only
+    // one of the two carries.
+    expect(Object.keys(absentResult).sort()).toEqual(Object.keys(explicitResult).sort());
+    expect(absentResult.mode).toBe("catalog");
+    expect(explicitResult.mode).toBe("catalog");
+    expect(absentResult.ok).toBe(explicitResult.ok);
   });
 
   test("an egress-scoped probe reports an unlisted model as absent, not as a failure to generate", async () => {
@@ -813,8 +889,205 @@ describe("ProviderProbingService discovery hardening", () => {
     expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
   });
 
-  test("an egress-scoped probe dispatches when the caller opts into spending quota", async () => {
-    const dialed: string[] = [];
+  /**
+   * Fixture for the paid path. `dispatchProbe` is the seam under test: it
+   * records every call and returns whatever outcome the case wants, so the
+   * suite can assert *how many* completions were sent and with what budget
+   * without standing up a route snapshot, a pool, or Postgres.
+   */
+  function paidProbe(
+    outcome:
+      | { kind: "generated" }
+      | { kind: "refused"; error: unknown; reachedUpstream?: boolean; exitsTried?: number },
+    options: { requiresAccount?: boolean } = {},
+  ) {
+    const calls: ProbeDispatchRequest[] = [];
+    const db = {
+      select: (_columns?: unknown) => ({
+        from: (table: unknown) => ({
+          where: (_condition?: unknown) => {
+            const rows =
+              table === providers
+                ? [{ requiresAccount: options.requiresAccount ?? false, compatibilityProfile: null, baseUrl: null }]
+                : table === providerAccounts
+                  ? []
+                  : [];
+            return Object.assign(Promise.resolve(rows), {
+              limit: async (_n?: number) => rows,
+            });
+          },
+        }),
+      }),
+      update: (_table: unknown) => ({
+        set: (_values: unknown) => ({ where: async (_condition?: unknown) => [] }),
+      }),
+      insert: (_table: unknown) => ({ values: async (_values: unknown) => [] }),
+    };
+    const probing = probingService(db, {
+      outboundFetchFor: () => ({
+        fetch: (async () =>
+          new Response(JSON.stringify({ data: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })) as unknown as typeof fetch,
+        networkPoolId: "pool-paid",
+        release: () => {},
+      }),
+      dispatchProbe: async (input: ProbeDispatchRequest) => {
+        calls.push(input);
+        if (outcome.kind === "generated") {
+          return {
+            events: [
+              {
+                type: "content_delta",
+                sequence_number: 1,
+                content: { kind: "text", text: "I am a model." },
+              },
+              {
+                type: "terminal",
+                sequence_number: 2,
+                state: "complete",
+                stop_reason: "stop",
+              },
+            ],
+            ttfbMs: 12,
+            networkPoolId: "pool-paid",
+            reachedUpstream: true,
+            exitsTried: 1,
+            error: undefined,
+          };
+        }
+        return {
+          events: [],
+          ttfbMs: undefined,
+          networkPoolId: undefined,
+          reachedUpstream: outcome.reachedUpstream ?? false,
+          exitsTried: outcome.exitsTried ?? 0,
+          error: outcome.error,
+        };
+      },
+    });
+    return { probing, calls };
+  }
+
+  test("an egress-scoped probe dispatches exactly one minimal completion when the caller opts in", async () => {
+    const { probing, calls } = paidProbe({ kind: "generated" });
+
+    const result = await probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+      spendQuota: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("generated");
+    expect(result.mode).toBe("dispatch");
+    // The whole point of the opt-in: one completion, never a batch, never a
+    // retry. A second call would spend a second allowance unit.
+    expect(calls).toHaveLength(1);
+    // The budget must stay minimal — a probe is not a workload. The request is
+    // non-streaming on the client side; the adapter forces `stream: true`
+    // upstream, which is the wire's own requirement.
+    const request = calls[0]!.canonicalRequest;
+    expect(request.stream).toBe(false);
+    expect(request.generation_controls.max_tokens).toBeLessThanOrEqual(1024);
+    expect(request.messages).toHaveLength(1);
+    expect(result.allowanceSpent).toBe(true);
+  });
+
+  test("a route refused before egress maps to the refused kind with its classified code", async () => {
+    // The shape the operator actually hits on this provider today: the gateway
+    // refuses locally because the candidate carries no pool while a pooled
+    // sibling exists for another tenant. Nothing left the box, so no allowance
+    // was charged and the operator must read it as a routing fault.
+    const refused = new GatewayError(
+      "proxy_pool_unhealthy",
+      503,
+      "This route has proxy pools configured, but the selected candidate carries none.",
+      { reason: "candidate_pool_missing" },
+      "network",
+    );
+    const { probing, calls } = paidProbe({ kind: "refused", error: refused });
+
+    const result = await probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+      spendQuota: true,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("refused");
+    expect(result.code).toBe("proxy_pool_unhealthy");
+    expect(result.reason).toBe("candidate_pool_missing");
+    expect(result.errorOrigin).toBe("network");
+    expect(result.httpStatus).toBe(503);
+    expect(result.error).toContain("selected candidate carries none");
+    // A local refusal is free: claiming it spent a unit would make the operator
+    // avoid a probe that costs nothing.
+    expect(result.allowanceSpent).toBeUndefined();
+  });
+
+  test("the payload reports how many exits the probe burned, only when it rotated", async () => {
+    // One spent exit and nine spent exits are different operator problems. The
+    // field is absent for a single attempt so a default probe's payload stays
+    // what it was, and present once failover actually happened.
+    const refused = new GatewayError(
+      "quota_exceeded",
+      429,
+      "free usage limit reached",
+      { upstreamStatus: 429, rateLimitScope: "network" },
+      "upstream",
+    );
+    const single = paidProbe({ kind: "refused", error: refused, reachedUpstream: true });
+    const singleResult = await single.probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+      spendQuota: true,
+    });
+    expect(singleResult.exitsTried).toBeUndefined();
+
+    const rotated = paidProbe({
+      kind: "refused",
+      error: refused,
+      reachedUpstream: true,
+      exitsTried: 9,
+    });
+    const rotatedResult = await rotated.probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+      spendQuota: true,
+    });
+    expect(rotatedResult.exitsTried).toBe(9);
+  });
+
+  test("a refused dispatch never retries", async () => {
+    // A retryable-looking failure still must not be retried here: the second
+    // attempt would charge a second unit for an answer already given.
+    const refused = new GatewayError(
+      "quota_exceeded",
+      429,
+      "free usage limit reached",
+      { upstreamStatus: 429, rateLimitScope: "network" },
+      "upstream",
+    );
+    const { probing, calls } = paidProbe({ kind: "refused", error: refused, reachedUpstream: true });
+
+    const result = await probing.probeModel("tenant-1", "opencodeft", {
+      modelId: "mimo-v2.6-flash-free",
+      spendQuota: true,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result.kind).toBe("refused");
+    expect(result.code).toBe("quota_exceeded");
+    // It reached the provider, so the unit is gone even though no output came back.
+    expect(result.allowanceSpent).toBe(true);
+  });
+
+  test("a dispatch double that throws produces one call and one refusal, never a retry", async () => {
+    // The strongest form of "no retry": the failure escapes the dispatch call
+    // itself rather than arriving as a returned outcome, which is exactly the
+    // shape a retry loop would catch and re-enter. One throw must yield one
+    // call and a `refused` result — a second attempt would spend a second unit
+    // for an answer the first attempt already gave.
+    const calls: ProbeDispatchRequest[] = [];
     const probing = probingService(
       {
         select: (_columns?: unknown) => ({
@@ -836,18 +1109,25 @@ describe("ProviderProbingService discovery hardening", () => {
         insert: (_table: unknown) => ({ values: async (_values: unknown) => [] }),
       },
       {
-        outboundFetchFor: () =>
-          (async (input: RequestInfo | URL) => {
-            dialed.push(String(input));
-            return new Response(
-              JSON.stringify({
-                id: "chatcmpl-1",
-                choices: [{ message: { content: "pong" }, finish_reason: "stop" }],
-                usage: { prompt_tokens: 5, completion_tokens: 1 },
-              }),
-              { status: 200, headers: { "content-type": "application/json" } },
-            );
-          }) as unknown as typeof fetch as never,
+        outboundFetchFor: () => ({
+          fetch: (async () =>
+            new Response(JSON.stringify({ data: [] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })) as unknown as typeof fetch,
+          networkPoolId: "pool-paid",
+          release: () => {},
+        }),
+        dispatchProbe: async (input: ProbeDispatchRequest) => {
+          calls.push(input);
+          throw new GatewayError(
+            "transport_closed",
+            502,
+            "upstream closed the connection",
+            { upstreamStatus: 502 },
+            "upstream",
+          );
+        },
       },
     );
 
@@ -856,9 +1136,47 @@ describe("ProviderProbingService discovery hardening", () => {
       spendQuota: true,
     });
 
+    expect(calls).toHaveLength(1);
+    expect(result.kind).toBe("refused");
+    expect(result.code).toBe("transport_closed");
+    // The throw happened before the adapter was reached, so no unit was charged
+    // and the caller is told exactly that.
+    expect(result.allowanceSpent).toBeUndefined();
+  });
+
+  test("the opt-in flag is a no-op for a credential-keyed provider", async () => {
+    // Such a provider's probe has always dispatched, through its own account
+    // selection and failover. Routing it through the paid path would change
+    // both, so the flag must not touch it.
+    const dialed: string[] = [];
+    const { calls } = paidProbe({ kind: "generated" });
+    const probing = probingService(probingDb({ accounts: [], requiresAccount: false }), {
+      outboundFetchFor: () =>
+        (async (input: RequestInfo | URL) => {
+          dialed.push(String(input));
+          return new Response(
+            JSON.stringify({
+              id: "chatcmpl-2",
+              choices: [{ message: { content: "hello" }, finish_reason: "stop" }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch as never,
+      dispatchProbe: async () => {
+        throw new Error("credential-keyed providers must not take the paid probe path");
+      },
+    });
+
+    const result = await probing.probeModel("tenant-1", "openai", {
+      modelId: "gpt-4o-mini",
+      wireFamily: "chat",
+      spendQuota: true,
+    });
+
     expect(result.ok).toBe(true);
     expect(result.mode).toBe("dispatch");
     expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(true);
+    expect(calls).toHaveLength(0);
   });
 
   test("a credential-scoped provider still dispatches by default", async () => {
@@ -905,6 +1223,28 @@ describe("ProviderProbingService discovery hardening", () => {
     expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
     expect(batch.results.map((entry) => entry.mode)).toEqual(["catalog", "catalog", "catalog"]);
     expect(batch.results.map((entry) => entry.ok)).toEqual([true, true, false]);
+  });
+
+  test("the paid flag cannot reach the batch: test all never dispatches", async () => {
+    // `probeAllModels` takes no request body, but the guarantee must be
+    // asserted rather than assumed: the batch is the one place a per-model
+    // spend would multiply, so it must stay a single catalog read even when a
+    // caller arrives asking for paid probes.
+    const { probing, dialed } = catalogProbe({
+      catalogIds: ["mimo-v2.6-flash-free", "big-pickle"],
+    });
+
+    const batch = await probing.probeAllModels("tenant-1", "opencodeft", [
+      "mimo-v2.6-flash-free",
+      "big-pickle",
+    ]);
+
+    expect(dialed).toHaveLength(1);
+    expect(dialed[0]).toBe("https://opencode.ai/zen/v1/models");
+    expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
+    // Every entry is a listing, and none claims an allowance was charged.
+    expect(batch.results.every((entry) => entry.mode === "catalog")).toBe(true);
+    expect(batch.results.some((entry) => entry.ok === false)).toBe(false);
   });
 
   test("registry exposes discovery capabilities for wired providers", async () => {

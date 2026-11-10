@@ -54,6 +54,7 @@ const app = boot
               redis: boot.deps.redis,
               oauthRefreshService: boot.deps.oauthRefreshService,
               admissionService: boot.deps.admissionService,
+              probeDispatcher: boot.deps.probeDispatcher,
               modelStrikes: boot.deps.modelStrikes,
             },
           }

@@ -48,6 +48,8 @@ interface FakeLauncherOptions {
   readonly state?: unknown;
   readonly startStatus?: number;
   readonly startBody?: unknown;
+  readonly checkStatus?: number;
+  readonly checkBody?: unknown;
 }
 
 interface FakeLauncher {
@@ -82,6 +84,19 @@ async function startLauncher(options: FakeLauncherOptions = {}): Promise<FakeLau
       if (pathname === "/update/state") {
         return Response.json(
           options.state ?? { snapshot: null, progress: null, running: false },
+        );
+      }
+      if (pathname === "/update/check") {
+        const status = options.checkStatus ?? 200;
+        return Response.json(
+          options.checkBody ?? {
+            current: "2.0.0",
+            latest: "2.0.5",
+            available: true,
+            notesUrl: "https://github.com/lianrouter/lianrouter/releases/tag/v2.0.5",
+            publishedAt: "2026-10-20T10:00:00Z",
+          },
+          { status },
         );
       }
       if (pathname === "/update/start") {
@@ -277,5 +292,95 @@ describe("update routes", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ code: "unauthorized" });
+  });
+});
+
+describe("POST /update/check", () => {
+  test("proxies the launcher's check and returns the snapshot", async () => {
+    const audited: Array<Record<string, unknown>> = [];
+    const launcher = await startLauncher();
+
+    const response = await app(reader, audited).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      current: "2.0.0",
+      latest: "2.0.5",
+      available: true,
+      notesUrl: "https://github.com/lianrouter/lianrouter/releases/tag/v2.0.5",
+      publishedAt: "2026-10-20T10:00:00Z",
+    });
+    expect(launcher.requests).toEqual([{ path: "/update/check", token: "test-token" }]);
+    // Read-shaped: no audit row, unlike `start`.
+    expect(audited).toEqual([]);
+  });
+
+  test("maps a missing launcher to 503 launcher_unavailable", async () => {
+    delete process.env[LAUNCHER_HOME_ENV];
+
+    const response = await app(reader).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "launcher_unavailable" });
+  });
+
+  test("maps an in-flight install to 409 update_in_progress", async () => {
+    await startLauncher({
+      checkStatus: 409,
+      checkBody: { error: "an update is already running" },
+    });
+
+    const response = await app(reader).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "update_in_progress" });
+  });
+
+  test("maps a failed check to 502 launcher_error", async () => {
+    await startLauncher({
+      checkStatus: 502,
+      checkBody: { error: "update check failed: release feed unreachable" },
+    });
+
+    const response = await app(reader).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "launcher_error" });
+  });
+
+  test("rejects a body that is not a snapshot instead of claiming up to date", async () => {
+    await startLauncher({ checkBody: { current: "2.0.0" } });
+
+    const response = await app(reader).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "launcher_error" });
+  });
+
+  test("requires dashboard:read, which the reader scope satisfies", async () => {
+    await startLauncher();
+    const response = await app(reader).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(200);
+  });
+
+  test("rejects an unauthenticated caller", async () => {
+    const response = await app(undefined).handle(
+      new Request("http://console.test/update/check", { method: "POST" }),
+    );
+
+    expect(response.status).toBe(401);
   });
 });

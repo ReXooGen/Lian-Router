@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowUpCircle,
   Bell,
   Clock,
   Cpu,
@@ -41,13 +42,15 @@ import { useSystemHealth } from "../lib/hooks/system";
 import { Atmosphere } from "./Atmosphere";
 import { BrandMark } from "./BrandMark";
 import { DASHBOARD_RELEASE_LABEL } from "../lib/version";
+import { useUpdateStatus } from "../lib/hooks/update";
+import { updateButtonState, versionLabel } from "../lib/update-view";
 import { providerDisplayName } from "../lib/provider-names";
 import { useCustomizationAssetUrl, useCustomizationBranding } from "../lib/customization";
 import { useQuotaOverview } from "../lib/hooks/quota";
 import { quotaBarTone } from "../lib/quota-formatters";
 import { ProviderIcon } from "./ProviderIcon";
 import { UpdateModal } from "./UpdateModal";
-import type { SessionUser } from "../lib/contracts";
+import type { SessionUser, UpdateStatus } from "../lib/contracts";
 import { formatUptime } from "../lib/format";
 
 interface NavItemDef {
@@ -185,6 +188,22 @@ function useSafeSystemHealth() {
     return useSystemHealth();
   } catch {
     return { data: undefined, isError: false, isFetching: false, isPending: false };
+  }
+}
+
+/**
+ * The shell renders without a `QueryClient` in some embeds (and in the shell's
+ * own markup tests). The brand badge reads the update status for the live
+ * gateway version, so the read must degrade to `undefined` rather than throw
+ * through the whole navigation tree. `poll: false` keeps the badge a one-shot
+ * reader: the modal already owns the polling loop, and both share one cache
+ * entry, so the badge updates whenever that loop refreshes it.
+ */
+function useSafeUpdateStatus(): UpdateStatus | undefined {
+  try {
+    return useUpdateStatus({ poll: false }).data;
+  } catch {
+    return undefined;
   }
 }
 
@@ -866,10 +885,23 @@ export function DashboardShell({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const healthQuery = useSafeSystemHealth();
   const drawerPresence = usePresence(drawerOpen);
   const pull = usePullToRefresh(() => queryClient.invalidateQueries());
   const hasQueryClient = useHasQueryClient();
+  // One owner for the update surface: the brand-header button opens it and the
+  // modal closes it, so the two controls cannot disagree about visibility.
+  const updateStatus = useSafeUpdateStatus();
+  const updateButton = hasQueryClient
+    ? updateButtonState(updateStatus)
+    : {
+        disabled: true,
+        available: false,
+        title: "Update controls need the console's data layer.",
+        hidden: true,
+      };
+  const updateBadgeLabel = versionLabel(updateStatus, DASHBOARD_RELEASE_LABEL);
 
   const isHealthy = healthQuery.data?.status === "healthy";
 
@@ -945,8 +977,30 @@ export function DashboardShell({
               <div className="brand-name">
                 <span>LianRouter</span>
               </div>
-              <div className="brand-version-badge">
-                <span>{DASHBOARD_RELEASE_LABEL}</span>
+              <div className="brand-subline">
+                <div className="brand-version-badge">
+                  <span>{updateBadgeLabel}</span>
+                </div>
+                {/* Rendered only when the control can act or an install is in
+                 * flight; `updateOpen` must not be reachable from a control
+                 * that is not on screen, so this is a real conditional rather
+                 * than `display: none`. */}
+                {updateButton.hidden ? null : (
+                  <button
+                    type="button"
+                    className={`brand-update-button${updateButton.available ? " brand-update-button--available" : ""}`}
+                    aria-label="Check for updates"
+                    title={updateButton.title}
+                    disabled={updateButton.disabled}
+                    onClick={() => setUpdateOpen(true)}
+                  >
+                    <ArrowUpCircle size={12} />
+                    <span className="brand-update-button-label">Update</span>
+                    {updateButton.available ? (
+                      <span className="brand-update-dot" aria-hidden="true" />
+                    ) : null}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1066,7 +1120,9 @@ export function DashboardShell({
         </div>
       </div>
       <CommandPalette open={paletteOpen} close={() => setPaletteOpen(false)} />
-      {hasQueryClient ? <UpdateModal /> : null}
+      {hasQueryClient ? (
+        <UpdateModal open={updateOpen} onClose={() => setUpdateOpen(false)} />
+      ) : null}
     </>
   );
 }

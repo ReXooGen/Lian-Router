@@ -53,6 +53,19 @@ const DIST_ENTRY = "dist";
 const SUPPORTED_PLATFORMS: Record<string, true> = { win32: true, darwin: true, linux: true };
 const SUPPORTED_ARCHES: Record<string, true> = { x64: true, arm64: true };
 
+/**
+ * The literal `bun build --compile` leaves in the executable for `package.json`.
+ *
+ * `src/transport/version.ts` imports the manifest, so the whole object is
+ * inlined at build time; the minifier drops the whitespace but keeps the key
+ * order and quoting, which is what makes the needle stable. Verified against a
+ * real artifact (`name:"lianrouter",version:"2.2.0",private:!0,...`).
+ */
+const BAKED_VERSION_NEEDLE = 'name:"lianrouter",version:"';
+/** Longest version string accepted after the needle, in bytes. */
+const BAKED_VERSION_MAX = 64;
+const SEMVER_PREFIX = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/;
+
 export interface ReleaseCoordinates {
   readonly platform: string;
   readonly arch: string;
@@ -138,6 +151,123 @@ async function stagePayload(stagingDir: string, layout: ReleaseLayout): Promise<
   await cp(DASHBOARD_SOURCE, join(stagingDir, DIST_ENTRY, "dashboard"), { recursive: true });
 }
 
+/**
+ * Extracts the version `package.json` contributed to a compiled binary.
+ *
+ * This is a byte scan rather than an execution on purpose: the artifact may be
+ * built for a different platform or arch than the host running the release
+ * script, and spawning it would either fail or, worse, start a gateway. The
+ * version is a static string in the executable, so reading it is both correct
+ * and cheap.
+ *
+ * Returns `undefined` when the needle is absent, so the caller can turn "found
+ * nothing" into a failure instead of a silent pass. Every other ambiguity is an
+ * error here: an empty buffer is not a build artifact, a needle with no semver
+ * behind it is a corrupt artifact, and two different versions in one file mean
+ * the file is not a single build.
+ */
+export function extractBakedVersion(bytes: Uint8Array): string | undefined {
+  if (bytes.byteLength === 0) {
+    throw new Error("cannot read a version from an empty binary");
+  }
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const needle = Buffer.from(BAKED_VERSION_NEEDLE, "ascii");
+  const found = new Set<string>();
+  let cursor = 0;
+  for (;;) {
+    const at = buffer.indexOf(needle, cursor);
+    if (at === -1) {
+      break;
+    }
+    const start = at + needle.length;
+    const tail = buffer.subarray(start, Math.min(start + BAKED_VERSION_MAX, buffer.byteLength));
+    const match = SEMVER_PREFIX.exec(tail.toString("latin1"));
+    if (match === null) {
+      throw new Error(
+        `the binary contains ${JSON.stringify(BAKED_VERSION_NEEDLE)} with no version behind it at byte ${at}`,
+      );
+    }
+    found.add(match[0]);
+    cursor = start;
+  }
+  if (found.size === 0) {
+    return undefined;
+  }
+  if (found.size > 1) {
+    throw new Error(
+      `the binary contains more than one baked version (${[...found].sort().join(", ")}); rebuild it before staging`,
+    );
+  }
+  return [...found][0];
+}
+
+/** Reads the version the release is supposed to carry from the repo manifest. */
+async function readManifestVersion(): Promise<string> {
+  const manifestPath = join(REPO_ROOT, "package.json");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read ${manifestPath}: ${message}`);
+  }
+  const version = (parsed as { version?: unknown } | null)?.version;
+  if (typeof version !== "string" || version.length === 0) {
+    throw new Error(`${manifestPath} has no "version" string`);
+  }
+  return version;
+}
+
+/**
+ * Fails when the version baked into the binary is not the manifest version.
+ *
+ * Kept separate from the file read so the decision itself is assertable: the
+ * whole defect is a comparison, and a comparison that is only reachable through
+ * a 90 MB artifact is a comparison nobody tests.
+ *
+ * `actual === undefined` is a failure, not a pass. A guard satisfied by "found
+ * nothing" would have shipped the 2.2.0 binary too.
+ */
+export function assertVersionMatch(
+  actual: string | undefined,
+  expected: string,
+  binaryName = "lianrouter.exe",
+): void {
+  if (actual === undefined) {
+    throw new Error(
+      `dist/${binaryName} reports no baked version but package.json is ${expected} — run \`bun run build\` before staging a release`,
+    );
+  }
+  if (actual !== expected) {
+    throw new Error(
+      `dist/${binaryName} reports version ${actual} but package.json is ${expected} — run \`bun run build\` before staging a release`,
+    );
+  }
+}
+
+/**
+ * Refuses a stale build before it can be staged under the current manifest.
+ *
+ * `src/transport/version.ts` imports `package.json`, so the version is baked
+ * into the executable at compile time. A `dist/` left over from an earlier
+ * build therefore reports that earlier version forever, and the archive would
+ * ship it under the new one — which is exactly how 2.2.2 was published with a
+ * 2.2.0 binary inside. Comparing the two before anything is copied or deleted
+ * makes that mislabel impossible to stage.
+ */
+async function assertBakedVersion(layout: ReleaseLayout): Promise<void> {
+  const expected = await readManifestVersion();
+  const binarySource = join(BINARY_DIR, layout.binaryName);
+  let bytes: Uint8Array;
+  try {
+    bytes = await readFile(binarySource);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read ${binarySource} to verify its version: ${message}`);
+  }
+  assertVersionMatch(extractBakedVersion(bytes), expected, layout.binaryName);
+}
+
 /** Refuses a missing build input before anything is created or deleted. */
 async function assertBuildInputs(layout: ReleaseLayout): Promise<void> {
   const binarySource = join(BINARY_DIR, layout.binaryName);
@@ -152,6 +282,9 @@ async function assertBuildInputs(layout: ReleaseLayout): Promise<void> {
   if (!(await pathExists(MIGRATIONS_SOURCE))) {
     throw new Error(`${MIGRATIONS_SOURCE} is missing; it is the migration source of truth`);
   }
+  // Last, because it is the most expensive check and the cheapest failures
+  // should win: a missing input is not also worth a 90 MB read.
+  await assertBakedVersion(layout);
 }
 
 /**

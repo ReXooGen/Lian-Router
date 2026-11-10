@@ -31,6 +31,7 @@
  */
 
 import { JSCallback, ptr } from "bun:ffi";
+import { MENU_REOPEN_GUARD_MS, createRepeatSuppressor } from "./command-guard";
 import "./icon";
 import { TRAY_COMMANDS } from "./protocol";
 import type { TrayCommandId } from "./protocol";
@@ -53,6 +54,7 @@ const WM_QUIT = 0x0012;
 const WM_NULL = 0x0000;
 const WM_NCCREATE = 0x0081;
 const WM_RBUTTONUP = 0x0205;
+const WM_LBUTTONUP = 0x0202;
 const WM_CONTEXTMENU = 0x007b;
 const WM_LBUTTONDBLCLK = 0x0203;
 
@@ -222,12 +224,31 @@ function showContextMenu(window: NativeHandle): number {
   return command;
 }
 
-/** Which handler a tray callback should invoke, decoded from the mouse message. */
-type TrayEvent = "context" | "activate" | "none";
+/**
+ * Which handler a tray callback should invoke, decoded from the mouse message.
+ *
+ * `context` and `context-alt` are deliberately distinct. Explorer reports one
+ * physical right-click on a notify icon as `WM_RBUTTONUP` and then, depending on
+ * the shell version, also as `WM_CONTEXTMENU`. Mapping both to the same event is
+ * what made one click produce two menus — the second callback is queued behind
+ * the modal `TrackPopupMenu` of the first and reopens it the moment that call
+ * returns. `WM_RBUTTONUP` is the canonical message for a notify-icon click and
+ * opens the menu unconditionally; `context-alt` is accepted only when nothing
+ * opened the menu a moment ago, which keeps the menu reachable on a shell that
+ * reports only the other message without ever opening it twice.
+ *
+ * `WM_LBUTTONUP` is the left-click activation, not `WM_LBUTTONDBLCLK`: the
+ * window class does not set `CS_DBLCLKS`, so Windows never delivers the
+ * double-click message and a double-click arrives as two `WM_LBUTTONUP`
+ * messages. The command guard in `host.ts` is what keeps those two from opening
+ * two tabs.
+ */
+type TrayEvent = "context" | "context-alt" | "activate" | "none";
 
-function decodeTrayEvent(mouseMessage: number): TrayEvent {
-  if (mouseMessage === WM_RBUTTONUP || mouseMessage === WM_CONTEXTMENU) return "context";
-  if (mouseMessage === WM_LBUTTONDBLCLK) return "activate";
+export function decodeTrayEvent(mouseMessage: number): TrayEvent {
+  if (mouseMessage === WM_RBUTTONUP) return "context";
+  if (mouseMessage === WM_CONTEXTMENU) return "context-alt";
+  if (mouseMessage === WM_LBUTTONUP || mouseMessage === WM_LBUTTONDBLCLK) return "activate";
   return "none";
 }
 
@@ -296,6 +317,19 @@ export async function startTrayPump(options: TrayPumpOptions): Promise<TrayPumpH
 
   const state: PumpState = { window: undefined, stopRequested: false, destroyed: false };
 
+  // Two guards, because a menu has no completion to release and a command does.
+  //
+  // `menuGuard` collapses the duplicate right-click message: a menu is modal, so
+  // a second callback queued behind `TrackPopupMenu` would otherwise reopen the
+  // menu the instant the operator picks an item from the first one.
+  // `menuOpen` covers the narrower race the suppressor's window cannot: a
+  // callback re-entering while `TrackPopupMenu` is still on the stack.
+  //
+  // The `activate` branch needs no guard here — the host owns the command-level
+  // one, so a double-click's two `WM_LBUTTONUP` messages collapse there.
+  const menuGuard = createRepeatSuppressor(MENU_REOPEN_GUARD_MS, () => Date.now());
+  let menuOpen = false;
+
   const windowProc = new JSCallback(
     (hWnd: NativeHandle, message: number, wParam: bigint, lParam: bigint): bigint => {
       // WM_NCCREATE must return TRUE or Windows aborts creation and
@@ -308,8 +342,22 @@ export async function startTrayPump(options: TrayPumpOptions): Promise<TrayPumpH
         const event = decodeTrayEvent(Number(lParam & 0xffffn));
         const window = state.window;
         if (window === undefined) return 0n;
-        if (event === "context") {
-          const chosen = showContextMenu(window);
+        if (event === "context" || event === "context-alt") {
+          // One gesture, one menu. Both messages describe the same physical
+          // right-click, so whichever arrives first claims the gesture and the
+          // other is dropped — whether it is queued behind the modal
+          // `TrackPopupMenu` or re-entering while it is still on the stack. The
+          // window is short enough that a deliberate second right-click after
+          // dismissing the menu still opens a new one.
+          if (menuOpen) return 0n;
+          if (!menuGuard.allow()) return 0n;
+          menuOpen = true;
+          let chosen = 0;
+          try {
+            chosen = showContextMenu(window);
+          } finally {
+            menuOpen = false;
+          }
           if (isTrayCommandId(chosen)) options.onCommand(chosen);
           return 0n;
         }

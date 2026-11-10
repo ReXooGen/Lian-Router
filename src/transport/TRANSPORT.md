@@ -345,7 +345,9 @@ standing between the global build's unpooled fallback and a direct dial once a s
 sibling must carry real ids: a pool-scoped sibling with an *empty* set is the all-pools-disabled
 configuration, where the direct candidate is the tenant's only route, so the guard must not fire.
 Runtime cooldown does not produce that shape — the selector's cooldown is volatile and the candidate
-keeps its ids — so a cooling pool still trips the guard. It runs **after** the key-binding checks, so
+keeps its ids — so a cooling pool still trips the guard. It refuses the candidate; it does not end
+the request, which is what lets the sibling it was refused for serve it (see *Failure policy* below).
+It runs **after** the key-binding checks, so
 a key that named a pool still sees `proxy_pool_not_allowed` 403: the binding is the narrower
 statement and the caller must learn their pool is unusable, not that some unrelated candidate carried
 none. A plan with no pooled sibling at all is untouched, which is what keeps a tenant that owns no
@@ -426,6 +428,27 @@ then runs `runAttemptLoop` over `eligibleRouteCandidates`.
 last-candidate attempts are terminal, others back off with jittered `fallbackRetryDelayMs` and try the next candidate.
 Terminal attempts record their `errorCategory` via `classifyTerminalCategory` (GatewayError code passthrough, signal-reason
 deadline/close mapping, else `unknown_error`).
+
+One refusal is **candidate-scoped**, not request-scoped: `acquirePoolSlot` refusing an unpooled candidate because the plan
+carries a pooled sibling for the same provider (`proxy_pool_unhealthy`, `details.reason: "candidate_pool_missing"`).
+`isCandidateScopedPoolRefusal` recognizes exactly that shape — this code, this reason, `origin: "network"` — and the loop
+treats it as *skip the candidate*, not *end the request*, with no backoff (nothing was dialed, so there is nothing to back
+off from). Two consequences, both load-bearing:
+
+- The pooled sibling is reached even when the fallback comes first. Emission order is **not** guaranteed:
+  `applyProviderRouting`'s `round_robin` rotates the head of a provider:model run, and the unpooled fallback sits in the same
+  run. The skip is therefore order-independent by construction rather than by relying on the builder emitting pooled first.
+- The refusal never becomes the request's outcome while a real failure exists. At the last index the refusal inherits the
+  prior attempt's error, so an exhausted pool set surfaces as `proxy_pool_capacity_exceeded` / `proxy_pool_cooldown` rather
+  than as a config complaint about a candidate that was never meant to dial. With no prior failure it *is* the outcome and
+  surfaces unchanged — which is also the probe path's answer, since a probe narrows the attempt to one candidate while
+  keeping the whole plan on the lease source, so the guard still fires there.
+
+Narrowness is the point: `no_healthy_pool` (every configured pool unusable) and `proxy_pool_capacity_exceeded` /
+`proxy_pool_cooldown` keep their terminal-shaped behaviour, because retrying an exhausted pool set is exactly what those
+codes exist to prevent. `classifyUpstreamFailure` is untouched — this is a skip decision in the loop, not a retryability
+change, so a 503 with a genuine upstream fault keeps its meaning.
+
 A 429's `rateLimitScope` (from `classifyRateLimitScope`) states what upstream limited: `provider` (its own capacity) or
 `network` (an allowance keyed on the egress address, e.g. OpenCode Free) both flag a pool cooldown (`flagPoolCooldown`, in
 `../network/pool-health.ts`, writing the volatile flag and the durable `health_events` row through one call); `account` does
@@ -434,7 +457,7 @@ identifiers (`error.code` / `error.type`, never prose), never the message text: 
 identity at all is `network` (its only discriminator is the source address), and everything else — including a bare
 429 — is `account`. A network-scoped 429 or a refused proxy CONNECT
 (`ProxyConnectError`) on a candidate carrying more than one pool also retries the *same* candidate
-(up to `MAX_EGRESS_FAILOVERS` = 2 extra tries): the cooldown is already visible to the selector's
+(up to `MAX_EGRESS_FAILOVERS` extra tries): the cooldown is already visible to the selector's
 local map, so the re-acquired slot is a different exit. A refused tunnel never reached the upstream,
 so no account health is recorded for it. Those retries commit no usage — neither a 429 nor a
 refused tunnel consumed upstream tokens — and only the final attempt writes telemetry. A 403 is refreshed only when

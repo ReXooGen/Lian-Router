@@ -113,6 +113,7 @@ export type { TunnelStatus } from "../../../src/console/tunnel/contracts";
 // The update domain proxies the launcher's control socket; the wire shape is
 // the backend DTO, so the modal renders exactly what the gateway validated.
 export type {
+  UpdateCheckResponse as UpdateCheck,
   UpdateProgressResponse as UpdateProgress,
   UpdateStatusResponse as UpdateStatus,
 } from "../../../src/console/update/contracts";

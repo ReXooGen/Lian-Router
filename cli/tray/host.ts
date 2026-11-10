@@ -21,6 +21,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { callRecovering, callWithReconnect, isProcessAlive, resolveControlConnection } from "./connection";
+import { OPEN_CONSOLE_GUARD_MS, createCommandGuard } from "./command-guard";
 import { resolveInstallRoot } from "./paths";
 import { startTrayPump } from "./pump";
 import type { TrayPumpHandle } from "./pump";
@@ -270,6 +271,19 @@ async function main(): Promise<number> {
   };
 
   /**
+   * Collapses duplicate Open Console commands into one.
+   *
+   * A tray callback can report one gesture more than once: a double-click
+   * arrives as two `WM_LBUTTONUP` messages because the window class has no
+   * `CS_DBLCLKS`, and a shell that reports both right-click messages can deliver
+   * two context callbacks. Either way the operator sees two tabs. This is the
+   * command-level layer — it holds no matter which callback path produced the
+   * duplicate — and it drops a repeat that is still in flight as well as one
+   * that lands inside the window after the first finished.
+   */
+  const openConsoleGuard = createCommandGuard(OPEN_CONSOLE_GUARD_MS, () => Date.now());
+
+  /**
    * Runs one menu command.
    *
    * Async on purpose: the pump calls this from inside the window procedure, and
@@ -300,21 +314,27 @@ async function main(): Promise<number> {
     }
 
     if (command === TRAY_COMMANDS.openConsole) {
-      const result = await callRecovering({
-        installRoot,
-        startDir: import.meta.dir,
-        deps: recoveryDeps,
-        ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
-        call: (client) => client.openWeb(),
-      });
-      if (result.result.ok) {
+      // Second layer: one gesture, one tab, whatever produced the duplicate.
+      // `run` drops a repeat that is still in flight and one that lands inside
+      // the window right after the first finished, so a double-click's two
+      // callbacks cannot both reach the browser.
+      await openConsoleGuard.run(command, async () => {
+        const result = await callRecovering({
+          installRoot,
+          startDir: import.meta.dir,
+          deps: recoveryDeps,
+          ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
+          call: (client) => client.openWeb(),
+        });
+        if (result.result.ok) {
+          void refreshTooltip();
+          return;
+        }
+        // The launcher could not be reached or restarted: the gateway may still
+        // serve, and the operator asked for the console, so open it directly.
+        openConsoleDirectly();
         void refreshTooltip();
-        return;
-      }
-      // The launcher could not be reached or restarted: the gateway may still
-      // serve, and the operator asked for the console, so open it directly.
-      openConsoleDirectly();
-      void refreshTooltip();
+      });
       return;
     }
 

@@ -19,7 +19,9 @@ import {
   type ProbeAllModelsResult,
   type ProbeModelRequest,
   type ProbeModelResult,
+  type ProbeResultKind,
 } from "./discovery-types";
+import type { ProbeDispatchFn, ProbeDispatchOutcome } from "./probe-dispatch";
 import { modelsDevCatalog } from "./models-dev-catalog";
 import { fetchOpenAICompatibleModels } from "./openai-model-discovery";
 import {
@@ -152,6 +154,14 @@ interface ProviderProbingDeps {
    * direct-only tenants).
    */
   readonly coolPool?: (poolId: string, providerId: string, error: ProxyConnectError) => void;
+  /**
+   * The one paid path: a real completion dispatched through the shared lease
+   * layer (`createProbeDispatcher`). Required rather than optional so a service
+   * can never silently fall back to a bespoke fetch — the probe's whole value
+   * is that it reproduces what live traffic does, including the refusals that
+   * happen before any upstream is contacted.
+   */
+  readonly dispatchProbe: ProbeDispatchFn;
 }
 
 interface ProviderProbingTestDeps {
@@ -164,6 +174,12 @@ interface ProviderProbingTestDeps {
   readonly providerRegistry?: ProviderRegistry;
   readonly poolSelector?: NetworkPoolSelector;
   readonly coolPool?: (poolId: string, providerId: string, error: ProxyConnectError) => void;
+  /**
+   * The dispatch double. Required: a test that cannot observe the paid path
+   * would let the flag silently stop working. The default is a refusal so a
+   * suite that does not care about generation never fabricates one.
+   */
+  readonly dispatchProbe?: ProbeDispatchFn;
 }
 
 export function createProviderProbingServiceForTests(deps: ProviderProbingTestDeps): ProviderProbingService {
@@ -185,6 +201,14 @@ export function createProviderProbingServiceForTests(deps: ProviderProbingTestDe
     providerRegistry: deps.providerRegistry ?? createDefaultProviderRegistry(),
     ...(deps.poolSelector ? { poolSelector: deps.poolSelector } : {}),
     ...(deps.coolPool ? { coolPool: deps.coolPool } : {}),
+    // A suite that never wires a dispatcher must not silently observe a
+    // fabricated generation: the default reports "nothing was dispatched" so a
+    // paid probe under an unwired double fails loudly instead of passing.
+    dispatchProbe:
+      deps.dispatchProbe ??
+      (async () => {
+        throw new Error("test probe dispatcher not wired");
+      }),
   });
 }
 
@@ -271,6 +295,7 @@ export class ProviderProbingService {
   private readonly providerRegistry: ProviderRegistry;
   private readonly poolSelector: NetworkPoolSelector | undefined;
   private readonly coolPool: ((poolId: string, providerId: string, error: ProxyConnectError) => void) | undefined;
+  private readonly dispatchProbe: ProbeDispatchFn;
 
   constructor(deps: ProviderProbingDeps) {
     this.db = deps.db;
@@ -283,6 +308,7 @@ export class ProviderProbingService {
     this.providerRegistry = deps.providerRegistry;
     this.poolSelector = deps.poolSelector;
     this.coolPool = deps.coolPool;
+    this.dispatchProbe = deps.dispatchProbe;
   }
 
   /**
@@ -427,6 +453,233 @@ export class ProviderProbingService {
     return await catalogProbeVerdict(this.db, catalog, providerId, modelId);
   }
 
+  /**
+   * The opted-in path: one real completion, and the honest verdict it yields.
+   *
+   * Everything here exists so the operator's answer is the same one live
+   * traffic would get. The request is built by the same `buildProbeCanonicalRequest`
+   * the catalog-free path uses (a trivial prompt, a small budget, non-streaming
+   * client request — the adapter's own `ensureFreeAgentRequest` forces
+   * `stream: true` upstream, which is the wire's requirement, not ours to
+   * fight), and it is dispatched through `createProbeDispatcher`, which acquires
+   * the same admission lease, pool slot, and routing reservation live traffic
+   * does. That is why a local refusal arrives here as
+   * `proxy_pool_unhealthy` / `candidate_pool_missing` instead of as a bespoke
+   * transport error: the refusal happened in the shared layer, so it is
+   * classified by the shared classifier.
+   *
+   * One candidate, one question. Candidate failover and retry-after-backoff
+   * stay out: a second candidate would answer for a route the operator did not
+   * ask about. The dispatcher does re-lease the *same* candidate after an
+   * egress-keyed 429, because that attempt produced no answer and the next exit
+   * has its own untouched allowance — the rationale for one shot covers
+   * account-scoped failures, never an exit that was already spent.
+   */
+  private async probeByGeneration(
+    tenantId: string,
+    providerId: string,
+    modelId: string,
+    request: ProbeModelRequest,
+    providerWireRow: ProbeProviderRow | undefined,
+    requiresAccount: boolean,
+    startedAt: number,
+  ): Promise<ProbeModelResult> {
+    const { wireFamily, endpointPath, sourceSurface } = await resolveProbeTarget({
+      db: this.db,
+      bundledModelCatalog: this.bundledModelCatalog,
+      defaultEndpoints: this.defaultEndpoints,
+      providerId,
+      modelId,
+      request,
+      providerWireRow,
+    });
+    const account = await selectProbeAccount({
+      db: this.db,
+      tenantId,
+      providerId,
+      requestedAccountId: request.accountId,
+      requiresAccount,
+    });
+    if (!account.ok) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        httpStatus: 503,
+        code: "accounts_unavailable",
+        error: account.error,
+      };
+    }
+    const adapter = await resolveProbeAdapter({
+      providerRegistry: this.providerRegistry,
+      providerId,
+      providerWireRow,
+    });
+    if (!adapter) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        httpStatus: 500,
+        code: "internal_error",
+        error: `No adapter registered for provider ${providerId}`,
+      };
+    }
+    const { probeReasoning } = await loadProbePreferences({
+      db: this.db,
+      tenantId,
+      wireFamily,
+      request,
+    });
+    const canonicalRequest = buildProbeCanonicalRequest({
+      modelId,
+      request,
+      probeReasoning,
+      sourceSurface,
+      wireFamily,
+    });
+    const credential = account.accountId
+      ? await resolveCredentialForAccount(this.db, providerId, account.accountId)
+      : { provider_id: parseProviderId(providerId), credential_kind: "none" as const };
+    const probeBudgetMs = resolveUpstreamTimeoutMs();
+    let outcome: ProbeDispatchOutcome;
+    try {
+      outcome = await this.dispatchProbe({
+        providerId,
+        modelId,
+        tenantId,
+        canonicalRequest,
+        credential,
+        adapter,
+        deadlineMs: Date.now() + probeBudgetMs,
+        // Each exit attempt gets its own budget, re-armed by the dispatcher;
+        // the overall signal below stays the outer bound so a failover cannot
+        // outlive the probe. One shared signal for every attempt would abort a
+        // retry before it could answer.
+        attemptBudgetMs: probeBudgetMs,
+        signal: AbortSignal.timeout(probeBudgetMs),
+      });
+    } catch (error) {
+      // A planner or candidate-resolution failure is a gateway-side verdict: the
+      // request never reached the lease layer, so nothing was dispatched and no
+      // allowance was charged.
+      return {
+        ok: false,
+        mode: "dispatch",
+        kind: "refused",
+        latencyMs: Date.now() - startedAt,
+        httpStatus: 502,
+        code: error instanceof GatewayError ? error.code : "internal_error",
+        errorOrigin: error instanceof GatewayError ? error.origin : "gateway",
+        error: error instanceof Error ? error.message : "Model probe dispatch failed",
+      };
+    }
+    const { ok, errorMessage, httpStatus, code, origin } = computeProbeVerdict({
+      events: outcome.events,
+      dispatchError: outcome.error,
+      providerId,
+      modelId,
+      wireFamily,
+      endpointPath,
+    });
+    const poolHost =
+      outcome.networkPoolId === undefined
+        ? undefined
+        : await loadPoolEgressHost(this.db, outcome.networkPoolId).catch(() => undefined);
+    const gateway = outcome.error instanceof GatewayError ? outcome.error : undefined;
+    // The classified sub-reason, when the gateway recorded one. A bare
+    // `proxy_pool_unhealthy` cannot distinguish "the candidate carried no pool"
+    // from "every pool was unhealthy", and those are different operator actions.
+    const reason =
+      typeof gateway?.details.reason === "string" ? gateway.details.reason : undefined;
+    const kind: ProbeResultKind = ok ? "generated" : "refused";
+    // A probe that burned this egress must retire it exactly as live dispatch
+    // does, or the (pool, provider) pair stays marked healthy and keeps being
+    // handed out — which is how probe traffic once spent a set of addresses
+    // while client traffic never saw a 429. This path takes its leases from
+    // `acquireAttemptLeases` but does not run the attempt loop, so the loop's
+    // cooldown does not apply to it and the same predicate set is applied here.
+    // A bad model id, empty content, deadline, or 400 says nothing about the
+    // pool and must not sideline it.
+    if (
+      this.poolSelector &&
+      outcome.networkPoolId &&
+      outcome.error !== undefined &&
+      (shouldCooldownPool(outcome.error) || isPoolConnectFailure(outcome.error))
+    ) {
+      flagPoolCooldown(
+        this.poolSelector,
+        this.db,
+        outcome.networkPoolId,
+        providerId,
+        outcome.error,
+      );
+    }
+    await recordProbeHealth({
+      db: this.db,
+      invalidator: this.snapshotInvalidator,
+      accountId: account.accountId,
+      dispatchError: outcome.error,
+      modelId,
+      upstreamStatusCode:
+        gateway !== undefined && typeof gateway.details.upstreamStatus === "number"
+          ? gateway.details.upstreamStatus
+          : undefined,
+    });
+    const sample = extractSample(outcome.events);
+    // The probe rides the same batch buffer as live traffic so the operator can
+    // open the refusal in Console Log and see the request that produced it. A
+    // local refusal is recorded as `failed` with origin `network` and its real
+    // status — that is the row that explains why nothing left the box.
+    this.telemetryBuffer?.enqueue({
+      tenantId,
+      requestId: crypto.randomUUID(),
+      sourceSurface,
+      requestedModel: modelId,
+      endpoint: endpointPath,
+      userAgent: LIANROUTER_PROBE_MARKER,
+      providerId,
+      ...(account.accountId ? { accountId: account.accountId } : {}),
+      ...(outcome.networkPoolId ? { networkPoolId: outcome.networkPoolId } : {}),
+      latencyMs: Date.now() - startedAt,
+      ...(outcome.ttfbMs !== undefined ? { ttfbMs: outcome.ttfbMs } : {}),
+      stream: canonicalRequest.stream,
+      httpStatus,
+      status: ok ? "completed" : "failed",
+      ...(ok ? {} : { errorCategory: code ?? "unknown_error", errorOrigin: origin ?? "gateway" }),
+    });
+    // Cost accounting is derived, not asserted: reaching the adapter is the only
+    // way a unit can be spent, and a refusal raised during lease acquisition is
+    // free. A 429 is the provider confirming an earlier unit was already gone,
+    // so it still counts as having gone upstream.
+    const allowanceSpent = outcome.reachedUpstream;
+    const upstreamStatusCode =
+      gateway !== undefined && typeof gateway.details.upstreamStatus === "number"
+        ? gateway.details.upstreamStatus
+        : undefined;
+    return {
+      ...(account.accountId ? { accountId: account.accountId } : {}),
+      ok,
+      kind,
+      mode: "dispatch",
+      latencyMs: Date.now() - startedAt,
+      httpStatus,
+      ...(allowanceSpent ? { allowanceSpent: true as const } : {}),
+      ...(sample ? { sample } : {}),
+      ...(code === undefined ? {} : { code }),
+      ...(origin === undefined ? {} : { errorOrigin: origin }),
+      ...(reason === undefined ? {} : { reason }),
+      ...(errorMessage ? { error: errorMessage } : {}),
+      ...(outcome.ttfbMs !== undefined ? { ttfbMs: outcome.ttfbMs } : {}),
+      ...(upstreamStatusCode === undefined ? {} : { statusCode: upstreamStatusCode }),
+      ...(outcome.networkPoolId === undefined ? {} : { networkPoolId: outcome.networkPoolId }),
+      ...(poolHost === undefined ? {} : { poolHost }),
+      // Only meaningful once more than one exit was burned: the console row
+      // already reads "one exit refused" from a single attempt, and an
+      // always-present `1` would change every existing caller's payload to say
+      // what it already implied.
+      ...(outcome.exitsTried > 1 ? { exitsTried: outcome.exitsTried } : {}),
+    };
+  }
+
   /** One-shot connectivity test: resolves a usable account + the real per-provider
    * adapter, dispatches a minimal canonical request through the model's own wire
    * family/endpoint (never a hardcoded `/v1/chat/completions`), and records the
@@ -452,6 +705,26 @@ export class ProviderProbingService {
     // empties the address pool.
     if (isEgressScopedProvider(providerId) && request.spendQuota !== true) {
       return await this.probePublishedCatalog(tenantId, providerId, modelId, providerWireRow);
+    }
+
+    // The operator asked the only question the catalog cannot answer. Take the
+    // paid path: one minimal completion through the shared lease layer, no
+    // candidate failover, and no retry-after-backoff. An egress-keyed 429 is the
+    // one exception — that attempt produced no answer and the next exit has its
+    // own allowance, so the dispatcher re-leases the same candidate. `spendQuota`
+    // is a no-op for a credential-keyed provider — it already dispatches below,
+    // and routing it through this branch too would change the account selection
+    // and failover behaviour its probes have always had.
+    if (request.spendQuota === true && isEgressScopedProvider(providerId)) {
+      return await this.probeByGeneration(
+        tenantId,
+        providerId,
+        modelId,
+        request,
+        providerWireRow,
+        requiresAccount,
+        startedAt,
+      );
     }
 
     const { wireFamily, endpointPath, sourceSurface } = await resolveProbeTarget({
@@ -741,7 +1014,9 @@ export class ProviderProbingService {
       ok,
       // Reaching here means a completion was dispatched, so `ok` is the
       // generation verdict. The mode is stated rather than implied so no
-      // consumer can confuse this with a catalog hit.
+      // consumer can confuse this with a catalog hit. No `kind` here: this
+      // path's payload is what credential-keyed providers have always returned,
+      // and the opt-in flag must be a no-op for them.
       mode: "dispatch",
       latencyMs,
       httpStatus,

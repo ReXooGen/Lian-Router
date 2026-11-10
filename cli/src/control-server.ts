@@ -82,8 +82,19 @@ export interface ControlServerOptions {
   readonly onTrayHide?: () => void;
   /** Starts the update flow; progress is published through `publishProgress`. */
   readonly startUpdate?: () => Promise<void>;
+  /**
+   * Runs one release check and resolves its snapshot.
+   *
+   * Rejects when the check cannot run at all — the update engine is absent from
+   * this build, or the release feed failed. The caller decides what an empty
+   * answer means; this module never invents one, because "no update" and "could
+   * not ask" are different facts and the console renders them differently.
+   */
+  readonly onCheckUpdate?: () => Promise<UpdateSnapshot>;
   /** Injected for tests; defaults to the platform browser opener. */
   readonly openBrowser?: (url: string) => void;
+  /** Injected for tests; drives the `/open-web` dedupe window. */
+  readonly now?: () => number;
   readonly logLine?: (line: string) => void;
 }
 
@@ -92,6 +103,15 @@ export const CONTROL_TOKEN_HEADER = "x-lianrouter-control";
 
 /** Loopback peers. `::1` and the v4-mapped form appear when the host resolves `localhost` to IPv6 first. */
 const LOOPBACK_ADDRESSES: readonly string[] = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+
+/**
+ * How long a repeat of `POST /open-web` is treated as the same operator gesture.
+ *
+ * Wide enough to cover a retried request (the client's timeout is 5 s, and the
+ * retry follows immediately), narrow enough that two deliberate clicks on Open
+ * Console still open two tabs.
+ */
+const OPEN_WEB_DEDUPE_MS = 3_000;
 
 export class ControlServer {
   private readonly options: ControlServerOptions;
@@ -108,6 +128,27 @@ export class ControlServer {
   private updateSnapshot: UpdateSnapshot | null = null;
   private updateProgress: UpdateProgressFrame | null = null;
   private updateRunning = false;
+  /**
+   * The check currently in flight, if any.
+   *
+   * A check costs one release-feed request and can be asked for by the tray,
+   * the console, and the boot hook at once. Coalescing on the promise rather
+   * than a boolean means the second caller awaits the same answer instead of
+   * being told to come back later — and it is cleared in `finally`, so a failed
+   * check leaves nothing stuck.
+   */
+  private updateCheckInFlight: Promise<UpdateSnapshot> | undefined;
+  /**
+   * When `POST /open-web` last spawned a browser, in epoch milliseconds.
+   *
+   * The tray retries a control call once on a connection-shaped failure, and a
+   * timeout after the spawn looks identical to a request that never arrived. The
+   * tab is already open by then, so the retry would open a second one. This
+   * timestamp is what makes the route idempotent for one operator gesture: a
+   * repeat inside {@link OPEN_WEB_DEDUPE_MS} reports the same success without
+   * spawning again.
+   */
+  private lastOpenWebAt: number | undefined;
 
   constructor(options: ControlServerOptions) {
     this.options = options;
@@ -216,6 +257,42 @@ export class ControlServer {
     this.updateRunning = running;
   }
 
+  /**
+   * Runs one release check and publishes the snapshot it resolves.
+   *
+   * Concurrent callers share one request: the boot hook and the console's
+   * "Check again" can arrive together, and a release feed is not something to
+   * ask twice in the same second. The in-flight promise is cleared in
+   * `finally`, so a failed check leaves no state behind and the next call
+   * starts a fresh one.
+   *
+   * Deliberately does not touch `updateRunning`: a check reads the feed and
+   * changes nothing on disk, so the console must not read it as an install.
+   * Rejects when the check cannot run; publishing nothing is the honest
+   * outcome for a failed check, because a stale snapshot would claim knowledge
+   * the launcher does not have.
+   */
+  checkUpdate(): Promise<UpdateSnapshot> {
+    const inFlight = this.updateCheckInFlight;
+    if (inFlight !== undefined) {
+      return inFlight;
+    }
+    const check = this.options.onCheckUpdate;
+    if (check === undefined) {
+      return Promise.reject(new Error("update checks are unavailable in this build"));
+    }
+    const pending = check()
+      .then((snapshot) => {
+        this.publishUpdate(snapshot);
+        return snapshot;
+      })
+      .finally(() => {
+        this.updateCheckInFlight = undefined;
+      });
+    this.updateCheckInFlight = pending;
+    return pending;
+  }
+
   /** Current update state; see {@link UpdateStateFrame}. */
   get updateState(): UpdateStateFrame {
     return {
@@ -262,12 +339,43 @@ export class ControlServer {
       return json(await this.options.supervisor.restart());
     }
     if (method === "POST" && pathname === "/open-web") {
-      this.openUrl(this.options.consoleUrl);
+      // Idempotent for one operator gesture. A retry that arrives after the
+      // first spawn — the tray retries once when a response is slow, and a
+      // timeout lands here after the tab is already open — must not open a
+      // second tab. The answer stays the same success body either way, so a
+      // caller cannot mistake a deduplicated repeat for a failure and fall back
+      // to opening the URL itself.
+      const now = (this.options.now ?? Date.now)();
+      if (this.lastOpenWebAt === undefined || now - this.lastOpenWebAt >= OPEN_WEB_DEDUPE_MS) {
+        this.lastOpenWebAt = now;
+        this.openUrl(this.options.consoleUrl);
+      }
       return json({ ok: true, url: this.options.consoleUrl });
     }
     if (method === "POST" && pathname === "/tray/hide") {
       this.options.onTrayHide?.();
       return json({ ok: true });
+    }
+    if (method === "POST" && pathname === "/update/check") {
+      const checkUpdate = this.options.onCheckUpdate;
+      if (checkUpdate === undefined) {
+        return json({ error: "update checks are unavailable in this build" }, 501);
+      }
+      // A check during an install would race the flow: the install stops the
+      // gateway and replaces the binary underneath, so a release read taken
+      // mid-install describes an installation that is about to stop existing.
+      if (this.updateRunning) {
+        return json({ error: "an update is already running" }, 409);
+      }
+      try {
+        return json(await this.checkUpdate());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Nothing is published on failure: the previous snapshot stands, which
+        // is the truth — the launcher learned nothing new, and a null here
+        // would erase a release the console can still install.
+        return json({ error: `update check failed: ${message}` }, 502);
+      }
     }
     if (method === "POST" && pathname === "/update/start") {
       const startUpdate = this.options.startUpdate;

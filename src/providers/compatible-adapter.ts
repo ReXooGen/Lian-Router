@@ -148,6 +148,14 @@ export interface OpenAICompatibleAdapterConfig {
    */
   readonly credential_forwarding?: "account" | "never";
   /**
+   * Declares that this provider's upstream cannot key an allowance on a
+   * credential, so a 429 is keyed on the source address. Required for a public
+   * endpoint served through a BYOK row: the row's id is not a bundled id, so
+   * the catalog cannot recognize it, and the request's own credential is the
+   * only remaining evidence. Absent ⇒ inferred from the id table.
+   */
+  readonly presents_credential?: boolean;
+  /**
    * Stamps `user-agent: LianRouter/<version>` on every dispatch. Explicit
    * opt-in per provider spec — never a default — so first-party cloaking
    * (Codex, Claude Code) is untouched.
@@ -353,7 +361,23 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
     }
     if (!res.ok) {
       await throwIfHtmlResponse(res);
-      await mapUpstreamHttpError(res, this.provider_id);
+      // The request's own credential is the evidence a provider id cannot
+      // supply: a BYOK row pointed at a public endpoint dispatches with a
+      // `none` credential, so upstream keys its 429 on the source address. This
+      // reads the credential the request actually carried, never
+      // `credential_forwarding: "never"` — that flag also covers providers that
+      // stamp their own credential header (MiniMax `x-api-key`, Z.AI bearer)
+      // and therefore *do* present an identity.
+      await mapUpstreamHttpError(res, this.provider_id, {
+        presentsCredential:
+          this.config.presents_credential ??
+          context.credential.credential_kind !== "none",
+        // The free-tier message claims the gateway cools a (pool, provider)
+        // pair. That action is skipped for a direct dial, so a direct 429 must
+        // not describe it: `network_pool_id` is set only when this attempt
+        // actually held a pool slot.
+        poolLeased: context.network_pool_id !== undefined,
+      });
     }
     // Edge proxies (Cloudflare etc.) can return an HTML error page with a
     // 2xx/3xx status when the origin is unreachable — surface it as a typed

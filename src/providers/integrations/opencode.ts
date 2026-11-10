@@ -138,6 +138,11 @@ function opencodeSpec(providerId: "opencodeft" | "opencodezen" | "opencodego"): 
     ...(providerId === "opencodeft"
       ? {
           credential_forwarding: "never" as const,
+          // The endpoint accepts only the literal public credential, so upstream
+          // has no identity to key the free allowance on and keys it on the
+          // source address. Declared rather than inferred from the id so a BYOK
+          // row fronting the same endpoint classifies its 429 the same way.
+          presentsCredential: false,
           prepareRequest: ensureFreeAgentRequest,
           onUpstreamFailure: retireSpentFreeSession,
         }

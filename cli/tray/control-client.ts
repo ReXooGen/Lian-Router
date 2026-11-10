@@ -205,11 +205,16 @@ export function createControlClient(port: number, token: string): ControlClient 
 
   return {
     status: () => call("/status", "GET", readStatus),
-    restart: () => call("/server/restart", "POST", () => undefined),
-    stop: () => call("/server/stop", "POST", () => undefined),
-    shutdown: () => call("/shutdown", "POST", () => undefined),
-    openWeb: () => call("/open-web", "POST", () => undefined),
-    startUpdate: () => call("/update/start", "POST", () => undefined),
+    restart: () => call("/server/restart", "POST", () => true),
+    stop: () => call("/server/stop", "POST", () => true),
+    shutdown: () => call("/shutdown", "POST", () => true),
+    // `undefined` is `call()`'s failure sentinel, so an acknowledgement route
+    // must decode to something truthy: a good `200 { "ok": true }` decoded as
+    // `undefined` reads as "unexpected body shape", and for `/open-web` that
+    // made the caller run its own fallback opener after the tab was already
+    // open — two tabs from one click.
+    openWeb: () => call("/open-web", "POST", () => true),
+    startUpdate: () => call("/update/start", "POST", () => true),
     updateState: () => call("/update/state", "GET", readUpdateState),
   };
 }

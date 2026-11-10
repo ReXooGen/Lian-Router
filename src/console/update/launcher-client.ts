@@ -209,6 +209,43 @@ export async function startLauncherUpdate(
   return { ok: true, data: null };
 }
 
+/**
+ * Asks the launcher to run one release check now.
+ *
+ * The check is synchronous work on the launcher's side — it fetches the release
+ * feed, publishes the snapshot, and answers with it — so the answer is the
+ * snapshot rather than an accepted-flag. A `409` means an install is in flight
+ * and the launcher refused to race it; a `502` means the feed failed. Both keep
+ * their status so the route can map them to the console's vocabulary.
+ */
+export async function checkLauncherUpdate(
+  handshake: LauncherHandshake,
+): Promise<LauncherCall<LauncherSnapshot>> {
+  let response: Response;
+  try {
+    response = await fetch(`http://127.0.0.1:${handshake.port}/update/check`, {
+      method: "POST",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: { [CONTROL_TOKEN_HEADER]: handshake.token, accept: "application/json" },
+    });
+  } catch (error) {
+    return { ok: false, status: undefined, error: describeFailure(error) };
+  }
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    return { ok: false, status: response.status, error: readErrorMessage(body, response.status) };
+  }
+  const snapshot = readSnapshot(body);
+  if (snapshot === null) {
+    // The launcher answered 200 with something that is not a snapshot. Treating
+    // that as "no update" would tell the operator they are current on the
+    // strength of an unparseable body, which is the one lie this domain exists
+    // to avoid.
+    return { ok: false, status: response.status, error: "the launcher returned no usable update snapshot" };
+  }
+  return { ok: true, data: snapshot };
+}
+
 function readErrorMessage(body: unknown, status: number): string {
   if (typeof body === "object" && body !== null) {
     const error = (body as Record<string, unknown>)["error"];

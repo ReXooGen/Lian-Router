@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 
 import type { UpdateProgress, UpdateStatus } from "../lib/contracts";
 import { formatBytes } from "../lib/format";
-import { useStartUpdate, useUpdateStatus } from "../lib/hooks/update";
+import { useCheckUpdate, useStartUpdate, useUpdateStatus } from "../lib/hooks/update";
+import { versionLabel } from "../lib/update-view";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 
@@ -143,10 +144,22 @@ function VersionRows({ status }: { readonly status: UpdateStatus }): ReactElemen
  * is the only action. Once the install stops running the launcher is restarting
  * the gateway, so the modal switches to a `/health` wait and reloads the page
  * when the gateway answers — every console request fails until then.
+ *
+ * `open`/`onClose` are the manual path used by the brand-header button. Passing
+ * `open` bypasses the availability and dismissal guards, because a manual open
+ * means the operator asked to see the update state — including the case where
+ * there is nothing to install. Without them the modal keeps its automatic
+ * behaviour, so existing embeds are unaffected.
  */
-export function UpdateModal(): ReactElement | null {
+export interface UpdateModalProps {
+  readonly open?: boolean;
+  readonly onClose?: () => void;
+}
+
+export function UpdateModal({ open: manualOpen = false, onClose }: UpdateModalProps = {}): ReactElement | null {
   const statusQuery = useUpdateStatus();
   const startUpdate = useStartUpdate();
+  const checkUpdate = useCheckUpdate();
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(() =>
     typeof localStorage === "undefined" ? null : localStorage.getItem(DISMISSED_VERSION_KEY),
   );
@@ -167,6 +180,12 @@ export function UpdateModal(): ReactElement | null {
   useEffect(() => {
     setClosed(false);
   }, [status?.latest]);
+
+  // Opening from the brand header is an explicit request, so it clears the
+  // closed flag the previous dismissal or restart-wait left behind.
+  useEffect(() => {
+    if (manualOpen) setClosed(false);
+  }, [manualOpen]);
 
   useEffect(() => {
     if (failed) return;
@@ -215,14 +234,22 @@ export function UpdateModal(): ReactElement | null {
 
   const target = status?.latest ?? status?.current ?? null;
 
+  /**
+   * A manual open is closed by the operator's own request, so it must not
+   * record a dismissal — otherwise closing a "you are up to date" check would
+   * silently suppress the automatic prompt for a release that lands later. It
+   * still marks the dialog closed, because the restart-wait branch reads that
+   * flag to stay out of the way while `/health` is polled.
+   */
   const dismiss = (): void => {
-    if (status?.latest != null) {
+    if (!manualOpen && status?.latest != null) {
       setDismissedVersion(status.latest);
       if (typeof localStorage !== "undefined") {
         localStorage.setItem(DISMISSED_VERSION_KEY, status.latest);
       }
     }
     setClosed(true);
+    if (manualOpen) onClose?.();
   };
 
   if (recovery !== "none") {
@@ -260,10 +287,15 @@ export function UpdateModal(): ReactElement | null {
     );
   }
 
-  if (!status || !status.available || closed) return null;
-  if (status.latest !== null && dismissedVersion === status.latest) return null;
+  // Automatic mode only surfaces an installable release the operator has not
+  // dismissed. A manual open skips both gates: the operator asked to see the
+  // update state, and a dismissed prompt is not an answer to that question.
+  if (!manualOpen) {
+    if (!status || !status.available || closed) return null;
+    if (status.latest !== null && dismissedVersion === status.latest) return null;
+  }
 
-  const label = target ?? status.current;
+  const label = target ?? status?.current ?? null;
 
   if (failed && progress !== null) {
     return (
@@ -308,6 +340,76 @@ export function UpdateModal(): ReactElement | null {
             Installing LianRouter {label}. The gateway restarts when the install finishes.
           </p>
           {progress === null ? null : <ProgressView progress={progress} />}
+        </div>
+      </Dialog>
+    );
+  }
+
+  // A manual open always renders something. Both states below are unreachable
+  // in automatic mode, which returned above when there was nothing to install.
+  if (status === undefined) {
+    return (
+      <Dialog
+        open
+        onClose={dismiss}
+        title="Check for updates"
+        width={440}
+        footer={
+          <Button variant="secondary" size="sm" onClick={dismiss}>
+            Close
+          </Button>
+        }
+      >
+        <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+          {statusQuery.isError
+            ? "The gateway did not answer the update check."
+            : "Reading the gateway's update state…"}
+        </p>
+      </Dialog>
+    );
+  }
+
+  if (!status.available) {
+    const currentLabel = versionLabel(status, status.current);
+    return (
+      <Dialog
+        open
+        onClose={dismiss}
+        title="No update available"
+        width={440}
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={dismiss}>
+              Close
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={checkUpdate.isPending}
+              onClick={() => checkUpdate.mutate()}
+            >
+              Check again
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+            {!status.launcher
+              ? `This install is running LianRouter ${currentLabel}.`
+              : status.latest === null
+                ? // The launcher has reported nothing, so `current` is only the
+                  // gateway's own compiled version. Claiming to be on the newest
+                  // release here is a statement no one made.
+                  "The launcher has not checked for a release yet."
+                : `This install is on the newest release the launcher reports: LianRouter ${currentLabel}.`}
+          </p>
+          <VersionRows status={status} />
+          <p style={{ fontSize: "12px", color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+            {status.launcher
+              ? "The launcher checks once when it starts; this button asks it to read the release feed again now."
+              : "This gateway was not started by the lianrouter launcher, so it cannot install updates. Run lianrouter update in the terminal."}
+          </p>
         </div>
       </Dialog>
     );

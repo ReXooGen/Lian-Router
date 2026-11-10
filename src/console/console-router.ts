@@ -23,6 +23,7 @@ import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
 import type { ApiKeyAdmissionService } from "../security/admission";
+import type { ProbeDispatchFn } from "../providers/discovery/probe-dispatch";
 import type { ModelStrikeService } from "../security/model-abuse";
 import type { RedisClient } from "../persistence/redis";
 import { CliToolMappingStore } from "./cli-tools/store";
@@ -45,6 +46,15 @@ export interface ConsoleApiCompositionDeps {
   readonly redis: RedisClient;
   readonly oauthRefreshService: OAuthRefreshService;
   readonly admissionService: Pick<ApiKeyAdmissionService, "purgeKey">;
+  /**
+   * The paid probe path: a real completion through the shared lease layer.
+   *
+   * Required, not optional. A probe that cannot reach the dispatch path must
+   * refuse the request rather than silently answer from the catalog — the
+   * whole point of the opt-in is that the operator's own traffic is what gets
+   * reproduced.
+   */
+  readonly probeDispatcher: ProbeDispatchFn;
   /**
    * Graduated model-abuse strikes: the console reads and lifts bans from the
    * same service the data plane records them in. Optional because a reduced
@@ -157,6 +167,7 @@ export function createConsoleRouter(deps: ConsoleApiCompositionDeps): Elysia {
     bundledModelCatalog: deps.bundledModelCatalog,
     networkBindingFactory: deps.networkBindingFactory,
     admissionService: deps.admissionService,
+    probeDispatcher: deps.probeDispatcher,
     ...(deps.modelStrikes === undefined ? {} : { modelStrikes: deps.modelStrikes }),
     credentialService,
     // The backup surface re-authenticates the operator, so it needs the current

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { fallbackRetryDelayMs, parseUpstreamBackoff, parseProviderResetDuration, parseAbsoluteResetTimestamp, classifyTerminalCategory, classifyUpstreamFailure, extractUpstreamMessage, upstreamProviderCode } from "../../src/transport/failure-policy";
+import { fallbackRetryDelayMs, parseUpstreamBackoff, parseProviderResetDuration, parseAbsoluteResetTimestamp, classifyTerminalCategory, classifyUpstreamFailure, extractUpstreamMessage, isCandidateScopedPoolRefusal, upstreamProviderCode } from "../../src/transport/failure-policy";
 import { GatewayError } from "../../src/transport/gateway-error";
 
 function withEnvironment<T>(name: string, value: string | undefined, run: () => T): T {
@@ -89,6 +89,54 @@ describe("classifyUpstreamFailure retryability", () => {
   test("stream deadline is retryable before a stream is committed", () => {
     const error = new GatewayError("deadline_exceeded", 504, "upstream stream stalled");
     expect(classifyUpstreamFailure(error).retryable).toBe(true);
+  });
+});
+
+describe("isCandidateScopedPoolRefusal", () => {
+  // The predicate decides whether an attempt loop may skip a candidate rather
+  // than end the request on it. It must match exactly one refusal and nothing
+  // that describes the request or the pool set as a whole.
+  function refusal(
+    code: "proxy_pool_unhealthy" | "proxy_pool_capacity_exceeded" | "proxy_pool_unavailable",
+    reason: string,
+    origin: "network" | "gateway" = "network",
+  ): GatewayError {
+    return new GatewayError(code, 503, "pool refused", { reason }, origin);
+  }
+
+  test("matches the unpooled-candidate refusal exactly", () => {
+    expect(isCandidateScopedPoolRefusal(refusal("proxy_pool_unhealthy", "candidate_pool_missing"))).toBe(true);
+  });
+
+  test("does not match every configured pool being unusable", () => {
+    // `no_healthy_pool` is a statement about the pool set, not about this
+    // candidate: skipping it would retry the same exhausted set.
+    expect(isCandidateScopedPoolRefusal(refusal("proxy_pool_unhealthy", "no_healthy_pool"))).toBe(false);
+  });
+
+  test("does not match a capacity or cooldown refusal", () => {
+    // 429/503 pool semantics exist to stop retrying an exhausted pool set.
+    expect(isCandidateScopedPoolRefusal(refusal("proxy_pool_capacity_exceeded", "at_capacity"))).toBe(false);
+    expect(isCandidateScopedPoolRefusal(refusal("proxy_pool_unavailable", "coordination_unavailable"))).toBe(false);
+  });
+
+  test("does not match the same reason under a different code", () => {
+    expect(isCandidateScopedPoolRefusal(refusal("proxy_pool_unavailable", "candidate_pool_missing"))).toBe(false);
+  });
+
+  test("does not match the same reason from a non-network origin", () => {
+    expect(isCandidateScopedPoolRefusal(refusal("proxy_pool_unhealthy", "candidate_pool_missing", "gateway"))).toBe(false);
+  });
+
+  test("does not match a refusal with no reason at all", () => {
+    expect(
+      isCandidateScopedPoolRefusal(new GatewayError("proxy_pool_unhealthy", 503, "pool refused", {}, "network")),
+    ).toBe(false);
+  });
+
+  test("does not match a non-GatewayError", () => {
+    expect(isCandidateScopedPoolRefusal(new Error("proxy_pool_unhealthy"))).toBe(false);
+    expect(isCandidateScopedPoolRefusal(undefined)).toBe(false);
   });
 });
 

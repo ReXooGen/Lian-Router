@@ -63,10 +63,15 @@ export function shouldCooldownPool(error: unknown): error is GatewayError {
 }
 
 /**
- * A 429 scoped to the egress address alone. Retrying the *same* candidate is
- * correct here — the selector's cooldown map already hides the burned exit, so
- * a re-acquire hands back a different one — while a provider- or account-scoped
- * limit fails identically on every exit, and a retry would only burn attempts.
+ * A 429 whose evidence names the egress address, so another exit may still
+ * have allowance and retrying the same candidate is worth a round trip. A
+ * provider- or account-scoped limit fails identically on every exit, and a
+ * retry would only burn attempts.
+ *
+ * This is what separates "the pool is spent" from "the request is refused":
+ * only the former is a reason to re-acquire a slot on the same candidate.
+ * The selector's cooldown map already hides the burned exit, so a re-acquire
+ * hands back a different one.
  */
 export function isNetworkScopedRateLimit(error: unknown): error is GatewayError {
   if (!(error instanceof GatewayError) || error.origin !== "upstream" || error.status !== 429) {

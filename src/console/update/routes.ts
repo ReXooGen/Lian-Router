@@ -22,6 +22,17 @@ export function createUpdateRoutes(config: UpdateRoutesConfig): Elysia {
         return updateErrorResponse(e, set);
       }
     })
+    .post("/check", async ({ request, set }) => {
+      try {
+        // 200 with the snapshot: the launcher did the work inside the request,
+        // so there is nothing left in flight for the dashboard to poll. A
+        // caller that gets `update_in_progress` should refetch `GET /update`
+        // instead — the install it collided with is already reporting progress.
+        return await factory.check(config.accessResolver(request));
+      } catch (e) {
+        return updateErrorResponse(e, set);
+      }
+    })
     .post("/start", async ({ request, set }) => {
       try {
         const accepted = await factory.start(config.accessResolver(request));

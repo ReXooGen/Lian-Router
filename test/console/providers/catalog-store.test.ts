@@ -19,6 +19,11 @@ function storeOptions() {
     providerRegistry: createDefaultProviderRegistry(),
     outboundFetchFor: () => (async () => new Response("{}")) as never,
     snapshotInvalidator: { invalidate: async () => 0 },
+    // These tests exercise CRUD only; a probe would need a route snapshot and a
+    // live pool, so an unwired dispatcher throws instead of faking a generation.
+    dispatchProbe: async () => {
+      throw new Error("catalog store test: probe dispatch not wired");
+    },
   };
 }
 

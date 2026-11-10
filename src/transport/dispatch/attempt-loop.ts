@@ -10,7 +10,7 @@
  */
 import { GatewayError } from "../gateway-error";
 import type { ResolvedCredential } from "../../providers/provider-registry";
-import { classifyTerminalCategory, fallbackRetryDelayMs, isRetryableFailure, sleep } from "../failure-policy";
+import { classifyTerminalCategory, fallbackRetryDelayMs, isCandidateScopedPoolRefusal, isRetryableFailure, sleep } from "../failure-policy";
 import type { OAuthTokenRefresher } from "../../providers/authentication/oauth-refresh-service";
 import type { OAuthRefreshService } from "../../providers/authentication/oauth-refresh-service";
 import type { ValidatedNetworkBindingFactory } from "../../network/pool/resolver";
@@ -27,16 +27,35 @@ import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer"
 import { flagPoolCooldown } from "../../network/pool-health";
 import { completeAttempt, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
 import { repriceUsage } from "../../providers/usage";
-import { shouldCooldownPool, isNetworkScopedRateLimit, isOAuthCredentialInvalidated, isPoolConnectFailure } from "./retry-policy";
+import {
+  shouldCooldownPool,
+  isNetworkScopedRateLimit,
+  isOAuthCredentialInvalidated,
+  isPoolConnectFailure,
+} from "./retry-policy";
 
 /**
- * Extra exits a single request may burn when the *egress* failed: an
- * egress-keyed upstream limit, or a pool whose CONNECT handshake the proxy
- * answered with a non-200 (a dead or target-filtering exit). Two retries keep
- * the request bounded while giving rotation a real chance: the failed pair is
- * cooling and the next admission must pick a different one.
+ * Extra exits a single request may burn when the upstream reports an
+ * egress-keyed limit.
+ *
+ * The bound exists to stop a pathological all-spent candidate from spending the
+ * request's whole deadline, not to limit how many healthy exits may be tried.
+ * Two properties make a generous bound safe. Draws within one request are
+ * without replacement — a cooled exit leaves the candidate's eligible set, so
+ * each extra attempt samples from a strictly smaller spent-or-healthy pool.
+ * And a spent free-tier exit is a *refusal*, not a generation: one proxy
+ * CONNECT plus a fast upstream 429, with no tokens produced and no billed
+ * usage, so an extra attempt is cheap in a way an extra generation is not.
+ *
+ * The number this deployment cares about: with 100 exits and a currently-spent
+ * fraction `f`, the chance a request dies is roughly `f ** (bound + 1)`. At
+ * `f = 0.28` — 28 of 100 distinct pools have been cooled at least once — a
+ * bound of 2 fails about 2% of requests, while a bound of 8 fails about 4 in
+ * 100,000. That gap is the reason for the value. The request deadline still
+ * bounds the total, so a genuinely all-spent candidate ends on the budget
+ * rather than on this constant.
  */
-const MAX_EGRESS_FAILOVERS = 2;
+export const MAX_EGRESS_FAILOVERS = 8;
 
 /** Route-specific preconditions resolved for one candidate before its leases are taken. */
 interface PreparedAttempt<TAdapter> {
@@ -102,6 +121,12 @@ export async function runAttemptLoop<TResult, TAdapter>(
   const { state, deps, candidates, leaseSource } = input;
   let lastError: unknown = input.exhaustedError;
   const refreshedCandidates = new Set<string>();
+  // Same-candidate egress failover: a public provider candidate can carry many
+  // pools while the candidate list holds exactly one entry, so the outer loop
+  // has no second candidate to try. An egress-keyed 429 is the one case where
+  // another attempt on the same candidate can succeed, because re-acquiring a
+  // slot after the cooldown flag picks a different exit. Keyed by candidate
+  // index so the bound does not leak between candidates.
   const egressFailovers = new Map<number, number>();
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
@@ -152,10 +177,38 @@ export async function runAttemptLoop<TResult, TAdapter>(
         },
       });
     } catch (error) {
-      lastError = error;
       const cancelled =
         state.abortController.signal.aborted ||
         (error instanceof GatewayError && error.code === "transport_closed");
+      // `acquirePoolSlot` refusing an unpooled candidate beside a pooled
+      // sibling is a statement about *this candidate*, not about the request:
+      // the sibling it was refused for is the candidate that can serve it.
+      // Without this, a plan whose pooled candidate failed first ended on the
+      // fallback's refusal — the operator saw `candidate_pool_missing` (a
+      // config complaint about a candidate that was never meant to dial) in
+      // place of the real fault (`proxy_pool_capacity_exceeded`,
+      // `proxy_pool_cooldown`, an upstream 429), and the sibling that could
+      // still have answered was never reached when it came second.
+      const candidateScopedRefusal = !cancelled && isCandidateScopedPoolRefusal(error);
+      // The refusal inherits the prior attempt's failure when there is one: it
+      // is the last candidate and it never dialed, so the request's outcome is
+      // whatever actually went wrong before it. With no prior failure (a
+      // refusal as the first candidate) it *is* the outcome and surfaces
+      // unchanged. Either way the guard above never fires for a plan with no
+      // pooled sibling, so a tenant that owns no pool keeps its direct dial.
+      const inheritsPriorFailure =
+        candidateScopedRefusal && lastError !== input.exhaustedError;
+      // The row that ends the request reports the failure that decided it, so
+      // telemetry and the thrown error agree. Provider attribution stays right:
+      // the guard only fires for a sibling of the same `provider_id`. This
+      // attempt holds no upstream usage and no pool slot, so nothing is charged
+      // twice.
+      const surfacedError = inheritsPriorFailure ? lastError : error;
+      if (!inheritsPriorFailure) lastError = error;
+      // Another exit on the *same* candidate may still have allowance. Bounded
+      // per candidate index and only for an egress-keyed 429 or a refused
+      // CONNECT (which never reached an upstream), because every other failure
+      // either fails identically on the next exit or is not about the egress.
       const egressFailover =
         !cancelled &&
         deps.poolSelector !== undefined &&
@@ -163,24 +216,36 @@ export async function runAttemptLoop<TResult, TAdapter>(
         (candidate.network_pool_ids?.length ?? 0) > 1 &&
         (egressFailovers.get(index) ?? 0) < MAX_EGRESS_FAILOVERS;
       const terminalAttempt =
-        cancelled || !isRetryableFailure(error) || index === candidates.length - 1;
+        cancelled ||
+        (!isRetryableFailure(error) && !candidateScopedRefusal) ||
+        (index === candidates.length - 1 && !egressFailover);
+      // Token consumption starts when the provider accepts the request. A
+      // rejected request (an HTTP error status, recorded as `providerStatus` by
+      // the upstream status mappers) or a transport failure that never
+      // delivered it consumed nothing, so the reserved estimate must be
+      // refunded by the `finally` release instead of being committed as usage.
+      // A 2xx that fails later is not this case: the provider accepted the
+      // request and may have billed prompt tokens, so its estimate stays.
+      const rejectedBeforeGeneration =
+        !(error instanceof GatewayError) ||
+        error.origin === "network" ||
+        typeof error.details.providerStatus === "number";
       await completeAttempt(state, {
         status: cancelled ? "cancelled" : "failed",
         providerId: candidate.provider_id,
         ...(candidate.provider_account_id ? { accountId: candidate.provider_account_id } : {}),
         ...(candidate.provider_account_label ? { accountLabel: candidate.provider_account_label } : {}),
-        errorCategory: classifyTerminalCategory(error, state.abortController.signal),
+        errorCategory: classifyTerminalCategory(surfacedError, state.abortController.signal),
         // Same split as the streaming path: a non-GatewayError outcome is ours.
-        errorOrigin: error instanceof GatewayError ? error.origin : "gateway",
+        errorOrigin: surfacedError instanceof GatewayError ? surfacedError.origin : "gateway",
         modelId: candidate.model_id,
         ...(networkPoolId ? { networkPoolId } : {}),
-        error,
+        error: surfacedError,
         ...(lease ? { lease } : {}),
-        ...(!cancelled && bindingEstablished
+        ...(!cancelled && bindingEstablished && !egressFailover && !rejectedBeforeGeneration
           ? {
-              // Repriced against the candidate that actually ran: a failed
-              // attempt still consumed its tokens, and committing the raw
-              // estimate left `estimated_cost` null for every failover.
+              // Repriced against the candidate that actually ran: committing
+              // the raw estimate left `estimated_cost` null for every failover.
               commitUsage: repriceUsage(
                 estimatedUsage(
                   leaseSource.estimatedInputTokens,
@@ -244,9 +309,11 @@ export async function runAttemptLoop<TResult, TAdapter>(
       }
       if (terminalAttempt) {
         metrics.proxy_requests_total.inc(1, { status: cancelled ? "cancelled" : "failed" });
-        throw error;
+        throw surfacedError;
       }
-      retryDelayMs = fallbackRetryDelayMs(index);
+      // A local refusal never touched an upstream, so there is nothing to back
+      // off from: advancing immediately is the point of reaching the sibling.
+      if (!candidateScopedRefusal) retryDelayMs = fallbackRetryDelayMs(index);
     } finally {
       if (!leasesRetained)
         await releaseAttemptLeases({ lease, reservation, proxySlot }, leaseSource.routingEngine);

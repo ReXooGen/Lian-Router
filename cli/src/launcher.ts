@@ -440,6 +440,8 @@ async function openSession(
   supervisor: GatewaySupervisor,
   runtime: Runtime,
   host: string,
+  /** Fire one release check at boot; the interactive menu checks for itself. */
+  bootCheck: boolean,
 ): Promise<Session> {
   ensureStateDirs(runtime.installRoot);
   const control: ControlServer = new ControlServer({
@@ -455,6 +457,7 @@ async function openSession(
       hideConsoleWindow();
       void stopTray(runtime.installRoot);
     },
+    onCheckUpdate: () => checkUpdateNow(runtime.installRoot),
     startUpdate: async () => {
       control.setUpdateRunning(true);
       try {
@@ -480,6 +483,14 @@ async function openSession(
   });
   const handshake = await control.start();
   activeControl = control;
+  if (bootCheck && !updateCheckDisabled()) {
+    // Deliberately not awaited. The console's first paint must not wait on a
+    // release feed: a slow or unreachable network would hold the control
+    // handshake open and the operator would see a dead tray. The check
+    // publishes when it lands, and a failure publishes nothing — the snapshot
+    // stays null and "Check again" is the recovery path.
+    void control.checkUpdate().catch(() => undefined);
+  }
   return { supervisor, control, handshake, installRoot: runtime.installRoot };
 }
 
@@ -564,7 +575,7 @@ async function runInteractive(
       ? { launcher: { current: launcher.current, latest: launcher.latest } }
       : {};
 
-  const session = await openSession(supervisor, runtime, options.host);
+  const session = await openSession(supervisor, runtime, options.host, options.headless);
   if (options.background) {
     supervisor.detach();
     await session.control.stop();
@@ -582,7 +593,13 @@ async function runInteractive(
     return await blockUntilTrayExit(supervisor, session, runtime);
   }
 
-  const update = checkDisabled ? null : await readUpdateInfo(runtime.installRoot);
+  const update = checkDisabled ? null : await readUpdateInfo(runtime.installRoot).catch(() => null);
+  // The interactive path already paid for this check; handing the result to the
+  // control server means the console's badge agrees with the menu row instead
+  // of waiting for its own boot check (which this path skips).
+  if (update !== null) {
+    session.control.publishUpdate(update);
+  }
   // Printed after the gateway answered and before the menu, so an invocation
   // that goes on to open the menu first states what is out of date. The notice
   // and the menu row are different surfaces on purpose: the line is the
@@ -806,7 +823,7 @@ async function enterTrayMode(
   runtime: Runtime,
 ): Promise<number> {
   await ensureStarted(supervisor);
-  const session = await openSession(supervisor, runtime, options.host);
+  const session = await openSession(supervisor, runtime, options.host, true);
   const started = await startTrayHost(supervisor, session, runtime);
   if (!started.ok) {
     console.error(started.error);
@@ -825,7 +842,9 @@ async function runTui(
   runtime: Runtime,
 ): Promise<number> {
   await ensureStarted(supervisor);
-  const session = await openSession(supervisor, runtime, options.host);
+  // The TUI's banner reads `update` off `/status`, so it has the same gap the
+  // tray had: nothing would ever fill the snapshot. Same single boot check.
+  const session = await openSession(supervisor, runtime, options.host, true);
   await launchTui(supervisor, session);
   await shutdownSession(session, supervisor);
   return 0;
@@ -882,17 +901,39 @@ async function runUpdateFlow(supervisor: GatewaySupervisor, runtime: Runtime): P
 }
 
 /**
+ * Runs the release check, throwing when it cannot run.
+ *
+ * This is the single engine call site: the menu, the boot hook, and
+ * `POST /update/check` all reach the feed through here, so the version they
+ * compare against can never drift apart.
+ *
+ * `./update/engine` is imported dynamically because another tree owns that file
+ * and it does not exist in every build; a static import would make the whole
+ * launcher fail to compile against an install that omitted it. A missing module
+ * rejects with that import error rather than an invented "no update", because
+ * "this build cannot check" is a failure the console must report, not a fact
+ * about the installed release.
+ */
+async function checkUpdateNow(installRoot: string): Promise<UpdateSnapshot> {
+  const engine = await import("../update/engine");
+  const info = await engine.checkForUpdate({
+    currentVersion: await resolveGatewayVersion(installRoot, CLI_VERSION),
+  });
+  return { current: info.current, latest: info.latest, available: info.available };
+}
+
+/**
  * Reads the update snapshot without failing the launcher when the update
  * module is absent (an isolated build, or a stripped install). A missing module
  * means "no update known", which is exactly the menu's no-row case.
+ *
+ * Only the menu's notice and row want that degraded shape — they must render
+ * either way. The control plane calls {@link checkUpdateNow} directly so a
+ * failed check reaches the console as an error instead of a silent null.
  */
 async function readUpdateInfo(installRoot: string): Promise<UpdateSnapshot | null> {
   try {
-    const engine = await import("../update/engine");
-    const info = await engine.checkForUpdate({
-      currentVersion: await resolveGatewayVersion(installRoot, CLI_VERSION),
-    });
-    return { current: info.current, latest: info.latest, available: info.available };
+    return await checkUpdateNow(installRoot);
   } catch {
     return null;
   }

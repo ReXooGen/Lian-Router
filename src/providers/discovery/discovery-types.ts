@@ -59,39 +59,69 @@ export interface ProbeModelRequest {
   stream?: boolean;
   /**
    * Opt into a real completion for a provider whose quota is keyed on the
-   * egress address.
+   * egress address. Defaults to `false`, and every existing caller relies on
+   * that default: absent or false must keep the allowance-free catalog answer
+   * byte-identical.
    *
    * For such a provider the default probe answers from the published catalog
    * because a completion costs one unit of an allowance that a spent address
    * cannot get back. Set this only when the question is genuinely "does this
    * model generate", and accept that the attempt may spend the exit it runs
-   * through. Providers whose quota is keyed on a credential ignore this field:
-   * their probe always dispatches, which is what it always did.
+   * through. The attempt goes through the same lease layer live traffic uses,
+   * so a route the gateway refuses locally (`proxy_pool_unhealthy`) is reported
+   * as that refusal rather than as a provider fault.
+   *
+   * Providers whose quota is keyed on a credential ignore this field: their
+   * probe always dispatches, which is what it always did.
    */
   spendQuota?: boolean;
 }
+/**
+ * The verdict a *dispatched* probe produced.
+ *
+ * A catalog probe emits no `kind` at all: `mode: "catalog"` already says the
+ * only thing that happened was a listing, and adding a field there would have
+ * changed the response of every existing caller for no new information.
+ * Consumers that need one discriminator derive "listed" from
+ * `mode === "catalog"`.
+ */
+export type ProbeResultKind = "generated" | "refused";
+
 export interface ProbeModelResult {
   accountId?: string;
   /**
    * Whether the probe proved what the operator asked about.
    *
    * Read this together with `mode`: `ok` on a `catalog` result means the model
-   * is published upstream, not that it generated. A catalog hit must never be
+   * is published upstream, not that it generated. A listing must never be
    * rendered as a successful generation.
    */
   ok: boolean;
   /**
-   * What the probe actually exercised.
+   * The verdict a dispatched probe produced, as one discriminator every
+   * consumer can branch on.
    *
-   * - `dispatch` — a real completion went upstream and `ok` means output came
-   *   back. This is the only mode that proves generation.
+   * - `generated` — a real completion came back with output. This is the only
+   *   kind that proves generation.
+   * - `refused` — the attempt was made and the gateway classified the failure.
+   *   `code`, `errorOrigin`, and `reason` say exactly what refused it, and
+   *   `allowanceSpent` says whether the attempt reached the provider at all.
+   *
+   * Absent on a catalog probe (`mode: "catalog"` already says a listing was the
+   * only thing that happened) and on the early failures that answer before
+   * either question is asked (no usable account, no registered adapter).
+   */
+  kind?: ProbeResultKind;
+  /**
+   * What the probe exercised.
+   *
+   * - `dispatch` — a real completion went upstream. `kind` then says whether it
+   *   generated or was refused.
    * - `catalog` — the provider's published model list was fetched through the
    *   same egress binding and the requested id was looked up in it. No
-   *   completion was sent, so no allowance was spent; `ok` means the id is
-   *   listed upstream.
+   *   completion was sent, so no allowance was spent.
    *
-   * Absent on the early failures that answer before either question is asked
-   * (no usable account, no registered adapter), where neither mode ran.
+   * Absent on the early failures described above.
    */
   mode?: "dispatch" | "catalog";
   latencyMs: number;
@@ -106,7 +136,42 @@ export interface ProbeModelResult {
   httpStatus: number;
   /** Failure category (`GatewayError` code); absent on success. */
   code?: string;
+  /** Operator-facing failure text: the provider/wire/status context, or the
+   * gateway's own message for a local refusal. */
   error?: string;
+  /**
+   * Which boundary produced the failure, mirroring the stored telemetry column.
+   *
+   * `network` is the honest label for a route the gateway refused locally: the
+   * request never left the box, so nothing about the provider or its allowance
+   * was learned. Reporting such a refusal as `upstream` would send the operator
+   * to the provider's logs for a fault this router produced.
+   */
+  errorOrigin?: "gateway" | "upstream" | "network";
+  /**
+   * The classified sub-reason inside `code`, when the gateway recorded one
+   * (`candidate_pool_missing`, `pool_not_in_candidate_set`, …).
+   *
+   * Carried because a bare `proxy_pool_unhealthy` does not say whether the
+   * candidate carried no pool or every pool was unhealthy, and those are
+   * different operator actions.
+   */
+  reason?: string;
+  /**
+   * Set to `true` only when this probe charged one unit of the provider's
+   * allowance.
+   *
+   * In the payload rather than only in console copy so a scripted caller sees
+   * the cost too. Absent (not `false`) when nothing was charged, which is what
+   * keeps a default probe's response identical to the one this gateway served
+   * before the opt-in existed — a new always-present field would have changed
+   * every caller's payload to say "free" about a probe that already was.
+   *
+   * A local refusal is free: the request never left the box. A 429 is not —
+   * the provider is confirming a unit was already gone, so the attempt counts
+   * as having gone upstream.
+   */
+  allowanceSpent?: true;
   /**
    * Network pool that served the attempt; absent on a direct dial.
    *
@@ -124,6 +189,16 @@ export interface ProbeModelResult {
    * credential is deliberately unreachable from here.
    */
   poolHost?: string;
+  /**
+   * How many proxy exits the probe dialed before it answered or gave up.
+   *
+   * Absent when the probe dialed once, because "one exit refused" is already
+   * what a single-attempt refusal means. Present with two or more, which is the
+   * only case where the operator cannot infer it: an egress-keyed 429 moves the
+   * probe to another exit, so nine burned addresses and one burned address
+   * would otherwise read identically.
+   */
+  exitsTried?: number;
 }
 
 /**
