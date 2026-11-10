@@ -101,7 +101,7 @@ export function ClaimCaptchaDialog({
       prefix: config.prefix,
     });
     const features = "popup=yes,width=460,height=620,resizable=yes,scrollbars=yes";
-    const popup = window.open(`/claim-captcha.html?${query.toString()}`, "zcode-claim-captcha", features);
+    const popup = window.open(`/console/claim-captcha?${query.toString()}`, "zcode-claim-captcha", features);
     if (popup === null) {
       // A blocked popup is the one failure the operator can fix themselves, so
       // it gets its own message rather than a generic "challenge failed".
