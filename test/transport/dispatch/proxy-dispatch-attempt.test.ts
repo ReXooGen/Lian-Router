@@ -14,6 +14,7 @@ import { ProxyRequestPreparer, type PreparedProxyRequest } from "../../../src/tr
 import type { RouteCandidate } from "../../../src/transport/routing/route-model";
 import { ProxyRequestStateStore } from "../../../src/transport/request/state";
 import { GatewayError } from "../../../src/transport/gateway-error";
+import { ProxyConnectError } from "../../../src/network/pool/agent";
 import { type CanonicalEvent, type CanonicalRequest, type UsageRecord } from "../../../src/transport/canonical-model";
 import { candidateSupportsRequest, type RequiredCapability } from "../../../src/transport/translation/capabilities";
 import type { ResolvedApiKey } from "../../../src/security/api-key-auth";
@@ -522,6 +523,7 @@ describe("createResponsesCompactHandler — shared attempt loop", () => {
     readonly compact: () => Promise<Response>;
     readonly rows: Array<Record<string, unknown>>;
     readonly commits: unknown[];
+    readonly poolSelector?: unknown;
   }) {
     const authorization: ResolvedApiKey = {
       id: "key",
@@ -588,6 +590,7 @@ describe("createResponsesCompactHandler — shared attempt loop", () => {
           options.rows.push(row);
         },
       },
+      ...(options.poolSelector !== undefined ? { poolSelector: options.poolSelector } : {}),
     } as unknown as ResponsesCompactHandlerDeps;
     return { request, state, handler: createResponsesCompactHandler(deps) };
   }
@@ -622,6 +625,140 @@ describe("createResponsesCompactHandler — shared attempt loop", () => {
     expect(rows[0]).toMatchObject({ status: "completed", requestedModel: "unknown" });
   });
 
+  /** Pool selector whose exits can be spent individually, like a real proxy fleet. */
+  function fadingPoolSelector() {
+    const spent = new Set<string>();
+    const acquisitions: string[] = [];
+    return {
+      acquisitions,
+      selector: {
+        tryAcquireAvailablePool: async (ids: readonly string[]) => {
+          const poolId = ids.find((id) => !spent.has(id));
+          if (poolId === undefined) return undefined;
+          acquisitions.push(poolId);
+          return { poolId, release: () => {} };
+        },
+        flagProviderCooldown: async (poolId: string) => {
+          spent.add(poolId);
+          return { poolId, providerId: "codex", until: Date.now() + 60_000, reason: "test" };
+        },
+      },
+    };
+  }
+
+  test("retries the same candidate on an egress-scoped 429, without charging the failed try", async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const commits: unknown[] = [];
+    const attempted: string[] = [];
+    const { selector, acquisitions } = fadingPoolSelector();
+    const { request, handler } = compactHarness({
+      candidates: [
+        {
+          ...codexRouteCandidate(COMPACT_MODEL),
+          network_pool_ids: ["pool-a", "pool-b"],
+          network_pool_required: true,
+        },
+      ],
+      compact: async () => {
+        attempted.push("call");
+        if (attempted.length === 1) {
+          throw new GatewayError("quota_exceeded", 429, "free allowance spent", {
+            rateLimitScope: "network",
+          }, "upstream");
+        }
+        return new Response('{"output":"second-exit"}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      rows,
+      commits,
+      poolSelector: selector,
+    });
+
+    const response = await handler({ request });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('{"output":"second-exit"}');
+    expect(attempted).toHaveLength(2);
+    // The cooldown from the first attempt is visible to the selector before
+    // the retry acquires, so the second try cannot reuse the spent exit.
+    expect(acquisitions).toEqual(["pool-a", "pool-b"]);
+    expect(rows).toHaveLength(1);
+    // A 429 consumed no upstream tokens: the failed try commits no usage.
+    expect(commits).toHaveLength(1);
+  });
+
+  test("retries the same candidate when the proxy refuses the CONNECT handshake", async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const commits: unknown[] = [];
+    const attempted: string[] = [];
+    const { selector, acquisitions } = fadingPoolSelector();
+    const { request, handler } = compactHarness({
+      candidates: [
+        {
+          ...codexRouteCandidate(COMPACT_MODEL),
+          network_pool_ids: ["pool-a", "pool-b"],
+          network_pool_required: true,
+        },
+      ],
+      compact: async () => {
+        attempted.push("call");
+        if (attempted.length === 1) {
+          throw new ProxyConnectError("pool-a", 504, "Gateway Timeout");
+        }
+        return new Response('{"output":"second-exit"}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      rows,
+      commits,
+      poolSelector: selector,
+    });
+
+    const response = await handler({ request });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('{"output":"second-exit"}');
+    expect(attempted).toHaveLength(2);
+    // The refused tunnel is cooled before the retry acquires, so the second
+    // try leaves through a different exit.
+    expect(acquisitions).toEqual(["pool-a", "pool-b"]);
+    expect(rows).toHaveLength(1);
+    // No upstream saw the first attempt, so it commits no usage.
+    expect(commits).toHaveLength(1);
+  });
+
+  test("does not retry an account-scoped 429 on another exit", async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const commits: unknown[] = [];
+    const attempted: string[] = [];
+    const { selector, acquisitions } = fadingPoolSelector();
+    const { request, handler } = compactHarness({
+      candidates: [
+        {
+          ...codexRouteCandidate(COMPACT_MODEL),
+          network_pool_ids: ["pool-a", "pool-b"],
+          network_pool_required: true,
+        },
+      ],
+      compact: async () => {
+        attempted.push("call");
+        throw new GatewayError("quota_exceeded", 429, "credential allowance spent", {
+          rateLimitScope: "account",
+          credentialEvidence: true,
+        }, "upstream");
+      },
+      rows,
+      commits,
+      poolSelector: selector,
+    });
+
+    await expect(handler({ request })).rejects.toMatchObject({ status: 429 });
+    expect(attempted).toHaveLength(1);
+    expect(acquisitions).toEqual(["pool-a"]);
+  });
   test("fails over to the next Codex candidate on a retryable failure", async () => {
     const rows: Array<Record<string, unknown>> = [];
     const commits: unknown[] = [];

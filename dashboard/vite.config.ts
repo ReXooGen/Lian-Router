@@ -73,6 +73,11 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: "index.html",
+        // The claim challenge runs in its own document so it can carry a policy
+        // the dashboard cannot: the vendor widget needs a remote script and
+        // remote challenge hosts. Building it as an entry means it is hashed,
+        // bundled and type-checked like the rest of the app.
+        "claim-captcha": "claim-captcha.html",
       },
     },
   },

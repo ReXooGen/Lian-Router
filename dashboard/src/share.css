@@ -652,6 +652,28 @@
   padding-top: 1.1rem;
   border-top: 1px solid var(--share-line-soft);
 }
+.share-keyname-field {
+  display: grid;
+  gap: .35rem;
+}
+.share-keyname-field input {
+  width: 100%;
+  max-width: 22rem;
+  padding: .6rem .75rem;
+  border: 1px solid var(--share-line-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .02);
+  color: var(--share-ink, #e6e9ef);
+  font: inherit;
+  font-size: .9rem;
+}
+.share-keyname-field input:focus {
+  outline: none;
+  border-color: var(--share-line, #3a4356);
+}
+.share-keyname-field input:disabled {
+  opacity: .55;
+}
 .share-warning {
   padding: .6rem .75rem;
   border: 1px solid rgba(251, 191, 36, .22);

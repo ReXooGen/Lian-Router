@@ -1,5 +1,6 @@
 import { providerAccounts } from "../../persistence/schema";
 import type { ProviderQuotaResult } from "../../providers/quota/quota-contracts";
+import { isQuotaExhausted } from "../../providers/quota/quota-contracts";
 import { GLOBAL_QUOTA_LENS } from "./quota-cache";
 import {
   QUOTA_REFRESH_TIMEOUT_MS,
@@ -19,6 +20,14 @@ export interface QuotaRefreshView {
   readonly lastAttemptAt: string | null;
   readonly lastSuccessAt: string | null;
   readonly error: string | null;
+  /**
+   * True when every grant is spent, so nothing can be drawn from the plan.
+   *
+   * The dashboard hides spent plans from the claim card and from the quota
+   * list: a plan at zero is still listed by the vendor, but offering it as a
+   * grant the operator can use would advertise capacity that is gone.
+   */
+  readonly exhausted: boolean;
 }
 
 interface BackgroundQuotaRefreshJob {
@@ -104,6 +113,7 @@ export function toQuotaView(
     lastAttemptAt: timestamps.lastAttemptAt ?? null,
     lastSuccessAt: timestamps.lastSuccessAt ?? account.lastSuccessAt?.toISOString() ?? null,
     error: quota.error ?? null,
+    exhausted: isQuotaExhausted(quota),
   };
 }
 

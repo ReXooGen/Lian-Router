@@ -6,7 +6,7 @@
 import type { AuditSink } from "../audit/contracts";
 import { randomBytes } from "node:crypto";
 import type { ApiKeyRecord, ApiKeyStore } from "../../../persistence/api-key-store";
-import { hashSecret } from "../../../security/crypto";
+import { hashSecret, decryptCredentialToString } from "../../../security/crypto";
 import { type ShareLinkStore, type ShareLinkSummary } from "../../../persistence/share-store";
 import { API_KEY_MODES, type ApiKeyMode, type ShareLinkKind } from "../../../persistence/schema";
 import { isValidTenantKeyScope, type AccessScope } from "../../../security/access-control";
@@ -56,6 +56,13 @@ export interface ApiKeyResponse {
   readonly scopes: readonly AccessScope[];
   readonly keyPrefix?: string;
   readonly parentKeyId?: string;
+  /**
+   * Non-secret identity fragment of a personal key's recoverable secret
+   * (`aaaaaaaa…1234`). Lets the console show which pasted key is in use
+   * without revealing the secret; absent for share templates and rows whose
+   * ciphertext predates recoverable storage.
+   */
+  readonly keyFingerprint?: string;
   readonly requestsPerMinute?: number;
   readonly dailyTokenLimit?: number;
   readonly monthlyTokenLimit?: number;
@@ -278,14 +285,36 @@ export async function resolveNetworkPoolBinding(
   return pool.id;
 }
 
+/**
+ * A non-secret identity fragment of a personal key's recoverable secret.
+ *
+ * The console shows which pasted credential is in use without revealing it;
+ * a share template or a row encrypted under a previous key has none to show.
+ */
+function keyFingerprintOf(record: ApiKeyRecord): string | undefined {
+  const ciphertext = record.keyEncrypted;
+  if (record.keyMode !== "personal" || ciphertext === undefined) return undefined;
+  try {
+    const secret = decryptCredentialToString(ciphertext);
+    if (secret.length <= 12) return undefined;
+    return `${secret.slice(0, 8)}…${secret.slice(-4)}`;
+  } catch {
+    // A row encrypted under a previous key is unreadable, not fatal: the
+    // list must still render.
+    return undefined;
+  }
+}
+
 /** Serializes a persisted record without credential material or IP-key digests. */
 export function sanitizeApiKeyResponse(record: ApiKeyRecord): ApiKeyResponse {
+  const fingerprint = keyFingerprintOf(record);
   return {
     id: record.id,
     label: record.label,
     keyMode: record.keyMode,
     scopes: record.scopes,
     ...(record.keyPrefix === undefined ? {} : { keyPrefix: record.keyPrefix }),
+    ...(fingerprint === undefined ? {} : { keyFingerprint: fingerprint }),
     ...(record.parentKeyId === undefined ? {} : { parentKeyId: record.parentKeyId }),
     ...(record.notesTitle === undefined ? {} : { notesTitle: record.notesTitle }),
     ...(record.notesSubtitle === undefined ? {} : { notesSubtitle: record.notesSubtitle }),

@@ -42,6 +42,7 @@ describe("registry endpoint map ↔ model catalog parity", () => {
         "opencodezen",
         "perplexity",
         "perplexity-agent",
+        "zcode",
       ].sort(),
     );
   });

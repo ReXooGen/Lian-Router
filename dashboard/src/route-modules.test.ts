@@ -14,6 +14,7 @@ import Banned from "./routes/Banned";
 import Overview from "./routes/Overview";
 import Usage from "./routes/Usage";
 import ProviderDetail from "./routes/ProviderDetail";
+import AccountProbeAll from "./routes/AccountProbeAll";
 import Providers from "./routes/Providers";
 import PromptInjection from "./routes/PromptInjection";
 import Combos from "./routes/Combos";
@@ -25,6 +26,7 @@ import CliToolDetail from "./routes/CliToolDetail";
 import ConsoleLog from "./routes/ConsoleLog";
 import Customization from "./routes/Customization";
 import Studio from "./routes/Studio";
+import Generation from "./routes/Generation";
 import Share from "./routes/Share";
 
 /**
@@ -38,6 +40,7 @@ const ROUTE_MODULES: ReadonlyArray<readonly [string, ComponentType]> = [
   ["/", Overview],
   ["/usage", Usage],
   ["/providers/:providerId", ProviderDetail],
+  ["/providers/:providerId/accounts/test", AccountProbeAll],
   ["/providers", Providers],
   ["/prompt-injection", PromptInjection],
   ["/combos", Combos],
@@ -50,6 +53,7 @@ const ROUTE_MODULES: ReadonlyArray<readonly [string, ComponentType]> = [
   ["/customization", Customization],
   ["/share", Share],
   ["/model-lab", Studio],
+  ["/generation", Generation],
 ];
 
 const user: SessionUser = {

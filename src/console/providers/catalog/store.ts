@@ -13,6 +13,7 @@ import type { BundledProviderCatalog } from "../../../providers/operations/provi
 import { validateCompatibilityProfile, type ByokConnectionTestRequest, type ByokConnectionTestResult, type CreateProviderAccountRequest, type ModelCatalogEntry, type ProbeAllAccountsResult, type ProbeAllModelsResult, type ProbeModelRequest, type ProbeModelResult, type ProviderAccountResponse, type ProviderAccountTokenUsage, type ProviderCatalogStore, type ProviderRecord, type SetModelEnabledRequest, type UpdateProviderAccountRequest, ACCOUNT_MAX_INFLIGHT_BOUNDS } from "./contracts";
 import { ProviderProbingService, type ProbeOutboundResolver } from "../../../providers/discovery/probing-service";
 import type { NetworkPoolSelector } from "../../../network/pool/selector";
+import type { ProxyConnectError } from "../../../network/pool/agent";
 import { resolveManualModelMetadata } from "../../../providers/model-definition";
 import { isUniqueViolation } from "../../../persistence/postgres";
 import { DEFAULT_ENDPOINT_BY_WIRE_FAMILY, endpointPathForProviderModel, mapProviderRow } from "./catalog-projections";
@@ -109,6 +110,8 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       readonly snapshotInvalidator: { invalidate(): unknown };
       /** Same selector live dispatch flags; lets a probe retire a burned egress. */
       readonly poolSelector?: NetworkPoolSelector | undefined;
+      /** Cools a (pool, provider) pair after a refused CONNECT; see probing-service. */
+      readonly coolPool?: (poolId: string, providerId: string, error: ProxyConnectError) => void;
     },
   ) {
     this.bundledModelCatalog = options.bundledModelCatalog.modelsByProvider;
@@ -122,6 +125,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       snapshotInvalidator: options.snapshotInvalidator,
       providerRegistry: options.providerRegistry,
       ...(options.poolSelector ? { poolSelector: options.poolSelector } : {}),
+      ...(options.coolPool ? { coolPool: options.coolPool } : {}),
     });
   }
   async list(tenantId: string): Promise<readonly ProviderRecord[]> {

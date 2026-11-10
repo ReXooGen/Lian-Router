@@ -32,6 +32,7 @@ import {
   useRefreshAccountQuota,
   useRefreshAllQuotas,
   useTriggerGrowthPass,
+  useBulkAccountCheckin,
   useTriggerAccountReset,
   useAccountResets,
   useUpdateAccountActive,
@@ -47,10 +48,14 @@ import {
   formatQuotaWindowLabel,
   formatResetDistance,
   quotaBarTone,
+  pendingGrantLabel,
   accountIdentity,
 } from "../lib/quota-formatters";
 import { getErrorMessage } from "../lib/helpers";
 
+
+/** Upper bound for one bulk check-in: above this, narrow filters instead. */
+const BULK_CHECKIN_LIMIT = 50;
 
 function isEmpty(account: QuotaEntry): boolean {
   return Boolean(
@@ -345,6 +350,14 @@ function QuotaCard({
             >
               {account.providerName}
             </div>
+            {canCheckin ? (
+              <Badge
+                tone="info"
+                title={`Billing facade: ${account.providerName} (${account.provider})`}
+              >
+                {account.provider}
+              </Badge>
+            ) : null}
             {quota?.plan && (
               <span
                 className="shrink-0 rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--accent)]"
@@ -469,7 +482,7 @@ function QuotaCard({
               variant="ghost"
               size="icon"
               className="size-8"
-              title={`Daily growth pass (check-in + activity report) — ${statusHint}`}
+              title={`Daily growth pass (check-in + activity report) on ${account.providerName} — ${statusHint}`}
               aria-label={`Run daily growth pass for ${account.name}`}
               disabled={busy}
               onClick={() =>
@@ -580,10 +593,37 @@ function QuotaCard({
           {quota.windows.map((window, index) => {
             const remaining = window.remainingPercent ?? null;
             const limit = window.limit ?? null;
+            // A scheduled grant has no usage yet by definition, so its bar would
+            // be an empty grey line with a bare "limit 300,000,000". The schedule
+            // is the only useful fact about it.
+            const pendingLabel = pendingGrantLabel(window.availableAt);
             const colors = quotaBarTone(remaining);
-            const quotaFillPct = remaining !== null ? Math.max(0, Math.min(100, remaining)) : 0;
+            const quotaFillPct = pendingLabel !== null ? 0 : remaining !== null ? Math.max(0, Math.min(100, remaining)) : 0;
+            // A plan heading appears above the first bar of each plan. With one
+            // plan the heading would repeat the badge already in the card
+            // header, so it is only drawn when the account holds more than one;
+            // the split itself is what tells an operator that the referral
+            // grant and the paid plan are separate pools.
+            const planGroups = quota.windows.map((entry) => entry.group ?? null);
+            const distinctPlans = new Set(planGroups.filter((group) => group !== null));
+            const showPlanHeading = distinctPlans.size > 1 && planGroups.indexOf(window.group ?? null) === index;
             return (
               <div key={`${window.kind ?? window.label}:${window.resetsAt ?? "none"}:${index}`}>
+                {showPlanHeading && window.group ? (
+                  <div
+                    style={{
+                      fontSize: "10px",
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      textTransform: "uppercase",
+                      color: "var(--text-tertiary)",
+                      marginBottom: "8px",
+                      marginTop: index === 0 ? "0" : "4px",
+                    }}
+                  >
+                    {window.group}
+                  </div>
+                ) : null}
                 {/* Label + percentage */}
                 <div
                   className="mb-1.5 flex items-center justify-between"
@@ -600,7 +640,21 @@ function QuotaCard({
                   >
                     {formatQuotaWindowLabel(window.label)}
                   </span>
-                  {remaining !== null && (
+                  {pendingLabel !== null ? (
+                    <span
+                      className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "9999px",
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        background: "var(--accent-soft)",
+                        color: "var(--accent)",
+                      }}
+                    >
+                      {pendingLabel}
+                    </span>
+                  ) : remaining !== null ? (
                     <span
                       className="text-[11px] font-bold tabular-nums"
                       style={{
@@ -612,7 +666,7 @@ function QuotaCard({
                     >
                       {remaining}%
                     </span>
-                  )}
+                  ) : null}
                 </div>
                 {/* Pill progress bar */}
                 <div
@@ -686,10 +740,177 @@ function QuotaCard({
   );
 }
 
+/**
+ * Cards per page. The account grid used to render every account at once. One
+ * page of 24 twelve-window cards already renders ~3,500 elements and 288 bars,
+ * so a 2,400-account tenant ran to six figures of DOM with a transition on
+ * every fill. One page bounds that work and every account stays reachable
+ * through the pager.
+ */
+export const QUOTA_PAGE_SIZE = 24;
+
+/**
+ * Prev / page indicator / Next. Rendered above and below the grid so a long
+ * page can be advanced from the bottom without scrolling back up.
+ */
+function QuotaPager({
+  currentPage,
+  totalPages,
+  onPageChange,
+}: {
+  readonly currentPage: number;
+  readonly totalPages: number;
+  readonly onPageChange: (page: number) => void;
+}): ReactNode {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: "8px",
+      }}
+    >
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={currentPage <= 1}
+        onClick={() => onPageChange(currentPage - 1)}
+      >
+        Prev
+      </Button>
+      <span
+        aria-live="polite"
+        style={{
+          fontSize: "11px",
+          color: "var(--text-tertiary)",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        Page {currentPage} of {totalPages}
+      </span>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={currentPage >= totalPages}
+        onClick={() => onPageChange(currentPage + 1)}
+      >
+        Next
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The visible page of account cards plus its pager. Exported so the bounded
+ * grid can be rendered at a chosen page without a DOM.
+ */
+export function QuotaAccountGrid({
+  accounts,
+  page,
+  onPageChange,
+  onToggle,
+  onDelete,
+  onShowHealth,
+  onShowResets,
+}: {
+  readonly accounts: readonly QuotaEntry[];
+  readonly page: number;
+  readonly onPageChange: (page: number) => void;
+  readonly onToggle: (account: QuotaEntry, active: boolean) => void;
+  readonly onDelete: (account: QuotaEntry) => void;
+  readonly onShowHealth: (account: QuotaEntry) => void;
+  readonly onShowResets: (account: QuotaEntry) => void;
+}): ReactNode {
+  const totalPages = Math.max(1, Math.ceil(accounts.length / QUOTA_PAGE_SIZE));
+  const currentPage = Math.min(Math.max(1, page), totalPages);
+  const start = (currentPage - 1) * QUOTA_PAGE_SIZE;
+  const visible = accounts.slice(start, start + QUOTA_PAGE_SIZE);
+
+  return (
+    <Stack gap="12px">
+      <QuotaPager
+        currentPage={currentPage}
+        totalPages={totalPages}
+        onPageChange={onPageChange}
+      />
+
+      <div
+        className="grid grid-cols-1 gap-3 lg:grid-cols-2"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(min(420px, 100%), 1fr))",
+          gap: "12px",
+        }}
+      >
+        {visible.map((account) => (
+          <QuotaCard
+            key={account.id}
+            account={account}
+            onToggle={onToggle}
+            onDelete={onDelete}
+            onShowHealth={onShowHealth}
+            onShowResets={onShowResets}
+          />
+        ))}
+      </div>
+
+      <QuotaPager
+        currentPage={currentPage}
+        totalPages={totalPages}
+        onPageChange={onPageChange}
+      />
+    </Stack>
+  );
+}
+
+/**
+ * Whether an account belongs in the grid under the current account filter.
+ *
+ * A read that failed carries no windows, but that says nothing about the
+ * account: the default "With quota" filter used to drop it, so an account whose
+ * quota endpoint rate-limited simply vanished from the page — the accounts most
+ * in need of attention were the ones missing.
+ */
+export function quotaAccountMatchesFilter(
+  account: QuotaEntry,
+  accountFilter: string,
+  providerFilter: string,
+): boolean {
+  if (providerFilter !== "all" && account.provider !== providerFilter) return false;
+  const hasQuota = Boolean(account.quota?.windows.length);
+  const readFailed = Boolean(account.quota?.error);
+  if (accountFilter === "untracked") return !hasQuota && !readFailed;
+  const spent = isSpentAccount(account);
+  // A plan whose grants are all spent still answers, but it holds nothing an
+  // operator can use, so it leaves the default list instead of sitting there
+  // looking like capacity. It stays reachable through "Spent", because hiding
+  // a fact is not the same as deleting it and an operator still needs to see
+  // which accounts ran dry.
+  if (accountFilter === "spent") return spent;
+  if (spent) return false;
+  if (!hasQuota && !readFailed) return false;
+  if (accountFilter === "active" && !account.active) return false;
+  if (accountFilter === "disabled" && account.active) return false;
+  return true;
+}
+
+/**
+ * True when the account's every grant is spent.
+ *
+ * Mirrors the server's `isQuotaExhausted`: a read error and an empty window
+ * list both mean "unknown", not "spent", so neither is hidden by this rule.
+ */
+function isSpentAccount(account: QuotaEntry): boolean {
+  const windows = account.quota?.windows ?? [];
+  if (account.quota?.error || windows.length === 0) return false;
+  return windows.every((window) => window.remainingPercent !== null && window.remainingPercent <= 0);
+}
 export default function Quota(): ReactNode {
   const [providerFilter, setProviderFilter] = useState("all");
   const [accountFilter, setAccountFilter] = useState("all");
   const [expiringFirst, setExpiringFirst] = useState(false);
+  const [page, setPage] = useState(1);
   const { data, isLoading, isError, error, isFetching, dataUpdatedAt, refetch } =
     useQuotaOverview();
   const providers = useMemo(
@@ -702,6 +923,7 @@ export default function Quota(): ReactNode {
   const accounts = useMemo(() => data?.accounts ?? [], [data?.accounts]);
   const refreshingCount = data?.refreshing ?? 0;
   const refreshAll = useRefreshAllQuotas();
+  const bulkCheckin = useBulkAccountCheckin();
   const updateActive = useUpdateAccountActive();
   const setActiveBatch = useSetAccountsActiveBatch();
   const deleteAccountMutation = useDeleteQuotaAccount();
@@ -710,15 +932,9 @@ export default function Quota(): ReactNode {
   const [resetTarget, setResetTarget] = useState<QuotaEntry | null>(null);
 
   const filteredAccounts = useMemo(() => {
-    const result = accounts.filter((account) => {
-      if (providerFilter !== "all" && account.provider !== providerFilter) return false;
-      const hasQuota = Boolean(account.quota?.windows.length);
-      if (accountFilter === "untracked") return !hasQuota;
-      if (!hasQuota) return false;
-      if (accountFilter === "active" && !account.active) return false;
-      if (accountFilter === "disabled" && account.active) return false;
-      return true;
-    });
+    const result = accounts.filter((account) =>
+      quotaAccountMatchesFilter(account, accountFilter, providerFilter),
+    );
     // Default order is A→Z by display name; "Expiring first" swaps to the
     // soonest-resetting account, with the name as a stable tiebreaker so the
     // grid does not reshuffle between polls.
@@ -731,6 +947,31 @@ export default function Quota(): ReactNode {
     );
   }, [accountFilter, accounts, expiringFirst, providerFilter]);
 
+  // Bulk check-in follows the current filters, not the whole tenant: the
+  // toolbar already shows "N matching" beside the action, and a check-in costs
+  // upstream requests. An operator who wants the wider set widens the filters.
+  const checkinTargets = useMemo(
+    () => filteredAccounts.filter((account) => supportsAccountCheckin(account.provider)),
+    [filteredAccounts],
+  );
+  const bulkCheckinBlocked = checkinTargets.length > BULK_CHECKIN_LIMIT;
+
+  // Any filter or ordering change re-enters the list at page 1; otherwise a
+  // narrowed result can leave the operator on an empty tail page.
+  const changeProviderFilter = (value: string) => {
+    setProviderFilter(value);
+    setPage(1);
+  };
+
+  const changeAccountFilter = (value: string) => {
+    setAccountFilter(value);
+    setPage(1);
+  };
+
+  const toggleExpiringFirst = () => {
+    setExpiringFirst((current) => !current);
+    setPage(1);
+  };
   const updateAccount = async (account: QuotaEntry, active: boolean) => {
     try {
       await updateActive.mutateAsync({ id: account.id, active });
@@ -784,7 +1025,7 @@ export default function Quota(): ReactNode {
         <Select
           aria-label="Filter quota by provider"
           value={providerFilter}
-          onValueChange={setProviderFilter}
+          onValueChange={changeProviderFilter}
           style={{ width: "160px", height: "32px" }}
           options={[
             { value: "all", label: "All Providers" },
@@ -794,19 +1035,20 @@ export default function Quota(): ReactNode {
         <Select
           aria-label="Filter quota by account"
           value={accountFilter}
-          onValueChange={setAccountFilter}
+          onValueChange={changeAccountFilter}
           style={{ width: "135px", height: "32px" }}
           options={[
             { value: "all", label: "With quota" },
             { value: "active", label: "Active" },
             { value: "disabled", label: "Disabled" },
+            { value: "spent", label: "Spent" },
             { value: "untracked", label: "No quota" },
           ]}
         />
         <Button
           variant={expiringFirst ? "secondary" : "ghost"}
           size="sm"
-          onClick={() => setExpiringFirst((current) => !current)}
+          onClick={() => toggleExpiringFirst()}
           aria-pressed={expiringFirst}
           icon={<Clock3 size={13} />}
         >
@@ -833,6 +1075,52 @@ export default function Quota(): ReactNode {
           icon={<Check size={13} />}
         >
           Turn on Available
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<CalendarCheck size={13} />}
+          title={
+            bulkCheckinBlocked
+              ? `Too many matching accounts (${checkinTargets.length}); narrow the filters to ${BULK_CHECKIN_LIMIT} or fewer`
+              : "Run the daily check-in for every account matching the current filters (each provider uses its own billing facade)"
+          }
+          aria-label={`Check in ${checkinTargets.length} matching accounts`}
+          loading={bulkCheckin.isPending}
+          disabled={
+            checkinTargets.length === 0 ||
+            bulkCheckinBlocked ||
+            bulkCheckin.isPending ||
+            isFetching
+          }
+          onClick={() =>
+            bulkCheckin.mutate(
+              checkinTargets.map((account) => account.id),
+              {
+                onSuccess: (summary) => {
+                  const parts = [
+                    `${summary.claimed} claimed`,
+                    `${summary.alreadyClaimed} already`,
+                    ...(summary.other > 0 ? [`${summary.other} other`] : []),
+                    ...(summary.failed > 0 ? [`${summary.failed} failed`] : []),
+                  ];
+                  const message = parts.join(" · ");
+                  if (summary.failed > 0) {
+                    toast.error("Bulk check-in finished", message);
+                  } else {
+                    toast.success("Bulk check-in finished", message);
+                  }
+                },
+                onError: (error) =>
+                  toast.error(
+                    "Bulk check-in failed",
+                    getErrorMessage(error, "Unable to check in accounts"),
+                  ),
+              },
+            )
+          }
+        >
+          Check in all ({checkinTargets.length})
         </Button>
         <span
           className="ml-auto flex items-center gap-1 text-[10px] text-[var(--text-tertiary)]"
@@ -908,25 +1196,15 @@ export default function Quota(): ReactNode {
           description="No tracked provider quota is available yet."
         />
       ) : (
-        <div
-          className="grid grid-cols-1 gap-3 lg:grid-cols-2"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(min(420px, 100%), 1fr))",
-            gap: "12px",
-          }}
-        >
-          {filteredAccounts.map((account) => (
-            <QuotaCard
-              key={account.id}
-              account={account}
-              onToggle={(entry, active) => void updateAccount(entry, active)}
-              onDelete={(entry) => setDeleteTarget(entry)}
-              onShowHealth={(entry) => setHealthTarget(entry)}
-              onShowResets={(entry) => setResetTarget(entry)}
-            />
-          ))}
-        </div>
+        <QuotaAccountGrid
+          accounts={filteredAccounts}
+          page={page}
+          onPageChange={setPage}
+          onToggle={(entry, active) => void updateAccount(entry, active)}
+          onDelete={(entry) => setDeleteTarget(entry)}
+          onShowHealth={(entry) => setHealthTarget(entry)}
+          onShowResets={(entry) => setResetTarget(entry)}
+        />
       )}
 
       {healthTarget && (

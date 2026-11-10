@@ -229,12 +229,37 @@ export interface ObservabilityStore {
     period: string,
     limit: number,
     httpStatus?: number,
+    shared?: boolean,
+    parentKeyId?: string,
+    childKeyId?: string,
   ): Promise<UsageRequestsResponse>;
   usageRequestDetail(tenantId: string, requestId: string): Promise<UsageRequestDetail | undefined>;
 }
 export interface ObservabilityConfig {
   readonly store: ObservabilityStore;
   readonly accessResolver: ConsoleAccessResolver;
+}
+
+/** Longest API-key id the filter accepts; anything longer is a typo, not a uuid. */
+const MAX_KEY_FILTER_LENGTH = 128;
+
+/**
+ * Blank or absent means "no filter" — the dashboard sends the parameter once
+ * the operator picks a key and can send an empty one before that. Length is
+ * capped here rather than in SQL so an oversized value fails before a query.
+ */
+function normalizeKeyFilter(raw: string | undefined, label: string): string | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === "") return undefined;
+  if (trimmed.length > MAX_KEY_FILTER_LENGTH) {
+    throw new ConsoleDomainError(
+      "invalid_request",
+      400,
+      `Invalid ${label} filter: at most ${MAX_KEY_FILTER_LENGTH} characters`,
+    );
+  }
+  return trimmed;
 }
 
 export function createObservabilityOperations(config: ObservabilityConfig) {
@@ -337,6 +362,9 @@ export function createObservabilityOperations(config: ObservabilityConfig) {
       period = "24h",
       limit?: string,
       httpStatus?: string,
+      shared?: boolean,
+      parentKeyId?: string,
+      childKeyId?: string,
     ): Promise<UsageRequestsResponse> {
       const tenantId = operations.requireTenant(access);
       let parsedStatus: number | undefined;
@@ -346,11 +374,26 @@ export function createObservabilityOperations(config: ObservabilityConfig) {
           throw new ConsoleDomainError("invalid_request", 400, "Invalid HTTP status filter");
         }
       }
+      const parentFilter = normalizeKeyFilter(parentKeyId, "parentKeyId");
+      const childFilter = normalizeKeyFilter(childKeyId, "childKeyId");
+      // Personal traffic and a share template cannot both be true: the caller
+      // picked two mutually exclusive scopes, so answer instead of silently
+      // letting one win.
+      if (shared === false && parentFilter !== undefined) {
+        throw new ConsoleDomainError(
+          "invalid_request",
+          400,
+          "shared=false cannot be combined with parentKeyId",
+        );
+      }
       return config.store.usageRequests(
         tenantId,
         operations.requirePeriod(period),
         parseQueryLimit(limit, 50, 500),
         parsedStatus,
+        shared,
+        parentFilter,
+        childFilter,
       );
     },
     async getUsageRequestDetail(
@@ -377,6 +420,9 @@ const usageRequestsQuery = t.Object({
   period: t.Optional(t.String()),
   limit: t.Optional(t.String()),
   httpStatus: t.Optional(t.String()),
+  shared: t.Optional(t.String()),
+  parentKeyId: t.Optional(t.String()),
+  childKeyId: t.Optional(t.String()),
 });
 const telemetryDetailQuery = t.Object({
   includePayload: t.Optional(t.String()),
@@ -424,6 +470,9 @@ export function createObservabilityRoutes(config: ObservabilityConfig): Elysia {
         query.period,
         query.limit,
         query.httpStatus,
+        query.shared === "true" ? true : query.shared === "false" ? false : undefined,
+        query.parentKeyId,
+        query.childKeyId,
       );
 })
     .get("/system/usage/requests/:requestId", async ({ request, params }) => {

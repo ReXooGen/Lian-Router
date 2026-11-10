@@ -280,6 +280,21 @@ describe("CodeBuddy adapter contracts", () => {
     ]);
   });
 
+  test("CN keeps a long operator system prompt that is not a foreign agent identity", () => {
+    // Prompt injection and a client's own system prompt are legitimate
+    // content. The neutralizer must key on identity, not on length: dropping
+    // every system message over 2 KB silently discarded the operator's whole
+    // persona before the upstream ever saw it.
+    const long = `SYS-MARKER ${"x".repeat(3_000)}`;
+    const payload: Record<string, unknown> = {
+      stream: false,
+      messages: [{ role: "system", content: long }],
+      model: "glm-5.3-flash",
+    };
+    codeBuddyCnPrePayload(payload, request(), candidate(CODEBUDDY_CN_PROVIDER_ID));
+    expect(payload.messages).toEqual([{ role: "system", content: long }]);
+  });
+
   test("CN accepts an OAuth credential and sends CLI headers to the Tencent host", async () => {
     let seenUrl = "";
     let seenHeaders = new Headers();

@@ -2,6 +2,10 @@ import { consoleRequest } from "../api";
 import type { ApiErrorShape } from "../api";
 import { queryKeys } from "../query-keys";
 import { querySignal } from "./common";
+import {
+  runAccountCheckinBatch,
+  type BulkCheckinSummary,
+} from "../account-checkin-batch";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 
@@ -20,6 +24,10 @@ export interface QuotaWindow {
   readonly used?: number | null;
   readonly limit?: number | null;
   readonly recurring?: boolean;
+  /** Plan that granted this window when an account holds several plans. */
+  readonly group?: string | null;
+  /** Instant a pending grant becomes spendable; `null` when nothing is scheduled. */
+  readonly availableAt?: string | null;
 }
 
 export interface QuotaData {
@@ -31,6 +39,8 @@ export interface QuotaData {
   readonly lastAttemptAt: string | null;
   readonly lastSuccessAt: string | null;
   readonly error: string | null;
+  /** True when every grant is spent; such a plan is hidden from the dashboard. */
+  readonly exhausted?: boolean;
 }
 
 
@@ -110,6 +120,37 @@ export function useQuotaOverview(options?: {
 export interface AccountTestResult {
   readonly ok: boolean;
   readonly message?: string;
+}
+
+/** Response of `GET /accounts/:id/quota` — the account's own plan and windows. */
+export interface AccountQuotaResponse {
+  readonly accountId: string;
+  readonly quota: QuotaData | null;
+  readonly health: QuotaAccountHealth | null;
+}
+
+/**
+ * Reads one account's quota.
+ *
+ * The provider-detail page shows a card per account, and its quota lived only
+ * on the separate Quota page: an operator opening the provider could see the
+ * credential and its usage but never the plan it pays for. This reads the same
+ * projection the Quota page uses, for one account.
+ *
+ * `enabled` is required rather than defaulted so a caller cannot accidentally
+ * issue one request per card while the list is still loading accounts.
+ */
+export function useAccountQuota(accountId: string, enabled: boolean) {
+  return useQuery<AccountQuotaResponse>({
+    queryKey: queryKeys.quota.account(accountId),
+    queryFn: (context) =>
+      consoleRequest<AccountQuotaResponse>(
+        `/accounts/${encodeURIComponent(accountId)}/quota`,
+        { signal: querySignal(context) },
+      ),
+    enabled: enabled && accountId.length > 0,
+    staleTime: 30_000,
+  });
 }
 
 /** Tests one account against its upstream provider and refreshes its views. */
@@ -283,6 +324,26 @@ export function useTriggerAccountCheckin(accountId: string) {
       );
     },
     onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+      ]);
+    },
+  });
+}
+
+/** Triggers the daily check-in for every supplied account. */
+export function useBulkAccountCheckin() {
+  const queryClient = useQueryClient();
+  return useMutation<BulkCheckinSummary, ApiErrorShape, readonly string[]>({
+    mutationFn: (accountIds) =>
+      runAccountCheckinBatch(accountIds, (accountId) =>
+        consoleRequest<AccountCheckinResult>(
+          `/accounts/${encodeURIComponent(accountId)}/checkin`,
+          { method: "POST" },
+        ),
+      ),
+    onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),

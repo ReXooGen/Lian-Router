@@ -567,3 +567,28 @@ set goal + constraints
 For straightforward work, skip unnecessary planning and follow the loop
 immediately. For research or multi-step work, use the environment's goal and
 task features, but never use planning as a substitute for tool action.
+
+## 17. VPS layout and where edits live
+
+On the VPS, `/home/ubuntu/project/lianrouter/Cartethyia-dev` is the only source
+tree. Source edits and builds happen there.
+
+- `/home/ubuntu/project/lianrouter` is the deployment root and holds artefacts
+  and runtime state only: the compiled `lianrouter` binary, `dist/dashboard`,
+  the staged `migrations/`, `drizzle/`, `scripts/`, `cli/`, `node_modules/`,
+  `.env`, `bin/opencode`, the python sidecars (`share_sidecar.py`,
+  `opencodeft_bridge.py`, `opencodeft_pools_refresh.sh`, `opencodeft_pools.txt`),
+  and runtime data (`data/`, `incoming/`, `backups/`).
+- Never create `src/`, `dashboard/`, or `test/` at the deployment root, and
+  never edit one that reappears. A root copy is a stale snapshot by
+  construction; serving from one is what produced a dashboard and an
+  `index.html` that did not match the running binary. If a root copy shows up,
+  stop and report it instead of editing it.
+- Editing the root does not deploy anything. Rebuild from `Cartethyia-dev`, then
+  copy the artefacts — the `lianrouter` binary and `dist/dashboard` — with
+  `rsync --delete`.
+- The operator's local checkout is the working copy. It is synchronised into
+  `Cartethyia-dev`; the two must not drift as independent sources of truth, so
+  never make the same change by hand on both sides.
+- Resolved paths, sync excludes, and the deploy/readiness sequence:
+  `docs/VPS-LAYOUT.md`.

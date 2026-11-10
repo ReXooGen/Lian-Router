@@ -98,6 +98,38 @@ describe("dashboard route ownership against the production app", () => {
     }
   });
 
+  test("owns POST /console/api/api-keys/:keyId/rotate instead of the static fallback", async () => {
+    const { app } = buildPipelineHarness({ dashboardDist: buildDir, consoleApi });
+
+    // Unauthenticated, so the handler rejects before touching the store: a 401
+    // can only come from the API-key router's own guard. A 404 here would mean
+    // the path fell through to the static fallback and the route is not
+    // registered at all.
+    const rotateResponse = await app.handle(
+      new Request("http://lianrouter.test/console/api/api-keys/some-key-id/rotate", {
+        method: "POST",
+      }),
+    );
+    expect(rotateResponse.status).toBe(401);
+    expect(rotateResponse.headers.get("content-type")).toContain("application/json");
+    expect(await rotateResponse.json()).toMatchObject({ code: "unauthorized" });
+
+    // The same segment with the wrong method, and the same method on an
+    // unknown sub-path, both miss: the 401 above is the route, not a catch-all.
+    const wrongMethod = await app.handle(
+      new Request("http://lianrouter.test/console/api/api-keys/some-key-id/rotate"),
+    );
+    expect(wrongMethod.status).toBe(404);
+
+    const unknownSubPath = await app.handle(
+      new Request("http://lianrouter.test/console/api/api-keys/some-key-id/not-a-route", {
+        method: "POST",
+      }),
+    );
+    expect(unknownSubPath.status).toBe(404);
+    expect(await unknownSubPath.text()).not.toContain("<html");
+  });
+
   test("keeps gateway ownership ahead of the dashboard catch-all", async () => {
     const harness = buildPipelineHarness({ dashboardDist: buildDir, consoleApi });
 

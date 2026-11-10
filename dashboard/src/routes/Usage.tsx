@@ -47,7 +47,13 @@ import {
 import { providerDisplayName } from "../lib/provider-names";
 
 import { useProviderAccounts } from "../lib/hooks/providers";
+import { useApiKeys, useSharedKeys } from "../lib/hooks/api-keys";
 import { useInFlight, useUsageLive } from "../lib/hooks/live";
+import {
+  nextUsageRequestFilter,
+  type UsageRequestFilter,
+  type UsageRequestScope,
+} from "./usage-request-filters";
 import { useTrackedTimeout } from "../lib/use-timeout";
 import { USAGE_PERIODS, type UsagePeriod as Period } from "../lib/usage-periods";
 import { USAGE_DIMENSIONS, type UsageDimension } from "../lib/contracts";
@@ -1199,7 +1205,59 @@ export default function Usage(): ReactNode {
   const summaryQuery = useUsageSummary(period);
   const [requestLimit, setRequestLimit] = useState(50);
   const [requestStatusFilter, setRequestStatusFilter] = useState<number | null>(null);
-  const requestsQuery = useUsageRequests(period, requestLimit, requestStatusFilter);
+  // Access scope plus the shared-key cascade. Only the scope persists per
+  // browser, like the provider-name mask; template and key stay transient so a
+  // stale id cannot leave the table silently empty.
+  const [requestFilter, setRequestFilter] = useState<UsageRequestFilter>(() => {
+    let accessScope: UsageRequestScope = "all";
+    try {
+      accessScope =
+        window.localStorage.getItem("lianrouter:usage:access-scope") === "shared"
+          ? "shared"
+          : "all";
+    } catch {
+      // Storage denied: start from the unfiltered view.
+    }
+    return { accessScope, parentKeyId: "", childKeyId: "" };
+  });
+  const { accessScope, parentKeyId, childKeyId } = requestFilter;
+  const applyAccessScope = (next: UsageRequestScope) => {
+    setRequestFilter((current) => nextUsageRequestFilter(current, { kind: "scope", scope: next }));
+    setRequestLimit(50);
+    try {
+      window.localStorage.setItem("lianrouter:usage:access-scope", next);
+    } catch {
+      // Storage denied: the filter still applies for this view.
+    }
+  };
+  const applyShareTemplate = (nextParentKeyId: string) => {
+    setRequestFilter((current) =>
+      nextUsageRequestFilter(current, { kind: "template", parentKeyId: nextParentKeyId }),
+    );
+    setRequestLimit(50);
+  };
+  const applyChildKey = (nextChildKeyId: string) => {
+    setRequestFilter((current) =>
+      nextUsageRequestFilter(current, { kind: "childKey", childKeyId: nextChildKeyId }),
+    );
+    setRequestLimit(50);
+  };
+  const apiKeysQuery = useApiKeys();
+  const shareTemplates = useMemo(
+    () => (apiKeysQuery.data ?? []).filter((key) => key.keyMode === "share"),
+    [apiKeysQuery.data],
+  );
+  const sharedKeysQuery = useSharedKeys(
+    accessScope === "shared" ? parentKeyId || null : null,
+  );
+  const requestsQuery = useUsageRequests(
+    period,
+    requestLimit,
+    requestStatusFilter,
+    accessScope === "shared" ? true : undefined,
+    parentKeyId,
+    childKeyId,
+  );
   const seenIdsRef = useRef<Set<string>>(new Set());
   const [newRowIds, setNewRowIds] = useState<Set<string>>(new Set());
 
@@ -1436,7 +1494,51 @@ export default function Usage(): ReactNode {
           }
           icon={<Activity size={16} />}
           action={
-            <Inline gap="12px" align="center">
+            <Inline gap="12px" align="center" wrap>
+              <Select
+                aria-label="Access scope"
+                value={accessScope}
+                size="sm"
+                style={{ width: "auto", minWidth: "128px", flex: "0 0 auto" }}
+                onValueChange={(value) => applyAccessScope(value === "shared" ? "shared" : "all")}
+                options={[
+                  { value: "all", label: "All requests" },
+                  { value: "shared", label: "Shared access" },
+                ]}
+              />
+              {accessScope === "shared" && (
+                <Select
+                  aria-label="Share template"
+                  value={parentKeyId}
+                  size="sm"
+                  style={{ width: "auto", minWidth: "160px", flex: "0 0 auto" }}
+                  onValueChange={applyShareTemplate}
+                  options={[
+                    { value: "", label: "All templates" },
+                    ...shareTemplates.map((key) => ({
+                      value: key.id,
+                      label: key.label.trim() || key.id.slice(0, 8),
+                    })),
+                  ]}
+                />
+              )}
+              {accessScope === "shared" && parentKeyId !== "" && (
+                <Select
+                  aria-label="Child key"
+                  value={childKeyId}
+                  size="sm"
+                  disabled={sharedKeysQuery.isPending}
+                  style={{ width: "auto", minWidth: "150px", flex: "0 0 auto" }}
+                  onValueChange={applyChildKey}
+                  options={[
+                    { value: "", label: "All keys" },
+                    ...(sharedKeysQuery.data ?? []).map((key) => ({
+                      value: key.id,
+                      label: key.revokedAt ? `${key.label} (revoked)` : key.label,
+                    })),
+                  ]}
+                />
+              )}
               <Button
                 variant="ghost"
                 size="sm"

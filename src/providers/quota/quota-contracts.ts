@@ -10,6 +10,26 @@ export interface ProviderQuotaWindow {
   readonly limit?: number | null;
   /** False means the timestamp is a hard expiry rather than a recurring reset. */
   readonly recurring?: boolean;
+  /**
+   * When this grant first becomes spendable, for a grant that is not yet live.
+   *
+   * A campaign can be granted while its units are still pending: the plan is
+   * `active` and its size is known, but the vendor refuses to spend it until a
+   * scheduled instant. Reporting that window as a normal balance says "you have
+   * 300M" while every request is refused, and reporting it as empty says the
+   * grant is missing. The instant is the only honest answer, so it travels with
+   * the window; `null` means the grant has no schedule and is spendable now.
+   */
+  readonly availableAt?: string | null;
+  /**
+   * The plan that granted this window, when one account holds several plans.
+   *
+   * An account can carry a referral grant beside a paid plan, and each is a
+   * separate entitlement with its own limits. Without this field the dashboard
+   * could only show the grants as one undifferentiated list, so a two-plan
+   * account looked like a single plan with several pools.
+   */
+  readonly group?: string | null;
 }
 
 export interface ProviderQuotaResult {
@@ -17,6 +37,29 @@ export interface ProviderQuotaResult {
   readonly plan: string | null;
   readonly windows: readonly ProviderQuotaWindow[];
   readonly error: string | null;
+}
+
+/**
+ * True when every grant this result describes is spent.
+ *
+ * Callers use this to stop offering things that can no longer be used: a plan
+ * whose grants are all at zero is still a plan, but nothing can be drawn from
+ * it, so a claim card or a quota row built on it would advertise an account
+ * that refuses every request.
+ *
+ * Three conditions, all required, and each excludes a real state:
+ * - no read error — a refused read says nothing about the balance;
+ * - at least one window — an account with no grants is "empty", not "spent",
+ *   and the two read differently to an operator;
+ * - every window at or below zero, with no unknown (`null`) window, because an
+ *   unknown balance must never be treated as exhausted.
+ */
+export function isQuotaExhausted(quota: ProviderQuotaResult): boolean {
+  if (quota.error !== null) return false;
+  if (quota.windows.length === 0) return false;
+  return quota.windows.every(
+    (window) => window.remainingPercent !== null && window.remainingPercent <= 0,
+  );
 }
 
 export type FetchLike = typeof fetch;
@@ -147,13 +190,52 @@ export async function getJson(
   }
   if (!response.ok) {
     const envelope = record(parsed);
-    const detail = text(envelope?.error) ?? text(envelope?.message) ?? `HTTP ${response.status}`;
+    // A 429 usually answers with an empty body, so the status has to supply the
+    // reason: "HTTP 429" alone reads as a generic rejection, while the operator
+    // needs to know that waiting is the fix and that the account is healthy.
+    const detail =
+      text(envelope?.error) ??
+      text(envelope?.message) ??
+      (response.status === 429 ? "rate limited (HTTP 429)" : `HTTP ${response.status}`);
     throw new Error(`Quota endpoint rejected request: ${detail}`);
   }
   const envelope = record(parsed);
   if (envelope?.success === false)
     throw new Error(text(envelope.error) ?? "Quota endpoint rejected the request.");
   return envelope?.success === true && "data" in envelope ? envelope.data : parsed;
+}
+
+/**
+ * How long one rate-limited quota read waits before its single retry.
+ *
+ * The vendor answers `429` with `retry-after: 1` and no body; a burst of
+ * account reads trips it even though each read is a separate account. One
+ * retry after a short delay turns a transient refusal into an answer, while a
+ * longer window still returns promptly instead of blocking the page.
+ */
+const RATE_LIMIT_RETRY_MS = 1_500;
+
+/**
+ * Reads one quota surface, retrying once when the vendor rate-limits it.
+ *
+ * A `429` is the vendor asking for a pause, not an answer about the account.
+ * Without this the collector reported the refusal as its result, so an account
+ * holding a live plan displayed as one with no plan whenever the read landed
+ * inside the window.
+ */
+export async function getJsonWithRateLimitRetry(
+  url: string,
+  headers: Record<string, string>,
+  fetcher: FetchLike,
+  body?: unknown,
+): Promise<unknown> {
+  try {
+    return await getJson(url, headers, fetcher, body);
+  } catch (error) {
+    if (!(error instanceof Error) || !/HTTP 429|rate limited/i.test(error.message)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_RETRY_MS));
+    return await getJson(url, headers, fetcher, body);
+  }
 }
 
 export function unsupportedQuota(providerId: string): {

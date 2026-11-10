@@ -1,10 +1,16 @@
-import { and, desc, eq, gte, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
 import type { LianRouterDatabase } from "../../persistence/postgres";
 import type { ApiKeyRecord } from "../../persistence/api-key-store";
 import { CachedPreferencesReader, DrizzlePreferencesReader } from "../../persistence/tenant-preferences";
 import { maskClientIp } from "../../observability/redaction";
-import { apiKeys, telemetryEvents, telemetryUsageTotals } from "../../persistence/schema";
+import {
+  extractPayloadFileReference,
+  readPayloadFrames,
+  type PayloadFileReference,
+} from "../../observability/payload-store";
+import { apiKeys, telemetryEvents, telemetryPayloads, telemetryUsageTotals } from "../../persistence/schema";
 import { shouldMaskClientIp } from "../shared/ip-privacy";
+import { extractPromptText, type ExtractedPrompt } from "./share-prompts";
 
 /**
  * Normalizes a timestamp that arrived through a SQL aggregate.
@@ -69,6 +75,32 @@ export interface SharedKeyActivityDetail {
   readonly requests: readonly SharedKeyRequestEvent[];
 }
 
+/**
+ * One request row as the signed-in owner sees it: the base metadata plus the
+ * latest user prompt captured for that same request.
+ *
+ * The prompt is optional because it exists only while payload capture is on and
+ * the frame has not expired; an absent field means "nothing to show", never an
+ * empty prompt the recipient might have typed.
+ */
+export interface OwnerSharedKeyRequestEvent extends SharedKeyRequestEvent {
+  readonly prompt?: string;
+  readonly promptTruncated?: boolean;
+}
+
+/**
+ * The signed-in owner's view of one child key.
+ *
+ * Deliberately not `SharedKeyActivityDetail`: the public enrollment surface
+ * returns that base shape to an unauthenticated caller. Keeping prompt text on
+ * a separate request type means a change to the shared loader cannot expose a
+ * recipient's prompts to the public page — the compiler rejects it.
+ */
+export interface OwnerSharedKeyActivityDetail extends Omit<SharedKeyActivityDetail, "requests"> {
+  readonly requests: readonly OwnerSharedKeyRequestEvent[];
+  readonly promptCaptureEnabled: boolean;
+}
+
 export interface SharedKeyUsageBucket {
   /** UTC calendar day (`YYYY-MM-DD`). */
   readonly day: string;
@@ -91,7 +123,7 @@ export interface ShareActivityPort {
     tenantId: string,
     children: readonly ApiKeyRecord[],
   ): Promise<readonly SharedKeySummary[]>;
-  getSharedKeyDetail(tenantId: string, childKeyId: string): Promise<SharedKeyActivityDetail>;
+  getSharedKeyDetail(tenantId: string, childKeyId: string): Promise<OwnerSharedKeyActivityDetail>;
   getPublicShareActivity(tenantId: string, parentKeyId: string): Promise<PublicShareActivity>;
 }
 
@@ -116,6 +148,65 @@ function tokenUsage(row: {
     outputTokens,
     totalTokens: inputTokens + outputTokens,
   };
+}
+
+/**
+ * Prompt history is a read over bounded payload capture. Without the tenant's
+ * explicit opt-in there are no request bodies to read, and the caller must be
+ * able to say so instead of rendering an empty list that reads like "no
+ * activity".
+ */
+async function isPromptCaptureEnabled(
+  preferences: CachedPreferencesReader,
+  tenantId: string,
+): Promise<boolean> {
+  try {
+    return (await preferences.readPreferences(tenantId))?.telemetryPayloads === "bounded";
+  } catch {
+    return false;
+  }
+}
+
+async function readSharedKeyPrompts(
+  db: LianRouterDatabase,
+  tenantId: string,
+  requestIds: readonly string[],
+): Promise<ReadonlyMap<string, ExtractedPrompt>> {
+  const promptByRequest = new Map<string, ExtractedPrompt>();
+  if (requestIds.length === 0) return promptByRequest;
+  const rows = await db
+    .select({
+      requestId: telemetryPayloads.requestId,
+      requestBody: telemetryPayloads.requestBody,
+    })
+    .from(telemetryPayloads)
+    .where(
+      and(
+        eq(telemetryPayloads.tenantId, tenantId),
+        inArray(telemetryPayloads.requestId, requestIds),
+        gt(telemetryPayloads.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(desc(telemetryPayloads.capturedAt));
+  const referenceByRequest = new Map<string, PayloadFileReference>();
+  for (const row of rows) {
+    if (row.requestId === null || referenceByRequest.has(row.requestId)) continue;
+    const reference = extractPayloadFileReference(row.requestBody);
+    if (reference !== undefined) referenceByRequest.set(row.requestId, reference);
+  }
+  const linked = requestIds.flatMap((requestId) => {
+    const reference = referenceByRequest.get(requestId);
+    return reference === undefined ? [] : [{ requestId, reference }];
+  });
+  if (linked.length === 0) return promptByRequest;
+  const frames = await readPayloadFrames(linked.map((entry) => entry.reference));
+  frames.forEach((frame, index) => {
+    const requestId = linked[index]?.requestId;
+    if (requestId === undefined) return;
+    const prompt = extractPromptText(frame);
+    if (prompt !== undefined) promptByRequest.set(requestId, prompt);
+  });
+  return promptByRequest;
 }
 
 export function createShareUsagePort(db: LianRouterDatabase): ShareActivityPort {
@@ -281,11 +372,32 @@ export function createShareUsagePort(db: LianRouterDatabase): ShareActivityPort 
     },
 
     async getSharedKeyDetail(tenantId, childKeyId) {
-      return loadDetail(
+      const [hideClientIp, promptCaptureEnabled] = await Promise.all([
+        shouldMaskClientIp(preferences, tenantId),
+        isPromptCaptureEnabled(preferences, tenantId),
+      ]);
+      const detail = await loadDetail(
         tenantId,
         eq(telemetryEvents.apiKeyId, childKeyId),
-        await shouldMaskClientIp(preferences, tenantId),
+        hideClientIp,
       );
+      const promptByRequest = promptCaptureEnabled
+        ? await readSharedKeyPrompts(
+            db,
+            tenantId,
+            detail.requests.map((event) => event.requestId),
+          )
+        : undefined;
+      return {
+        ...detail,
+        requests: detail.requests.map((event) => {
+          const prompt = promptByRequest?.get(event.requestId);
+          return prompt === undefined
+            ? event
+            : { ...event, prompt: prompt.text, promptTruncated: prompt.truncated };
+        }),
+        promptCaptureEnabled,
+      };
     },
 
     async getPublicShareActivity(tenantId, parentKeyId) {

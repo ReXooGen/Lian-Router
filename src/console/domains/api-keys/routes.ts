@@ -251,6 +251,58 @@ export function createApiKeyOperations(config: ApiKeyConfig) {
       });
       return { ...sanitizeApiKeyResponse(updated), ...(secret === undefined ? {} : { secret }) };
     },
+    /**
+     * Mints a replacement secret for one personal key in place.
+     *
+     * Rotation is its own operation rather than an empty `PATCH`: the partial-
+     * update contract reads an omitted field as "leave it alone", so no body
+     * exists that could mean "same policy, new secret". It also must not ride
+     * `updateKey`'s prefix-change arm, which derives the secret from a caller-
+     * supplied prefix instead of the key's own.
+     *
+     * Admission state deliberately survives. The key id and every limit are
+     * unchanged, so clearing the RPM window, daily/monthly counters, or
+     * lifetime consumption would make rotation a budget reset. Revocation
+     * purges because a reused id must not inherit history - a different case.
+     */
+    async rotateKey(
+      access: AccessDecision | undefined,
+      keyId: string,
+    ): Promise<UpdateApiKeyResponse> {
+      const authorized = requireTenantScope(access, "dashboard:write");
+      const current = await config.store.get(authorized.tenantId, keyId);
+      if (!current || current.revokedAt !== undefined)
+        throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      if (current.parentKeyId !== undefined)
+        throw new ConsoleDomainError(
+          "shared_key_managed_by_parent",
+          409,
+          "Rotate this key through its share parent",
+        );
+      if (current.keyMode !== "personal")
+        throw new ConsoleDomainError(
+          "key_not_personal",
+          409,
+          "Only a personal key holds a secret that can be rotated",
+        );
+
+      // Keeping the existing prefix means a rotated key still sorts and reads
+      // as the same credential in logs and client configuration.
+      const generated = generateApiKeySecret(resolveKeyPrefix(current.keyPrefix));
+      const updated = await config.store.update(authorized.tenantId, keyId, {
+        keyHash: generated.hash,
+        keyEncrypted: encryptCredential(generated.secret),
+        keyPrefix: generated.prefix,
+      });
+      if (!updated) throw new ConsoleDomainError("key_not_found", 404, "Key not found");
+      await config.auditSink?.record({
+        access: authorized,
+        action: "api_key.rotated",
+        target: keyId,
+        detail: { keyPrefix: generated.prefix },
+      });
+      return { ...sanitizeApiKeyResponse(updated), secret: generated.secret };
+    },
     async revokeKey(access: AccessDecision | undefined, keyId: string): Promise<{ success: true }> {
       const authorized = requireTenantScope(access, "dashboard:write");
       const revoked = await config.store.revoke(authorized.tenantId, keyId, new Date());
@@ -496,6 +548,13 @@ export function createApiKeyRoutes(config: ApiKeyConfig): Elysia {
           params.keyId,
           parseRequest(body),
         );
+      } catch (error) {
+        return errorResponse(error, set, "API-key operation failed");
+      }
+    })
+    .post("/:keyId/rotate", async ({ request, params, set }) => {
+      try {
+        return await factory.rotateKey(config.accessResolver(request), params.keyId);
       } catch (error) {
         return errorResponse(error, set, "API-key operation failed");
       }

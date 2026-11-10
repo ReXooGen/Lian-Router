@@ -63,19 +63,32 @@ export function friendlyQuotaError(raw: string | null | undefined): string | nul
     lower.includes("refresh token revoked")
   )
     return "OAuth account invalidated — re-login required";
+  // An account the vendor answered for, with no plan attached yet, is a state
+  // and not a fault: it is what a fresh login looks like before a campaign is
+  // claimed. Red provider-error copy made it read like a broken credential.
+  if (lower.includes("has no plan grants"))
+    return "No plan on this account yet — claim a campaign or wait for one";
   // Collectorless providers never refresh, so this backend string should no
   // longer surface — but a stale cached error may still carry it. Keep the
   // mapping as a safety net, not a state the UI can reach fresh.
   if (lower.includes("endpoint is not available") || lower === "not available")
     return "Quota tracking is not supported for this provider";
+  // A rate limit is a wait, not an exhausted account, and every rejection the
+  // collector raises contains the word "quota" ("Quota endpoint rejected
+  // request: HTTP 429"), so this has to be decided before the generic quota
+  // branch or the operator is told to wait for a reset that is not the issue.
+  if (
+    lower.includes("http 429") ||
+    lower.includes("too many requests") ||
+    lower.includes("rate limited")
+  )
+    return "Vendor rate limit — retry shortly, the account is fine";
   if (lower.includes("overloaded") || lower.includes("capacity") || lower.includes("temporarily unavailable"))
     return "Provider capacity unavailable — retry after the indicated time";
-  if (lower.includes("usage limit") || lower.includes("quota") || lower.includes("rate limit"))
-    return "Quota exhausted or rate limited — wait for reset";
+  if (lower.includes("usage limit") || lower.includes("quota"))
+    return "Quota exhausted — wait for the reset window";
   if (lower.includes("http 500") || lower.includes("internal server error"))
     return "Provider temporarily unavailable — retry in a moment";
-  if (lower.includes("http 429") || lower.includes("too many requests"))
-    return "Rate limited — slow down requests";
   if (lower.includes("http 401") || lower.includes("unauthorized") || lower.includes("invalid"))
     return "Credential expired — re-login or refresh token";
   if (lower.includes("http 403") || lower.includes("forbidden"))
@@ -85,6 +98,32 @@ export function friendlyQuotaError(raw: string | null | undefined): string | nul
   if (lower.includes("connect") || lower.includes("network") || lower.includes("timeout"))
     return "Network error — check connection and retry";
   return "Provider error — inspect account health details";
+}
+
+/**
+ * Describes a grant that is granted but not yet spendable.
+ *
+ * A campaign is often issued hours before its units unlock: the plan is
+ * `active` and its size is known, but the vendor refuses every request until a
+ * scheduled instant. Rendering that window as a normal balance says "300M
+ * available" while nothing works; rendering it as empty says the grant is
+ * missing. Both lie, so the card reports the schedule instead.
+ *
+ * Returns `null` for a window with nothing scheduled, which is the ordinary
+ * case and must keep rendering as it always did.
+ */
+export function pendingGrantLabel(
+  availableAt: string | null | undefined,
+  now: number = Date.now(),
+): string | null {
+  if (availableAt === null || availableAt === undefined) return null;
+  const at = new Date(availableAt).getTime();
+  if (!Number.isFinite(at)) return null;
+  if (at <= now) return null;
+  const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = new Date(at).toLocaleDateString([], { weekday: "short" });
+  const distance = formatResetDistance(availableAt, false).replace(/^Expires in /, "");
+  return `Pending ${day} ${time}${distance.length > 0 ? ` · in ${distance}` : ""}`;
 }
 
 export function quotaBarTone(remaining: number | null): QuotaBarTone {

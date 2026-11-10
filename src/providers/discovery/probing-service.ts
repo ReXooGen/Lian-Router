@@ -4,7 +4,7 @@
  * Network probes and `/v1/models` discovery stay separate from the Drizzle
  * catalog repository while sharing the provider catalog contract.
  */
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { LianRouterDatabase } from "../../persistence/postgres";
 import { models, providerAccounts, providers } from "../../persistence/schema";
 import type { CanonicalEvent, CanonicalRequest, WireFamily } from "../../transport/canonical-model";
@@ -60,6 +60,7 @@ import { shouldCooldownPool, isPoolConnectFailure } from "../../transport/dispat
 import { flagPoolCooldown } from "../../network/pool-health";
 import { loadPoolEgressHost } from "../../network/pool/loader";
 import type { NetworkPoolSelector } from "../../network/pool/selector";
+import type { ProxyConnectError } from "../../network/pool/agent";
 import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer";
 import { computeTokensPerSec } from "../../observability/token-speed";
 import { resolveUpstreamTimeoutMs } from "../../config";
@@ -75,6 +76,27 @@ import {
 
 /** Max models probed concurrently per batch (outside the sequential warm-up). */
 const PROBE_CONCURRENCY = 5;
+
+/**
+ * Max accounts probed concurrently per batch.
+ *
+ * Deliberately separate from `PROBE_CONCURRENCY`: a model probe is a cheap
+ * catalog warm-up on one provider, while an account probe is a full upstream
+ * turn. A provider can hold thousands of accounts (`cb` has ~2.3k), and an
+ * unbounded fan-out opened one socket and one upstream session per account —
+ * enough to exhaust the process fd budget (soft limit 1024) and to look like a
+ * burst to the provider being probed.
+ */
+const PROBE_ACCOUNT_CONCURRENCY = 8;
+
+/**
+ * Extra exits one probe attempt may burn after a pool CONNECT handshake fails.
+ * A refused tunnel is an egress fault: no upstream saw the request, so the
+ * account is untouched and a different exit can still answer. Mirrors the
+ * dispatch loop's `MAX_EGRESS_FAILOVERS` so probe and live traffic bound the
+ * same retry spend.
+ */
+const MAX_PROBE_EGRESS_FAILOVERS = 2;
 
 export interface ProbeOutboundBinding {
   readonly fetch: ValidatedOutboundFetch;
@@ -117,11 +139,19 @@ interface ProviderProbingDeps {
   readonly snapshotInvalidator: { invalidate(): unknown };
   readonly providerRegistry: ProviderRegistry;
   /**
+  /**
    * The same selector live dispatch flags, so a probe that burns an egress
-   * retires it instead of leaving it selectable. Absent only where no pool can
-   * be acquired at all (a service constructed without pooling).
+   * retires it instead of leaving it selectable (429-shaped failures).
    */
   readonly poolSelector?: NetworkPoolSelector | undefined;
+  /**
+   * Cools one (pool, provider) pair after its CONNECT handshake failed, so the
+   * selector stops handing that exit to this provider. Injected rather than
+   * imported: the selector and its durable audit row belong to the network
+   * layer, and discovery must keep working without a pool selector (tests,
+   * direct-only tenants).
+   */
+  readonly coolPool?: (poolId: string, providerId: string, error: ProxyConnectError) => void;
 }
 
 interface ProviderProbingTestDeps {
@@ -133,6 +163,7 @@ interface ProviderProbingTestDeps {
   readonly snapshotInvalidator?: { invalidate(): unknown };
   readonly providerRegistry?: ProviderRegistry;
   readonly poolSelector?: NetworkPoolSelector;
+  readonly coolPool?: (poolId: string, providerId: string, error: ProxyConnectError) => void;
 }
 
 export function createProviderProbingServiceForTests(deps: ProviderProbingTestDeps): ProviderProbingService {
@@ -153,6 +184,7 @@ export function createProviderProbingServiceForTests(deps: ProviderProbingTestDe
     snapshotInvalidator: deps.snapshotInvalidator ?? { invalidate: () => 0 },
     providerRegistry: deps.providerRegistry ?? createDefaultProviderRegistry(),
     ...(deps.poolSelector ? { poolSelector: deps.poolSelector } : {}),
+    ...(deps.coolPool ? { coolPool: deps.coolPool } : {}),
   });
 }
 
@@ -238,6 +270,7 @@ export class ProviderProbingService {
   private readonly snapshotInvalidator: { invalidate(): unknown };
   private readonly providerRegistry: ProviderRegistry;
   private readonly poolSelector: NetworkPoolSelector | undefined;
+  private readonly coolPool: ((poolId: string, providerId: string, error: ProxyConnectError) => void) | undefined;
 
   constructor(deps: ProviderProbingDeps) {
     this.db = deps.db;
@@ -249,6 +282,7 @@ export class ProviderProbingService {
     this.snapshotInvalidator = deps.snapshotInvalidator;
     this.providerRegistry = deps.providerRegistry;
     this.poolSelector = deps.poolSelector;
+    this.coolPool = deps.coolPool;
   }
 
   /**
@@ -503,10 +537,7 @@ export class ProviderProbingService {
     const attemptAccounts = account.accountIds.length > 0 ? account.accountIds : [undefined];
     for (const attemptAccountId of attemptAccounts) {
       accountId = attemptAccountId;
-      events.length = 0;
-      ttfbMs = undefined;
       dispatchError = undefined;
-      capturedRequest = canonicalRequest;
       // A probe must answer the same question live traffic asks: "does this
       // model return a response inside the upstream contract?" A reasoning
       // model can spend longer than any small fixed budget before its first
@@ -515,21 +546,33 @@ export class ProviderProbingService {
       // "request was cancelled" for a provider that is merely thinking. The
       // pre-stream phase is bounded by the same value dispatch uses.
       const probeBudgetMs = resolveUpstreamTimeoutMs();
-      // Each attempt gets its own signal: the streamed retry below used to
-      // inherit a signal and deadline already consumed by the first attempt,
-      // so a slow-but-working model failed the retry before it could answer.
-      let probeSignal = AbortSignal.timeout(probeBudgetMs);
       let attemptPoolId: string | undefined;
-      try {
-        // Public providers (`requires_account: false`) probe credential-free;
-        // anything else resolves the health-filtered account selected above.
-        const credential = attemptAccountId
-          ? await resolveCredentialForAccount(this.db, providerId, attemptAccountId)
-          : { provider_id: parsedProviderId, credential_kind: "none" as const };
-        const outbound = asOutboundBinding(await this.outboundFetchFor(tenantId, providerId));
-        attemptPoolId = outbound.networkPoolId;
-        const probeFetch = createProbeFetch(outbound.fetch);
+      // A refused CONNECT says nothing about the account: the tunnel never
+      // opened, so no upstream saw the request. Retry the same account on a
+      // fresh exit, bounded like the dispatch loop, and cool the failed pair
+      // so the selector stops handing it to this provider. Burning one
+      // account attempt per bad exit misreports a proxy fault as an account
+      // fault and exhausts the probe's account budget before reaching a
+      // working exit.
+      for (let egressTry = 0; ; egressTry += 1) {
+        events.length = 0;
+        ttfbMs = undefined;
+        dispatchError = undefined;
+        capturedRequest = canonicalRequest;
+        // Each attempt gets its own signal: the streamed retry below used to
+        // inherit a signal and deadline already consumed by the first attempt,
+        // so a slow-but-working model failed the retry before it could answer.
+        let probeSignal = AbortSignal.timeout(probeBudgetMs);
+        attemptPoolId = undefined;
         try {
+          // Public providers (`requires_account: false`) probe credential-free;
+          // anything else resolves the health-filtered account selected above.
+          const credential = attemptAccountId
+            ? await resolveCredentialForAccount(this.db, providerId, attemptAccountId)
+            : { provider_id: parsedProviderId, credential_kind: "none" as const };
+          const outbound = asOutboundBinding(await this.outboundFetchFor(tenantId, providerId));
+          attemptPoolId = outbound.networkPoolId;
+          const probeFetch = createProbeFetch(outbound.fetch);
           const dispatchProbe = async (request: CanonicalRequest): Promise<void> => {
             capturedRequest = request;
             for await (const event of adapter.dispatch(request, candidate, {
@@ -567,14 +610,18 @@ export class ProviderProbingService {
                 max_output_tokens: 1024,
               },
             });
+          } finally {
+            outbound.release?.();
           }
-        } finally {
-          outbound.release?.();
+        } catch (error) {
+          dispatchError = error;
         }
-      } catch (error) {
-        dispatchError = error;
+        networkPoolId = attemptPoolId;
+
+        if (!isPoolConnectFailure(dispatchError) || attemptPoolId === undefined) break;
+        this.coolPool?.(attemptPoolId, providerId, dispatchError);
+        if (egressTry >= MAX_PROBE_EGRESS_FAILOVERS) break;
       }
-      networkPoolId = attemptPoolId;
 
       // A probe that burned this egress must retire it exactly as live dispatch
       // does, or the (pool, provider) pair stays marked healthy and keeps being
@@ -1099,6 +1146,19 @@ export class ProviderProbingService {
     }
     return { providerId, results };
   }
+  /**
+   * Probes every probeable account of a provider in bounded batches.
+   *
+   * `disabled` accounts are skipped: a probe cannot say anything useful about
+   * an account an operator (or the health machine) already turned off, and
+   * they add real upstream traffic for a verdict nobody acts on. `cooldown`
+   * accounts stay in the set — probing is how an operator finds out whether
+   * the cooldown is still deserved.
+   *
+   * Batches run sequentially and each batch settles before the next starts, so
+   * at most `PROBE_ACCOUNT_CONCURRENCY` upstream turns exist at once. Results
+   * keep one entry per probed account, in the order the accounts were read.
+   */
   async probeAllAccounts(
     tenantId: string,
     providerId: string,
@@ -1111,21 +1171,27 @@ export class ProviderProbingService {
         and(
           eq(providerAccounts.providerId, providerId),
           or(isNull(providerAccounts.tenantId), eq(providerAccounts.tenantId, tenantId)),
+          ne(providerAccounts.status, "disabled"),
         ),
       );
-    const results = await Promise.all(
-      accounts.map(async (account) => {
-        const result = await this.probeModel(tenantId, providerId, {
-          ...request,
-          accountId: account.id,
-        });
-        // No health write here: this used to regex the model's own answer text
-        // for "202" and degrade the account on a match. A probe that genuinely
-        // fails already reports through `recordAccountFailure`, which classifies
-        // the real status; matching answer text is not a health signal.
-        return { ...result, accountId: account.id };
-      }),
-    );
+    const results: ProbeModelResult[] = [];
+    for (let offset = 0; offset < accounts.length; offset += PROBE_ACCOUNT_CONCURRENCY) {
+      const batch = accounts.slice(offset, offset + PROBE_ACCOUNT_CONCURRENCY);
+      const settled = await Promise.all(
+        batch.map(async (account) => {
+          const result = await this.probeModel(tenantId, providerId, {
+            ...request,
+            accountId: account.id,
+          });
+          // No health write here: this used to regex the model's own answer text
+          // for "202" and degrade the account on a match. A probe that genuinely
+          // fails already reports through `recordAccountFailure`, which classifies
+          // the real status; matching answer text is not a health signal.
+          return { ...result, accountId: account.id };
+        }),
+      );
+      results.push(...settled);
+    }
     return { providerId, modelId: request.modelId, results };
   }
 }

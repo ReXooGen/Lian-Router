@@ -2,6 +2,7 @@ import {
   Boxes,
   Cable,
   ExternalLink,
+  FlaskConical,
   KeyRound,
   LockOpen,
   PackageX,
@@ -12,7 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { consoleRequest } from "../lib/api";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { Button } from "../components/ui/button";
@@ -44,9 +45,11 @@ import {
   OAuthLoopbackDialog,
 } from "./provider-detail/OAuthDialogs";
 import { AddModelModal, ModelGrid } from "./provider-detail/Models";
+import { ClaimPlansCard, supportsPlanClaims } from "./provider-detail/ClaimPlansCard";
 
 export default function ProviderDetail(): ReactNode {
   const { providerId } = useParams<{ providerId: string }>();
+  const navigate = useNavigate();
   const id = providerId ?? "";
   const providersQuery = useProviders();
   const modelsQuery = useProviderModels(id);
@@ -250,6 +253,17 @@ export default function ProviderDetail(): ReactNode {
         back={{ to: "/providers", label: "Back to Providers" }}
         actions={
           <Inline gap="8px">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<FlaskConical size={13} />}
+              onClick={() =>
+                navigate(`/providers/${encodeURIComponent(id)}/accounts/test`)
+              }
+              title="Probe every account on this provider — one account at a time, with live pass/fail"
+            >
+              Test All
+            </Button>
             {provider.isBuiltIn ? (
               <Button
                 variant={provider.enabled ? "danger" : "secondary"}
@@ -376,6 +390,18 @@ export default function ProviderDetail(): ReactNode {
           </CardBody>
         </Card>
       )}
+
+      {/* Claim plan — per-account campaigns, above the model catalog */}
+      {supportsPlanClaims(id) && provider.requiresAccount !== false ? (
+        <ClaimPlansCard
+          providerId={id}
+          accounts={accounts.map((account) => ({
+            id: account.id,
+            label: account.label,
+            status: account.status,
+          }))}
+        />
+      ) : null}
 
       {/* Models */}
       <Card>

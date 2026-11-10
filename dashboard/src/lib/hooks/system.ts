@@ -106,21 +106,54 @@ export function useUsageBy(period: string, dimension: UsageDimension) {
   });
 }
 
+/**
+ * Builds the requests-table URL. `shared` is tri-state: true limits the list to
+ * child-key traffic, false to personal-key traffic, undefined to all requests.
+ * `parentKeyId` narrows to one share template and `childKeyId` to one recipient
+ * key; both are appended only when non-empty, and the backend gives
+ * `childKeyId` precedence when both are present.
+ */
+export function usageRequestsUrl(
+  period: string,
+  limit: number,
+  httpStatus?: number | null,
+  shared?: boolean,
+  parentKeyId?: string,
+  childKeyId?: string,
+): string {
+  const statusParam = httpStatus === null || httpStatus === undefined
+    ? ""
+    : `&httpStatus=${encodeURIComponent(String(httpStatus))}`;
+  const sharedParam = shared === undefined ? "" : `&shared=${shared ? "true" : "false"}`;
+  const parentParam = parentKeyId ? `&parentKeyId=${encodeURIComponent(parentKeyId)}` : "";
+  const childParam = childKeyId ? `&childKeyId=${encodeURIComponent(childKeyId)}` : "";
+  return `/system/usage/requests?period=${encodeURIComponent(period)}&limit=${encodeURIComponent(String(limit))}${statusParam}${sharedParam}${parentParam}${childParam}`;
+}
+
 /** Loads the most recent requests for the live table. */
 export function useUsageRequests(
   period: string,
   limit = 50,
   httpStatus?: number | null,
+  shared?: boolean,
+  parentKeyId?: string,
+  childKeyId?: string,
 ) {
-  const statusParam = httpStatus === null || httpStatus === undefined
-    ? ""
-    : `&httpStatus=${encodeURIComponent(String(httpStatus))}`;
   return useQuery({
-    queryKey: queryKeys.usageAnalytics.requests(period, limit, httpStatus),
+    queryKey: queryKeys.usageAnalytics.requests(
+      period,
+      limit,
+      httpStatus,
+      shared,
+      parentKeyId,
+      childKeyId,
+    ),
     queryFn: (context) =>
       consoleRequest<unknown>(
-        `/system/usage/requests?period=${encodeURIComponent(period)}&limit=${encodeURIComponent(String(limit))}${statusParam}`,
-        { signal: querySignal(context) },
+        usageRequestsUrl(period, limit, httpStatus, shared, parentKeyId, childKeyId),
+        {
+          signal: querySignal(context),
+        },
       ).then(assertUsageRequests),
     ...QUERY_OPTIONS,
     refetchInterval: 5_000,

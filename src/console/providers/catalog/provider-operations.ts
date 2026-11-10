@@ -120,12 +120,23 @@ async function attachProviderCapabilities(
     !response.isBuiltIn || (await registry.resolveModelDiscovery(response.providerId)) !== undefined;
   const client = await registry.resolveLoginClient(response.providerId);
   if (!client) return { ...base, supportsModelDiscovery: supportsDiscovery };
-  // Capability is a static property of the client's methods, never of one URL
-  // build: a client whose `buildAuthorizeUrl` can throw must still report the
-  // browser flow it genuinely supports, otherwise the Login with browser button
+  // Capability is a static property of the client, never of one URL build: a
+  // client whose `buildAuthorizeUrl` can throw must still report the browser
+  // flow it genuinely supports, otherwise the Login with browser button
   // disappears for a provider that has one.
+  //
+  // It must also be a *declared* capability. Every client that extends the
+  // shared `OAuthClient` base carries `buildAuthorizeUrl`/`exchangeCode` on its
+  // prototype even when it is device-only — those methods throw at call time —
+  // so probing for their presence alone reported a browser flow for every
+  // device-only provider (Kimi, Grok, Muse, ZCODE) and the button failed the
+  // moment an operator clicked it. `supportsBrowserCode === false` is the
+  // client saying it has no browser flow; an omitted flag still defaults to
+  // browser support for the clients written before the flag existed.
   const hasBrowserFlow =
-    typeof client.buildAuthorizeUrl === "function" && typeof client.exchangeCode === "function";
+    client.supportsBrowserCode !== false &&
+    typeof client.buildAuthorizeUrl === "function" &&
+    typeof client.exchangeCode === "function";
   return {
     ...base,
     supportsModelDiscovery: supportsDiscovery,

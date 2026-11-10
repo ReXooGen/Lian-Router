@@ -6,7 +6,7 @@ import type {
   RevealApiKeyResponse,
   ShareKeyResponse,
   SharedKeySummary,
-  SharedKeyActivityDetail,
+  OwnerSharedKeyActivityDetail,
   UpdateApiKeyResponse,
 } from "../contracts";
 import { queryKeys } from "../query-keys";
@@ -125,7 +125,7 @@ export function useSharedKeyActivity(parentKeyId: string | null, childKeyId: str
   return useQuery({
     queryKey: queryKeys.apiKeys.sharedKeyActivity(parentKeyId ?? "", childKeyId ?? ""),
     queryFn: (context) =>
-      consoleRequest<SharedKeyActivityDetail>(
+      consoleRequest<OwnerSharedKeyActivityDetail>(
         `/api-keys/${encodeURIComponent(parentKeyId ?? "")}/shared-keys/${encodeURIComponent(childKeyId ?? "")}/activity`,
         { signal: querySignal(context) },
       ),

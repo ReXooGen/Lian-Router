@@ -11,8 +11,9 @@
 //   Status : POST {base}/v2/billing/meter/checkin-activity-status  body {}
 //   Claim  : POST {base}/v2/billing/meter/daily-checkin            body {}
 //   Envelope: { code: 0, data: { today_checked_in, streak_days, ... } }
-//   "already claimed" business code is 1001 (NOT 10001 — that belongs to the
-//   artifact-release API).
+//   "already claimed" business codes are 1001 and 10001. The CN billing facade
+//   answers a duplicate claim as HTTP 400 with `{"code":10001,...}`, so the
+//   code must be read from the body even when the status is not 2xx.
 //
 // One request per account per day: the sweep asks the status endpoint first and
 // only POSTs the claim when the account has not claimed today. A successful
@@ -240,10 +241,14 @@ export async function fetchBuddyActivityReport(args: {
 
 /**
  * Check-in business codes, per the desktop bundle's `mapCheckinStatus()`.
- * `1001` is "already claimed" — NOT `10001`, which belongs to the
- * artifact-release API and never appears in this path.
+ *
+ * Both `1001` and `10001` mean "already claimed today": the intl/WorkBuddy
+ * facades answer `1001`, while the CN facade (`cbcn`) answers `10001` on a
+ * duplicate claim. `10001` was previously dismissed as an artifact-release
+ * code, and the manual check-in button then reported the duplicate claim as a
+ * hard failure.
  */
-const ALREADY_CLAIMED_CODE = 1001;
+const ALREADY_CLAIMED_CODES: ReadonlySet<number> = new Set([1001, 10001]);
 const NOT_ELIGIBLE_CODE = 1002;
 const EVENT_ENDED_CODE = 1003;
 /** Delays between 5xx/network retries on the claim POST, mirroring the buddy gateway's own backoff. */
@@ -457,11 +462,34 @@ export async function fetchDailyCheckin(args: {
         attempt += 1;
         continue;
       }
-      if (!response.ok) {
-        return { ...base, state: "error", error: `Daily check-in API error (${response.status}).` };
-      }
+      // Read the envelope before judging the status: a duplicate claim is a
+      // business verdict the facade reports with HTTP 400 (CN) or 200 (intl),
+      // and dropping the body turned "already checked in" into a failure. A
+      // non-JSON rejection keeps the status error rather than being reported
+      // as a malformed success envelope.
       claimRaw = await response.text().catch(() => "");
-      claim = claimRaw ? JSON.parse(claimRaw) : null;
+      let parsed: unknown = null;
+      let parsedOk = true;
+      if (claimRaw) {
+        try {
+          parsed = JSON.parse(claimRaw);
+        } catch {
+          parsedOk = false;
+        }
+      }
+      if (!parsedOk) {
+        if (!response.ok) {
+          return { ...base, state: "error", error: `Daily check-in API error (${response.status}).` };
+        }
+        return { ...base, state: "error", error: "Daily check-in response returned invalid JSON." };
+      }
+      claim = parsed;
+      if (!response.ok) {
+        const rejectedCode = envelopeCode(claim);
+        if (rejectedCode === null || rejectedCode === 0) {
+          return { ...base, state: "error", error: `Daily check-in API error (${response.status}).` };
+        }
+      }
       break;
     } catch (error) {
       if (error instanceof SyntaxError) {
@@ -483,7 +511,7 @@ export async function fetchDailyCheckin(args: {
   const claimCode = envelopeCode(claim);
   if (claimCode !== null && claimCode !== 0) {
     const alreadyText = alreadyClaimedMessage(claim, claimRaw);
-    if (claimCode === ALREADY_CLAIMED_CODE || alreadyText) {
+    if (ALREADY_CLAIMED_CODES.has(claimCode) || alreadyText) {
       return { ...base, state: "already_claimed", streakDays: streak };
     }
     if (claimCode === NOT_ELIGIBLE_CODE) return { ...base, state: "not_eligible" };

@@ -90,6 +90,10 @@ the TCP connection but never answers CONNECT is indistinguishable from a dead
 one for routing, so it fails as `ProxyConnectError` (status `0`) instead of
 holding the dispatch until the caller's deadline — a silent hang also meant the
 pool was never flagged.
+Both the dispatch loop and a console probe treat that refusal as an egress
+fault: the `(pool, provider)` pair cools down and the request retries on
+another exit, while the provider account is untouched because no upstream saw
+the request.
 The DB enum collapses HTTPS into `http`, so `deriveKind(dbKind, endpoint)`
 recovers the application-level distinction from the endpoint scheme.
 `splitEndpointConfig` separates the reserved `endpoint`/`label` keys
@@ -148,7 +152,9 @@ candidate (`leases.ts` builds it only when the pool-owning tenant's setting is
 
 **Cooldowns and health.** A provider-scoped upstream 429 flags only the `(pool, provider)` pair in
 `NetworkPoolSelector` locally and in Redis; `pool-health.ts` mirrors the cooldown episode into
-`health_events` without sidelining the pool. The console pool overview reads those flags in one
+`health_events` without sidelining the pool. A refused CONNECT (`ProxyConnectError`, including the
+bounded-handshake timeout) flags the same pair with a five-minute window: the exit is unusable for
+that provider's host, and another pool may still reach it. The console pool overview reads those flags in one
 `MGET` per pool, and a pool with no cooling providers — the normal state — lists no members, so the
 empty case returns an empty list without issuing a command Redis would reject (`MGET` requires at
 least one key). `pool-health-machine.ts` records pool-origin tunnel

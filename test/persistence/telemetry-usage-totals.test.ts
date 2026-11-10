@@ -1,10 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import type { ApiKeyRecord } from "../../src/persistence/api-key-store";
 import { getDb, type LianRouterDatabase } from "../../src/persistence/postgres";
-import { apiKeys, telemetryEvents, telemetryUsageTotals, tenants } from "../../src/persistence/schema";
+import {
+  apiKeys,
+  consoleSettings,
+  telemetryEvents,
+  telemetryUsageTotals,
+  tenants,
+} from "../../src/persistence/schema";
 import { DrizzleTelemetryStore } from "../../src/persistence/telemetry-store";
+import { bumpSettingsRevision } from "../../src/persistence/tenant-preferences";
+import { TelemetryPayloadCapture } from "../../src/observability/payload-capture";
 import { createShareUsagePort } from "../../src/console/share/share-usage";
 import { dbDescribe } from "../helpers/db-gate";
 
@@ -18,10 +29,14 @@ dbDescribe("telemetry lifetime aggregates", () => {
   const otherChildKeyId = randomUUID();
   let db: LianRouterDatabase;
   let store: DrizzleTelemetryStore;
+  let payloadDirectory: string;
+  const originalPayloadDirectory = process.env.LIANROUTER_TELEMETRY_PAYLOAD_DIR;
 
   beforeAll(async () => {
     db = getDb();
     store = new DrizzleTelemetryStore(db);
+    payloadDirectory = await mkdtemp(join(tmpdir(), "lianrouter-share-prompts-"));
+    process.env.LIANROUTER_TELEMETRY_PAYLOAD_DIR = payloadDirectory;
     await db.insert(tenants).values({
       id: tenantId,
       name: `telemetry-totals-${tenantId}`,
@@ -52,6 +67,9 @@ dbDescribe("telemetry lifetime aggregates", () => {
 
   afterAll(async () => {
     await db.delete(tenants).where(eq(tenants.id, tenantId));
+    if (originalPayloadDirectory === undefined) delete process.env.LIANROUTER_TELEMETRY_PAYLOAD_DIR;
+    else process.env.LIANROUTER_TELEMETRY_PAYLOAD_DIR = originalPayloadDirectory;
+    await rm(payloadDirectory, { recursive: true, force: true });
   });
 
   test("retains account and API-key totals after raw telemetry is removed", async () => {
@@ -160,6 +178,8 @@ dbDescribe("telemetry lifetime aggregates", () => {
       retainedTokens: 70,
     });
     expect(detail.requests[0]?.clientIp).toMatch(/^198\.51\.100\.xxx$/);
+    expect(detail.promptCaptureEnabled).toBe(false);
+    expect(detail.requests.every((event) => event.prompt === undefined)).toBe(true);
 
     const publicActivity = await activity.getPublicShareActivity(tenantId, parentKeyId);
     expect(publicActivity.allTime).toMatchObject({ requests: 3, errors: 1, totalTokens: 95 });
@@ -176,6 +196,11 @@ dbDescribe("telemetry lifetime aggregates", () => {
     ]);
     expect(JSON.stringify(publicActivity)).not.toContain("grok/grok-4");
     expect(JSON.stringify(publicActivity)).not.toContain("192.0.2");
+    // Prompt history belongs to the owner detail only; the public enrollment
+    // response must stay on the base activity shape.
+    expect(Object.hasOwn(publicActivity, "prompts")).toBe(false);
+    expect(Object.hasOwn(publicActivity, "promptCaptureEnabled")).toBe(false);
+    expect(publicActivity.requests.every((event) => !Object.hasOwn(event, "prompt"))).toBe(true);
 
     await db.delete(telemetryEvents).where(eq(telemetryEvents.tenantId, tenantId));
     const retained = await db
@@ -185,5 +210,53 @@ dbDescribe("telemetry lifetime aggregates", () => {
     expect(retained).toHaveLength(4);
     expect(retained.find((row) => row.identityType === "api_key" && row.entityId === apiKeyId))
       .toMatchObject({ requests: 2, errors: 1 });
+  });
+
+  test("reads the latest captured user prompt once the tenant opts into payload capture", async () => {
+    const keyId = randomUUID();
+    const requestId = randomUUID();
+    await db
+      .insert(consoleSettings)
+      .values({ tenantId, preferences: { telemetryPayloads: "bounded" } })
+      .onConflictDoUpdate({
+        target: consoleSettings.tenantId,
+        set: { preferences: { telemetryPayloads: "bounded" } },
+      });
+    bumpSettingsRevision();
+    await store.insertEvents([
+      {
+        tenantId,
+        requestId,
+        sourceSurface: "chat",
+        requestedModel: "openai/gpt-5",
+        apiKeyId: keyId,
+        stream: false,
+        status: "completed",
+        inputTokens: 21,
+        outputTokens: 8,
+      },
+    ]);
+    await new TelemetryPayloadCapture(db).capture({
+      tenantId,
+      requestId,
+      scope: "tenant",
+      tenantOptIn: true,
+      requestBody: {
+        model: "openai/gpt-5",
+        messages: [
+          { role: "user", content: "first question" },
+          { role: "assistant", content: "first answer" },
+          { role: "user", content: [{ type: "text", text: "Explain the offset drift." }] },
+        ],
+      },
+      responseBody: { choices: [] },
+    });
+
+    const detail = await createShareUsagePort(db).getSharedKeyDetail(tenantId, keyId);
+    expect(detail.promptCaptureEnabled).toBe(true);
+    expect(detail.requests).toHaveLength(1);
+    expect(detail.requests[0]?.requestId).toBe(requestId);
+    expect(detail.requests[0]?.prompt).toBe("Explain the offset drift.");
+    expect(detail.requests[0]?.promptTruncated).toBe(false);
   });
 });

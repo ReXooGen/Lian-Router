@@ -1,8 +1,8 @@
 # Console
 
 `src/console/` is the management-console control plane: an Elysia API at `/console/api`, the
-unauthenticated public share surface (`/share/*`), and the static SPA host (`/`, `/console`,
-`/share`). It owns dashboard authentication and every operator mutation, behind per-tenant
+unauthenticated public share surface (`/share/*`), the unauthenticated model-status readout
+(`/status/models`), and the static SPA host (`/`, `/console`, `/share`, `/status`). It owns dashboard authentication and every operator mutation, behind per-tenant
 access checks, `admin_audit_log` writes, and route-snapshot invalidation so the next `/v1/*`
 request sees the change. It never proxies inference traffic.
 
@@ -19,7 +19,7 @@ is optional for exactly that reason.
 src/console/
   console-router.ts       /console/api composition root (CSRF + limiter + session guard, and the
                           bearer-API-key fallback for catalog routes)
-  dashboard-assets.ts     static SPA host: entry documents for /, /console, /share + CSP/traversal guards
+  dashboard-assets.ts     static SPA host: entry documents for /, /console, /share, /status + CSP/traversal guards
   domain-registration.ts  wires every domain with explicit Drizzle stores + ConsoleDomainContext
   auth/                   cookie sessions, first-boot, lockout, password rotation
   shared/                 cross-domain contract: errors.ts (ConsoleDomainError, requireTenantScope,
@@ -34,9 +34,14 @@ src/console/
   prompt-injection/       global / per-key / per-model injected personas (prompt or chat script)
   quota/                  provider-account quota views + refresh orchestration
   domains/                api-keys, studio, live/logs, stats, audit, performance, sse
+  generation/             image/video generation: model catalog from output modalities,
+                          async task submission/polling, and a bounded media proxy
   cli-tools/              CLI-agent onboarding + host injectors (injectors/ holds the per-tool
                           InjectorSpecs; CONTRACT.md is the spec contract)
   share/                  public enrollment and owner-side shared-key activity
+  status/                 unauthenticated model-health readout (GET /status/models): telemetry
+                          buckets + per-model cooldown state, scoped to the models a live share
+                          key publishes — the surface behind the public /status page
   backup/                 export/restore of config + telemetry metadata, and the router-export
                           importer (nine-router.ts)
   automation/             authenticated root-path proxy to the loopback GrokFarm WebUI
@@ -416,6 +421,48 @@ instance-level metadata, so they use scope-only guards (`dashboard:read`, or `pl
 for performance) rather than tenant scoping; the audit trail is the reverse — tenant isolation
 plus `platform:admin`, since rows carry cross-tenant metadata.
 
+## Generation (`generation/`)
+
+The console can run image and video generation through any configured provider
+whose catalog declares image/video output. It is an operator surface, not a
+data-plane route: requests authenticate with the console session
+(`dashboard:write` to submit, `dashboard:read` to poll and stream results) and
+are dispatched with the provider's own account credential and network-pool
+egress, so a generation never borrows the caller's browser identity.
+
+- **Catalog.** `GET /generation/catalog` lists enabled models whose persisted
+  `modalities.output` contains `image` or `video`. The metadata comes from the
+  provider's own `/v1/models` entry: model discovery maps a `kind` of
+  `image`/`video` (or an OpenRouter-style `output_modalities` array) onto those
+  outputs, so a text-to-image model is never mistaken for a chat model. The
+  dashboard groups the flat catalog by provider for its two-level
+  provider/model picker (`lib/generation-catalog.ts`), so two providers serving
+  the same model id stay separate rows.
+- **Model Lab tool.** Model Lab mounts the same generation panel from a
+  **Generate** button in its composer; both surfaces share the picker, task
+  polling, and media proxy rather than duplicating the flow.
+- **Submission.** `POST /generation/images` and `POST /generation/videos` pin
+  one provider and model, pick the healthiest active account (no failover —
+  retrying a generation could bill twice), and proxy the OpenAI-style upstream
+  contract (`/images/generations` with `async: true`, `/videos`). Both return a
+  task; the provider's `status`/`progress`/`result` are normalized into
+  `GenerationImageTask` / `GenerationVideoTask`. A provider that ignores
+  `async` and answers inline is accepted as a completed `sync` task.
+- **Polling.** `GET /generation/images/:id` and `GET /generation/videos/:id`
+  take `providerId` and repeat the upstream task read. The dashboard polls every
+  two seconds while the status is `queued` or `running`, and stops at
+  `succeeded`/`failed`/`cancelled`.
+- **Media.** Result URLs that point at the provider's own origin under
+  `/v1/media/` are rewritten to `GET /generation/media?providerId=&name=`, which
+  validates the name, re-resolves the provider and streams the bytes through
+  the same validated egress. External/signed URLs are passed through untouched.
+  The media stream releases its pool slot when the client finishes or cancels.
+- **Bounds.** Prompts are capped at 32 000 characters, `n` at 4, durations at
+  60 seconds, sizes must look like `1024x1024`, submission/poll requests time
+  out at 30 seconds, and media transfers at 120 seconds. Upstream 4xx statuses
+  are preserved; 5xx and transport failures become 502/504 so the console never
+  reports a provider rejection as a gateway configuration fault.
+
 ## CLI tools (`cli-tools/`)
 
 Onboarding for external CLI coding agents (the assistant, Codex, Cline, …): registry metadata for the
@@ -524,13 +571,39 @@ clear the entry, and the 300 s TTL bounds everything else.
 
 **Daily check-in trigger.** `POST /accounts/:id/checkin` claims the free daily credit grant for one
 buddy-family account (`workbuddy`, `cb`, `cbcn` — a Tencent billing-meter pair) and is what the Quota
-page's calendar button calls. Anything else answers `checkin_unsupported`. It requires
+page's toolbar **Check in all (N)** action fans out over, with a bounded worker pool (four at a time,
+capped at 50 matching accounts so one click cannot become thousands of upstream calls). Each card
+carries a provider-id badge (CodeBuddy vs CodeBuddy CN vs WorkBuddy) so two same-looking accounts on
+one grid cannot be confused, and the underlying request uses each provider's own origin and CLI/IDE
+identity. The per-card labelled pill was removed once the toolbar action covered the same task. Anything else answers `checkin_unsupported`. It requires
 `dashboard:write`, resolves the credential through the same
 refresh-aware path as quota, and forces the status probe (`forceClaim`) while bypassing the sweep's
 once-per-day ledger — the upstream stays idempotent, so a duplicate claim answers `already_claimed`,
-never a double grant. Success answers the state plus credit (and streak on buddy) with a human
+never a double grant. The judge reads the response envelope before the HTTP status: the CN facade
+answers a duplicate claim as HTTP 400 with code `10001` (the intl/WorkBuddy facades use `1001` and a
+2xx), and treating that status as fatal reported a successfully claimed day as a check-in failure. Success answers the state plus credit (and streak on buddy) with a human
 message; only the `error` state is a 502. Tenant scoping matches every other account route: foreign
 ids miss with 404.
+
+**Claimable campaigns (ZCODE start-plan).** `GET /accounts/:id/claims` lists the time-boxed
+campaigns a start-plan account can claim, and `POST /accounts/:id/claims` (body `{planId}`) claims
+one. Both are `zcode`-only: every other provider answers `supported: false` on the read and
+`claim_unsupported` on the write, because claiming is a start-plan concept, not a general billing
+one. The read merges the two surfaces that advertise a campaign — `billing/preview` (billing) and
+`marketing/touch` deliveries whose buttons carry a `claim_zcode_plan` action (banner) — because
+neither is authoritative alone: a preview that answers nothing does not hide a banner campaign, and
+a failed marketing read does not discard the preview list. Read failures ride back in `errors` so a
+short list is never mistaken for "nothing exists". The marketing walk is depth-bounded and defensive:
+deliveries are untrusted, arbitrarily nested JSON.
+
+Claiming posts one `plan_id` and is **captcha-gated upstream** for the campaigns that matter: a
+request without a solved challenge answers `400 {"code":3007,"msg":"captcha verify failed"}`
+(verified live). That gate is its own outcome — `409 claim_captcha_required` — not a generic
+failure: the campaign is real and the credential works, and the only way to finish is the ZCode
+desktop app, so presenting it as a retryable error would send the operator in circles. A claimed
+campaign invalidates the account's quota cache (the grant is what the quota page renders) and is
+audited as `provider_account.recovered` with reason `plan_claimed`. Both routes require
+`dashboard:read`/`dashboard:write` and are tenant-scoped like every other account route.
 
 **Activity report.** `POST /accounts/:id/activity-report` is the sibling growth leg the Quota
 page's growth pass calls, covering the same buddy family. It requires `dashboard:write`,

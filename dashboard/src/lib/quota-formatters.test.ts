@@ -5,6 +5,7 @@ import {
   friendlyQuotaError,
   quotaBarTone,
   accountIdentity,
+  pendingGrantLabel,
 } from "./quota-formatters";
 
 describe("quota display formatters", () => {
@@ -34,8 +35,26 @@ describe("quota display formatters", () => {
     expect(friendlyQuotaError("OAuth account invalidated; reauthorization required")).toBe(
       "OAuth account invalidated — re-login required",
     );
-    expect(friendlyQuotaError("Rate limit exceeded 429")).toBe(
-      "Quota exhausted or rate limited — wait for reset",
+  });
+
+  /**
+   * Every rejection the quota collector raises opens with "Quota endpoint
+   * rejected request", so a generic `quota` match swallowed the 429 that
+   * followed it and told the operator the account's quota was exhausted when
+   * the vendor had only rate-limited the read.
+   */
+  test("names a rate limit instead of calling it an exhausted quota", () => {
+    expect(friendlyQuotaError("Quota endpoint rejected request: rate limited (HTTP 429)")).toBe(
+      "Vendor rate limit — retry shortly, the account is fine",
+    );
+    expect(friendlyQuotaError("Quota endpoint rejected request: HTTP 429")).toBe(
+      "Vendor rate limit — retry shortly, the account is fine",
+    );
+  });
+
+  test("shows an answered empty account as a state, not a provider error", () => {
+    expect(friendlyQuotaError("This account has no plan grants (device mid 7a002dff…).")).toBe(
+      "No plan on this account yet — claim a campaign or wait for one",
     );
   });
 
@@ -62,5 +81,37 @@ describe("quota display formatters", () => {
       expect(ident.primary).toBe("My Account");
       expect(ident.secondary).toBeNull();
     }
+  });
+
+  /**
+   * A campaign is issued hours before its units unlock: the plan is `active`
+   * and its size is known, but the vendor refuses every request until a
+   * scheduled instant (measured: `effective_at` 22:00 for a 19:00 claim). The
+   * window must report the schedule, because rendering it as a balance says
+   * "300M available" while nothing works, and rendering it as empty says the
+   * grant is missing.
+   */
+  describe("pendingGrantLabel", () => {
+    const now = Date.parse("2026-11-10T12:00:00Z");
+
+    test("names the scheduled instant for a grant that is not live yet", () => {
+      const label = pendingGrantLabel("2026-11-10T14:00:00Z", now);
+      expect(label).not.toBeNull();
+      expect(label).toContain("Pending");
+      expect(label).not.toContain("Expires in");
+    });
+
+    test("returns null once the grant is spendable", () => {
+      expect(pendingGrantLabel("2026-11-10T11:00:00Z", now)).toBeNull();
+      // Exactly now is already spendable; a boundary that reported "pending"
+      // would strand the grant for the whole request that unlocks it.
+      expect(pendingGrantLabel("2026-11-10T12:00:00Z", now)).toBeNull();
+    });
+
+    test("returns null when nothing is scheduled", () => {
+      expect(pendingGrantLabel(null, now)).toBeNull();
+      expect(pendingGrantLabel(undefined, now)).toBeNull();
+      expect(pendingGrantLabel("not-a-date", now)).toBeNull();
+    });
   });
 });

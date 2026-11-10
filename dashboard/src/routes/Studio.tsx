@@ -9,6 +9,7 @@ import {
   FileAudio,
   FileText,
   Globe,
+  Image as ImageIcon,
   KeyRound,
   MessageSquareText,
   Paperclip,
@@ -26,6 +27,8 @@ import { Button } from "../components/ui/button";
 import { Input, Textarea } from "../components/ui/input";
 import { Select } from "../components/ui/select";
 import { ModelPickerModal, useAllModelsCatalog } from "../components/ModelPicker";
+import { Dialog } from "../components/ui/dialog";
+import { GenerationPanel } from "../components/generation/GenerationPanel";
 import type {
   StudioAttachment,
   StudioMessage,
@@ -361,6 +364,7 @@ function ChatTimeline({
 export default function ModelLab(): ReactNode {
   const [activeId, setActiveId] = useState<string | null>(() => readStorage(ACTIVE_KEY));
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [generationOpen, setGenerationOpen] = useState(false);
   const [model, setModel] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [think, setThink] = useState<ThinkLevel>("high");
@@ -1803,6 +1807,15 @@ export default function ModelLab(): ReactNode {
                   >
                     {model ? model.split("/").slice(-1)[0] : "Pick model"}
                   </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<ImageIcon size={13} />}
+                    title="Generate an image or video through a configured provider account"
+                    onClick={() => setGenerationOpen(true)}
+                  >
+                    Generate
+                  </Button>
                   <div style={{ flexShrink: 0 }}>
                     <Select
                       size="sm"
@@ -2244,6 +2257,14 @@ export default function ModelLab(): ReactNode {
         </CardBody>
       </Card>
       <ChatTimeline messages={displayed} model={model} onScrollTo={scrollToMessage} />
+      <Dialog
+        open={generationOpen}
+        onClose={() => setGenerationOpen(false)}
+        title="Generate image or video"
+        width={980}
+      >
+        <GenerationPanel />
+      </Dialog>
       <ModelPickerModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}

@@ -73,6 +73,24 @@ export async function fetchOpenAICompatibleModels(
       // routing ladder's filter → degrade path.
       const rawModality = typeof entry.modality === "string" ? entry.modality : "";
       const hasImage = rawModality.includes("image");
+      // An OpenAI-style `/models` entry may declare what it *generates*, not
+      // only what it accepts. The `kind` discriminant (image/video/chat) is the
+      // unambiguous form; `output_modalities` is the OpenRouter-style array.
+      // Without this, a text-to-image model was recorded as text-out, so the
+      // generation catalog could not tell it apart from a chat model.
+      const rawKind = typeof entry.kind === "string" ? entry.kind.trim().toLowerCase() : "";
+      const declaredOutput = Array.isArray(entry.output_modalities)
+        ? entry.output_modalities.filter((value): value is string => typeof value === "string")
+        : Array.isArray(entry.outputModalities)
+          ? entry.outputModalities.filter((value): value is string => typeof value === "string")
+          : [];
+      const output: string[] = rawKind === "image" ? ["image"] : rawKind === "video" ? ["video"] : ["text"];
+      for (const modality of declaredOutput) {
+        const normalized = modality.trim().toLowerCase();
+        if ((normalized === "image" || normalized === "video") && !output.includes(normalized)) {
+          output.push(normalized);
+        }
+      }
       const responsesWire = isResponsesNativeModelId(id);
       byId.set(id, {
         modelId: id,
@@ -80,7 +98,7 @@ export async function fetchOpenAICompatibleModels(
         endpointPath: responsesWire ? "/v1/responses" : "/v1/chat/completions",
         contextLimit: contextWindow,
         outputLimit: outputTokens,
-        modalities: { input: hasImage ? ["text", "image"] : ["text"], output: ["text"] },
+        modalities: { input: hasImage ? ["text", "image"] : ["text"], output },
         reasoning: false,
         toolCall: true,
         webSearch: false,

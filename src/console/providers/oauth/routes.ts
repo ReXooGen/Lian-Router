@@ -1,5 +1,5 @@
 import { providerAccounts, providerOauthStates } from "../../../persistence/schema";
-import { encryptCredential, hashSecret } from "../../../security/crypto";
+import { encryptCredential } from "../../../security/crypto";
 import type { LianRouterDatabase } from "../../../persistence/postgres";
 import type { OAuthExchangeResult, OAuthLoginClient } from "../../../providers/authentication/oauth-flow-store";
 import type { OAuthDevicePollResponse } from "../catalog/contracts";
@@ -20,6 +20,7 @@ import {
   antigravityLoopbackShellSnippet,
 } from "./antigravity-loopback-helper";
 import type { ConsoleAccessResolver } from "../../auth/access";
+import { oauthAccountFingerprint } from "./account-fingerprint";
 /** OAuth identity is not exposed by the current exchange contract; the refresh
  * token fingerprint prevents replaying the exact same OAuth credential only. */
 
@@ -42,7 +43,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
             label: input.label,
             credentialKind: "oauth",
             credentialCiphertext: encryptCredential(input.access),
-            credentialFingerprint: hashSecret(input.refresh),
+            credentialFingerprint: oauthAccountFingerprint(providerId, input),
             status: "active",
           })
           .returning({ id: providerAccounts.id });

@@ -37,7 +37,10 @@ export const GATEWAY_SECURITY_HEADERS: Readonly<Record<string, string>> = Object
 
 /** CSP source expression for one inline script body (base64 SHA-256). */
 export function inlineScriptHash(scriptBody: string): string {
-  return `'sha256-${createHash("sha256").update(scriptBody, "utf8").digest("base64")}'`;
+  // The served HTML keeps CRLF while the CSP parser reads LF, so the hash must
+  // be taken over the normalized form or the browser rejects it.
+  const normalised = scriptBody.replace(/\r\n?/g, "\n");
+  return `'sha256-${createHash("sha256").update(normalised, "utf8").digest("base64")}'`;
 }
 
 /**
@@ -56,12 +59,53 @@ export function inlineScriptBodies(html: string): readonly string[] {
 }
 
 /**
+ * Third-party origins the dashboard document must be allowed to reach.
+ *
+ * `o.alicdn.com` serves the Aliyun captcha widget that the ZCode claim gate
+ * requires. Without it the script is blocked, the widget reports "could not
+ * load the captcha SDK", and the only remaining way to claim a gated campaign
+ * is another application.
+ *
+ * The widget also loads its own frames, images and device-fingerprint calls,
+ * and reports the solved challenge over XHR to the captcha service, so these
+ * origins are needed in `script-src`, `frame-src`, `connect-src` and `img-src`.
+ *
+ * Three separate hosts are involved and the widget fails with its own
+ * "Network Err. Please refresh" panel when any of them is refused: the script
+ * CDN, the captcha service API, and the device-signal endpoint it fingerprints
+ * with. Blocking the last one looks exactly like a broken captcha rather than a
+ * policy problem, which is why all three are named here instead of only the CDN.
+ *
+ * The list is intentionally tiny and named: a blanket `https:` would let any
+ * injected string reach any origin.
+ */
+const DASHBOARD_WIDGET_SCRIPT_ORIGINS = [
+  // The widget boots from `o.` and then pulls its rendering code, fonts and
+  // styles from sibling subdomains (`g.`, `x.`). Measured in a real Chromium
+  // against this deployment: blocking those siblings leaves the widget with no
+  // challenge UI, which reads as "the captcha is broken".
+  "https://o.alicdn.com",
+  "https://g.alicdn.com",
+  "https://x.alicdn.com",
+  // The challenge service. The concrete host is region- and prefix-scoped —
+  // measured: `no8xfe.captcha-open-southeast.aliyuncs.com` for this account's
+  // scene — plus an upload host under the same family. The family is
+  // templated, so it is matched by domain rather than enumerated.
+  "https://*.aliyuncs.com",
+] as const;
+
+/**
  * Content-Security-Policy for the dashboard document. Scripts are restricted
- * to the bundled same-origin modules plus hashes of the static inline theme
- * bootstrap; styles allow inline (React `style` props) and Google Fonts.
+ * to the bundled same-origin modules, hashes of the static inline theme
+ * bootstrap, and the named widget origin; styles allow inline (React `style`
+ * props) and Google Fonts.
  */
 export function dashboardContentSecurityPolicy(html: string): string {
   const hashes = inlineScriptBodies(html).map(inlineScriptHash);
+  // The captcha runs in its own document (`claimCaptchaContentSecurityPolicy`),
+  // so the dashboard document itself needs no vendor origins at all: it only
+  // opens that page. Keeping them here would widen every screen for a dialog
+  // that no longer renders inside this document.
   return [
     "default-src 'self'",
     `script-src 'self'${hashes.length > 0 ? ` ${hashes.join(" ")}` : ""}`,
@@ -69,10 +113,45 @@ export function dashboardContentSecurityPolicy(html: string): string {
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob:",
     "connect-src 'self'",
+    "frame-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+/**
+ * Content-Security-Policy for the isolated captcha page.
+ *
+ * The claim challenge needs a policy the dashboard document must not have: it
+ * loads a remote widget script, opens the vendor's frames, and posts the
+ * challenge to region-specific captcha hosts. Rather than widen the dashboard
+ * policy — which would apply to every screen — the challenge runs in its own
+ * document, and only that document gets this wider policy.
+ *
+ * `frame-ancestors` stays `'self'` because the dashboard hosts it in an iframe
+ * of the same origin; nothing else may embed it. Scripts are still limited to
+ * the nonce-free same-origin bundle plus the one vendor origin, with
+ * `'unsafe-inline'` present only because the page's own bootstrap is inline and
+ * the page holds no data worth protecting from itself.
+ */
+export function claimCaptchaContentSecurityPolicy(): string {
+  const widgetOrigins = DASHBOARD_WIDGET_SCRIPT_ORIGINS.join(" ");
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-inline' ${widgetOrigins}`,
+    // The widget ships its own stylesheet and an embedded icon font. Measured
+    // blocks: the stylesheet and a `data:` font were refused while the policy
+    // listed neither, and the challenge rendered unstyled or not at all.
+    `style-src 'self' 'unsafe-inline' ${widgetOrigins}`,
+    "font-src 'self' data: " + widgetOrigins,
+    "img-src 'self' data: blob: " + widgetOrigins,
+    `connect-src 'self' ${widgetOrigins}`,
+    `frame-src 'self' ${widgetOrigins}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'self'",
   ].join("; ");
 }
 

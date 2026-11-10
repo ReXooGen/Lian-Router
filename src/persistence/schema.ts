@@ -972,6 +972,17 @@ export const promptInjections = pgTable(
     turns: jsonb("turns").$type<readonly PromptInjectionTurn[]>().notNull().default([]),
     position: text("position").$type<PromptInjectionPosition>().notNull().default("append"),
     enabled: boolean("enabled").notNull().default(true),
+    /**
+     * Requests this entry must not touch. Both lists are exclusions, not
+     * allowlists: an empty list excludes nobody, so a newly saved entry
+     * behaves exactly as it did before these columns existed.
+     *
+     * `excludedClientIps` holds normalized client addresses (IPv4, or IPv6
+     * with the `::ffff:` mapped prefix stripped); `excludedApiKeyIds` holds
+     * API-key row ids, including share children.
+     */
+    excludedClientIps: jsonb("excluded_client_ips").$type<readonly string[]>().notNull().default([]),
+    excludedApiKeyIds: jsonb("excluded_api_key_ids").$type<readonly string[]>().notNull().default([]),
     ...timestampColumns(),
   },
   (table) => [
@@ -995,3 +1006,97 @@ export const promptInjections = pgTable(
 );
 
 export type PromptInjection = typeof promptInjections.$inferSelect;
+
+/**
+ * Per-account growth-activity report bookkeeping (`POST {base}/v2/report`).
+ *
+ * One row per account, not one per attempt: the upstream scores a login streak,
+ * so the durable fact is "when was this account last reported". `hit_at` is the
+ * last *successful* report and is never cleared by a later failure, because a
+ * transient error must not make an already-credited account look uncredited —
+ * `last_state`/`last_error` carry the latest attempt instead.
+ *
+ * The primary key is the account id rather than a surrogate: there is exactly
+ * one report state per account, and the cascade means deleting an account takes
+ * its bookkeeping with it instead of leaving an orphan row the console would
+ * have to filter.
+ */
+export const providerReportHits = pgTable("provider_report_hits", {
+  accountId: uuid("account_id")
+    .primaryKey()
+    .references(() => providerAccounts.id, { onDelete: "cascade" }),
+  providerId: text("provider_id").notNull(),
+  hitAt: timestamp("hit_at", { withTimezone: true }),
+  hitCount: integer("hit_count").notNull().default(0),
+  lastState: text("last_state").$type<"reported" | "error">(),
+  lastError: text("last_error"),
+  updatedAt: updatedAtColumn(),
+});
+
+export type ProviderReportHit = typeof providerReportHits.$inferSelect;
+
+/**
+ * Recurring report schedule, one row per provider.
+ *
+ * `last_run_at` is the scheduler's cursor, kept separate from `updated_at`
+ * because the two answer different questions: `updated_at` is "when did the
+ * operator last edit this", `last_run_at` is "when did the sweep last fire it".
+ * Deriving the interval from `updated_at` would let a settings edit silently
+ * postpone a run that was already due.
+ */
+export const providerReportSchedule = pgTable("provider_report_schedule", {
+  providerId: text("provider_id").primaryKey(),
+  enabled: boolean("enabled").notNull().default(false),
+  accountsPerRun: integer("accounts_per_run").notNull().default(5),
+  intervalMinutes: integer("interval_minutes").notNull().default(60),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+  updatedAt: updatedAtColumn(),
+});
+
+export type ProviderReportSchedule = typeof providerReportSchedule.$inferSelect;
+
+/**
+ * Appeal bookkeeping for upstream-banned accounts, one row per account.
+ *
+ * The health classifier marks the ban (`policy_blocked_banned`) by disabling
+ * the account; the appeal is a single upstream POST under the account's own
+ * token. This table is the console's memory: whether a ban was appealed, when,
+ * with what message, and the upstream's `feedback_id` acknowledgement. A failed
+ * re-appeal overwrites `lastState`/`lastError` but never an existing
+ * `appealedAt` — an acknowledged appeal stays acknowledged.
+ */
+export const providerAccountAppeals = pgTable(
+  "cb_appeals",
+  {
+    accountId: uuid("account_id")
+      .primaryKey()
+      .references(() => providerAccounts.id, { onDelete: "cascade" }),
+    providerId: text("provider_id").notNull(),
+    appealedAt: timestamp("appealed_at", { withTimezone: true }),
+    appealCount: integer("appeal_count").notNull().default(0),
+    feedbackId: bigint("feedback_id", { mode: "number" }),
+    lastState: text("last_state").$type<"appealed" | "error">(),
+    lastError: text("last_error"),
+    message: text("message"),
+    /**
+     * Derived outcome of an acknowledged appeal. The upstream never reports it
+     * (`POST /v2/feedback` answers only `feedback_id`), so it is inferred from
+     * whether the account works again: a successful probe proves an accepted
+     * appeal, and a still-restricted probe on an appeal older than
+     * `APPEAL_DECLINE_AFTER_MS` marks it declined. NULL means undecided.
+     */
+    verdict: text("verdict").$type<"accepted" | "declined">(),
+    /** When `verdict` was last derived; NULL while the appeal is still pending. */
+    verdictCheckedAt: timestamp("verdict_checked_at", { withTimezone: true }),
+    updatedAt: updatedAtColumn(),
+  },
+  (table) => [
+    index("cb_appeals_provider_idx").on(table.providerId, table.appealedAt),
+    check(
+      "cb_appeals_verdict_check",
+      sql`${table.verdict} IS NULL OR ${table.verdict} IN ('accepted', 'declined')`,
+    ),
+  ],
+);
+
+export type ProviderAccountAppeal = typeof providerAccountAppeals.$inferSelect;

@@ -5,7 +5,9 @@ import {
   Cpu,
   FlaskConical,
   Globe,
+  Image as ImageIcon,
   LayoutDashboard,
+  LifeBuoy,
   LogOut,
   Menu,
   Moon,
@@ -53,6 +55,8 @@ interface NavItemDef {
   readonly path: string;
   readonly icon: LucideIcon;
   readonly badge?: string;
+  /** Nested entries rendered indented under this item; active state extends to them. */
+  readonly children?: readonly NavItemDef[];
 }
 
 interface NavGroupDef {
@@ -68,6 +72,7 @@ export const navigationGroups: readonly NavGroupDef[] = [
       { label: "Usage", path: "/usage", icon: Activity },
       { label: "Providers", path: "/providers", icon: Server },
       { label: "Model Lab", path: "/model-lab", icon: FlaskConical },
+      { label: "Generation", path: "/generation", icon: ImageIcon },
       { label: "Share", path: "/share", icon: Link2 },
     ],
   },
@@ -77,6 +82,15 @@ export const navigationGroups: readonly NavGroupDef[] = [
       { label: "Prompt Injection", path: "/prompt-injection", icon: Syringe },
       { label: "Combos & Routes", path: "/combos", icon: Cpu },
       { label: "Quota Management", path: "/quota", icon: ShieldAlert },
+      {
+        label: "Automation",
+        path: "/automation",
+        icon: Rocket,
+        children: [
+          { label: "Growth Activity", path: "/automation", icon: Rocket },
+          { label: "Appeal", path: "/automation/appeal", icon: LifeBuoy },
+        ],
+      },
       { label: "Proxy & Requests", path: "/proxy", icon: Network },
       { label: "CLI Tools", path: "/cli-tools", icon: Terminal },
     ],
@@ -95,7 +109,14 @@ export const navigationGroups: readonly NavGroupDef[] = [
 const titlesMap: Record<string, { title: string; sub: string }> = {
   "/": { title: "Overview", sub: "Gateway health, capacity, and live metrics" },
   "/usage": { title: "Usage & Metrics", sub: "Token economics, requests, and cost breakdown" },
-  "/automation": { title: "Automation", sub: "Embedded Grok account farm control plane" },
+  "/automation": {
+    title: "CodeBuddy Growth Activity",
+    sub: "CodeBuddy growth-activity report and hit schedule",
+  },
+  "/automation/appeal": {
+    title: "CodeBuddy Appeal",
+    sub: "Banned accounts and appeal submission",
+  },
   "/providers": { title: "Provider Catalog", sub: "Upstream credentials, models, and latency" },
   "/combos": {
     title: "Combos & Routing",
@@ -107,7 +128,11 @@ const titlesMap: Record<string, { title: string; sub: string }> = {
     sub: "Network pools, SOCKS5/HTTP egress, and dispatch",
   },
   "/customization": { title: "Customization", sub: "Theme appearance, ambient mesh, and branding" },
-  "/model-lab": { title: "Model Lab", sub: "Live model playground — chat, thinking, and image generation" },
+  "/model-lab": { title: "Model Lab", sub: "Live model playground — chat, thinking, and tool use" },
+  "/generation": {
+    title: "Generation",
+    sub: "Image and video generation through your provider accounts",
+  },
   "/cli-tools": {
     title: "CLI Tools",
     sub: "Claude Code CLI, OpenCode, and local developer tool integrations",
@@ -125,11 +150,19 @@ const CONSOLE_FALLBACK = { title: "LianRouter Console", sub: "AI Gateway Adminis
 /**
  * Resolves the topbar title/subtitle for a pathname.
  *
- * The two parameterized routes (`/providers/:providerId`, `/cli-tools/:toolId`)
- * carry their subject in the path, so a flat `titlesMap` lookup would drop them
- * onto the generic console fallback. They are matched by pattern instead.
+ * The parameterized routes (`/providers/:providerId`,
+ * `/providers/:providerId/accounts/test`, `/cli-tools/:toolId`) carry their
+ * subject in the path, so a flat `titlesMap` lookup would drop them onto the
+ * generic console fallback. They are matched by pattern instead.
  */
 function resolveRouteMeta(pathname: string): { title: string; sub: string } {
+  const probeAllMatch = /^\/providers\/([^/]+)\/accounts\/test\/?$/.exec(pathname);
+  if (probeAllMatch?.[1]) {
+    return {
+      title: providerDisplayName(probeAllMatch[1]),
+      sub: "Probe every account · bounded concurrency",
+    };
+  }
   const providerMatch = /^\/providers\/([^/]+)\/?$/.exec(pathname);
   if (providerMatch?.[1]) {
     return {
@@ -616,17 +649,38 @@ function SidebarNavList({ items, pathname }: { items: readonly NavItemDef[]; pat
             ? pathname === "/"
             : pathname === item.path || pathname.startsWith(`${item.path}/`);
         return (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            end={item.path === "/"}
-            data-active={isActive ? "true" : undefined}
-            className={`nav-link-item ${isActive ? "active" : ""}`}
-          >
-            <item.icon size={17} className="nav-link-icon" />
-            <span>{item.label}</span>
-            {item.badge ? <span className="nav-link-badge">{item.badge}</span> : null}
-          </NavLink>
+          <div key={item.path}>
+            <NavLink
+              to={item.path}
+              end={item.path === "/"}
+              data-active={isActive ? "true" : undefined}
+              className={`nav-link-item ${isActive ? "active" : ""}`}
+            >
+              <item.icon size={17} className="nav-link-icon" />
+              <span>{item.label}</span>
+              {item.badge ? <span className="nav-link-badge">{item.badge}</span> : null}
+            </NavLink>
+            {item.children && isActive ? (
+              <div className="nav-subitems" role="list">
+                {item.children.map((child) => {
+                  const childActive =
+                    pathname === child.path || pathname.startsWith(`${child.path}/`);
+                  return (
+                    <NavLink
+                      key={child.path}
+                      to={child.path}
+                      end={child.path === "/"}
+                      data-active={childActive && pathname !== child.path ? undefined : childActive ? "true" : undefined}
+                      className={`nav-link-item nav-subitem ${childActive && pathname !== child.path ? "" : childActive ? "active" : ""}`}
+                    >
+                      <child.icon size={15} className="nav-link-icon" />
+                      <span>{child.label}</span>
+                    </NavLink>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
         );
       })}
     </div>

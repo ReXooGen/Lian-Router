@@ -2,8 +2,12 @@ import { resolve } from "path";
 import {
   API_CONTENT_SECURITY_POLICY,
   X_FRAME_OPTIONS,
+  claimCaptchaContentSecurityPolicy,
   dashboardContentSecurityPolicy,
 } from "../security/outbound-headers";
+
+/** File name of the isolated captcha document (see `claim-captcha.html`). */
+const CAPTCHA_PAGE_FILE = "claim-captcha.html";
 
 /**
  * Represents the result of serving a static file.
@@ -33,6 +37,10 @@ export const DEFAULT_ENTRY_DOCUMENTS: Readonly<Record<string, string>> = {
   "/": "index.html",
   "/share": "index.html",
   "/console": "index.html",
+  // The public model-status page shares the document with the landing app;
+  // `/status/models` is an API route registered ahead of this handler, so only
+  // the page path falls through to the SPA.
+  "/status": "index.html",
 };
 
 /** Longest-prefix match of an SPA route against the configured entry documents. */
@@ -172,7 +180,7 @@ export function createStaticHandler(
   };
 
   return async (pathname: string): Promise<StaticServeResult> =>
-    applyStaticSecurityHeaders(await serve(pathname));
+    applyStaticSecurityHeaders(await serve(pathname), pathname);
 }
 
 /**
@@ -181,12 +189,19 @@ export function createStaticHandler(
  * non-document assets get the locked-down API policy so no static response is
  * ever served without an explicit CSP.
  */
-function applyStaticSecurityHeaders(result: StaticServeResult): StaticServeResult {
+function applyStaticSecurityHeaders(result: StaticServeResult, pathname: string): StaticServeResult {
   const contentType = result.headers["content-type"] ?? "";
   const isHtml = contentType.includes("text/html");
-  const csp = isHtml
-    ? dashboardContentSecurityPolicy(result.body ? new TextDecoder().decode(result.body) : "")
-    : API_CONTENT_SECURITY_POLICY;
+  // The captcha page is the one document allowed a wider policy; every other
+  // document gets the dashboard policy and every asset the locked-down one. The
+  // path is the identity, not a header: a marker carried in the response
+  // headers was stripped by this same function before the check read it.
+  const isCaptchaPage = pathname === `/${CAPTCHA_PAGE_FILE}`;
+  const csp = isCaptchaPage
+    ? claimCaptchaContentSecurityPolicy()
+    : isHtml
+      ? dashboardContentSecurityPolicy(result.body ? new TextDecoder().decode(result.body) : "")
+      : API_CONTENT_SECURITY_POLICY;
   return {
     ...result,
     headers: {

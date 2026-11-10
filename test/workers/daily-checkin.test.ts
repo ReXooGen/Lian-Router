@@ -202,6 +202,89 @@ describe("fetchDailyCheckin", () => {
     expect(result.state).toBe("already_claimed");
   });
 
+  test("treats a CN duplicate claim (HTTP 400, code 10001) as already claimed", async () => {
+    // The CN billing facade answers a duplicate claim as HTTP 400 with
+    // `{"code":10001,"msg":"今天已签到..."}`. Judging the status before the body
+    // turned the operator's manual check-in into "Daily check-in API error
+    // (400)" even though the day was already credited.
+    const calls: string[] = [];
+    const fetcher = (async (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/checkin-activity-status")) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            msg: "OK",
+            data: { active: true, today_checked_in: true, streak_days: 12, today_credit: 100 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ code: 10001, msg: "今天已签到，请明天再来" }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await fetchDailyCheckin({
+      providerId: "cbcn",
+      accountId: "acc-cn",
+      credential: "token",
+      fetcher,
+      forceClaim: true,
+    });
+
+    expect(result.state).toBe("already_claimed");
+    expect(result.streakDays).toBe(12);
+    expect(calls).toEqual([`${CBCN}/checkin-activity-status`, `${CBCN}/daily-checkin`]);
+  });
+
+  test("recognizes CN code 10001 even when the message carries no prose hint", async () => {
+    // The code is the contract; the message is locale-dependent. A gateway
+    // that answers 10001 with an unexpected string must still read as a
+    // duplicate claim rather than a failure.
+    const fetcher = (async (url: string) =>
+      url.endsWith("/checkin-activity-status")
+        ? new Response(
+            JSON.stringify({ code: 0, data: { active: true, today_checked_in: false, streak_days: 3 } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )
+        : new Response(JSON.stringify({ code: 10001, msg: "duplicate" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          })) as unknown as typeof fetch;
+
+    const result = await fetchDailyCheckin({
+      providerId: "cbcn",
+      accountId: "acc-cn",
+      credential: "token",
+      fetcher,
+    });
+
+    expect(result.state).toBe("already_claimed");
+    expect(result.streakDays).toBe(3);
+  });
+
+  test("a non-business HTTP 400 on the claim stays an error", async () => {
+    const fetcher = (async (url: string) =>
+      url.endsWith("/checkin-activity-status")
+        ? new Response(JSON.stringify({ code: 0, data: { active: true, today_checked_in: false } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response("bad request", { status: 400 })) as unknown as typeof fetch;
+
+    const result = await fetchDailyCheckin({
+      providerId: "cbcn",
+      accountId: "acc-cn",
+      credential: "token",
+      fetcher,
+    });
+
+    expect(result.state).toBe("error");
+    expect(result.error).toContain("400");
+  });
+
   test("sends CodeBuddy intl to the .ai host with the IDE identity", async () => {
     const { fetcher, calls, headers } = recordingFetch({
       [`${CB}/checkin-activity-status`]: { code: 0, data: { active: true, today_checked_in: false } },

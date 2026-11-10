@@ -244,15 +244,18 @@ const sharedZenChat: readonly ModelDefinition[] = [
   defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
 ];
 
+const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,
-  // 1M/128k, text-only; snapshot-covered (`opencode` row). Generates on the chat
-  // wire (measured 2026-10-25). Presence in `GET /zen/v1/models` is not the
-  // test — the catalog lags the serving path, so generation is the only proof.
+  // 1M/128k, text-only; snapshot-covered (`opencode` row). Absent from the
+  // current `/zen/v1/models` list but still answering 200 on
+  // `/zen/v1/chat/completions` (verified 2026-10-24), so the row stays: the
+  // list endpoint lags what the serving path accepts.
   defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true }),
+  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
+  defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
 ];
-
-const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
   ...sharedZenChat,

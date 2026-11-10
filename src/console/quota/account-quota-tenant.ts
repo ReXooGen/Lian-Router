@@ -32,6 +32,11 @@ import {
 } from "../../providers/integrations/buddy/buddy-checkin";
 import { buddyAccountUid } from "../../providers/integrations/buddy/buddy-oauth-shared";
 import {
+  claimZcodePlan,
+  fetchZcodeClaimVerificationConfig,
+  listZcodeClaims,
+} from "../../providers/integrations/zcode/zcode-claim";
+import {
   supportsAccountReset,
   consumeAccountResetCredit,
   listAccountResetCredits,
@@ -794,6 +799,185 @@ export function registerAccountQuotaTenantRoutes(
           ok: false,
           code: "reset_failed",
           message: err instanceof Error ? err.message : "Reset operation failed",
+        };
+      }
+    })
+    // ---------------------------------------------------------------------
+    // Claimable campaigns (ZCODE start-plan)
+    // ---------------------------------------------------------------------
+    //
+    // A start-plan account can hold time-boxed campaigns that are claimed rather
+    // than bought. Listing reads both surfaces that advertise them (billing
+    // preview and marketing deliveries); claiming posts one plan id. Claiming is
+    // captcha-gated upstream for the campaigns that matter, and that gate is
+    // reported as its own outcome so the operator is told to finish in the
+    // desktop app instead of retrying a request that can never succeed here.
+    .get("/accounts/:id/claims", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== "zcode") {
+        return { plans: [], errors: [], supported: false };
+      }
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const listing = await listZcodeClaims(credential, signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)));
+        return { ...listing, supported: true };
+      } catch (err) {
+        set.status = 502;
+        return {
+          plans: [],
+          errors: [err instanceof Error ? err.message : "Claim listing failed"],
+          supported: true,
+        };
+      }
+    })
+    // The captcha the claim endpoint expects, so the dashboard can render the
+    // same widget the desktop app does instead of dead-ending the operator with
+    // "claim it in the app".
+    .get("/accounts/:id/claims/verification", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== "zcode") {
+        set.status = 400;
+        return { error: `Claiming is not supported for provider ${account.providerId}`, code: "claim_unsupported" };
+      }
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const config = await fetchZcodeClaimVerificationConfig(
+          credential,
+          signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+        );
+        return { ok: true, config };
+      } catch (err) {
+        set.status = 502;
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Captcha config read failed",
+          code: "claim_verification_failed",
+        };
+      }
+    })
+    .post("/accounts/:id/claims", async ({ request, params, set, body }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:write");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(eq(providerAccounts.id, params.id), eq(providerAccounts.tenantId, access.tenantId)),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== "zcode") {
+        set.status = 400;
+        return { error: `Claiming is not supported for provider ${account.providerId}`, code: "claim_unsupported" };
+      }
+      const payload = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+      const planId = payload["planId"];
+      if (typeof planId !== "string" || planId.trim().length === 0) {
+        set.status = 400;
+        return { error: "planId is required", code: "invalid_request" };
+      }
+      // The challenge token is supplied by the dashboard widget. Absent, the
+      // claim is attempted bare and the gateway answers its own captcha code,
+      // which is reported as the captcha state; present, the claim carries it.
+      const captchaParam = typeof payload["captchaParam"] === "string" ? payload["captchaParam"] : "";
+      const captchaRegion = typeof payload["captchaRegion"] === "string" ? payload["captchaRegion"] : "";
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const outcome = await claimZcodePlan(
+          credential,
+          planId,
+          signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+          { param: captchaParam, region: captchaRegion },
+        );
+        if (outcome.kind === "claimed") {
+          await invalidateQuotaCache(access.tenantId, account.id, redis);
+          await snapshotInvalidator?.invalidate();
+          if (auditRecorder) {
+            await auditRecorder.record({
+              access,
+              action: "provider_account.recovered",
+              target: account.id,
+              detail: { reason: "plan_claimed", provider: account.providerId, planId: outcome.planId },
+            });
+          }
+          return { ok: true, status: "claimed", planId: outcome.planId, startsAt: outcome.startsAt, endsAt: outcome.endsAt };
+        }
+        if (outcome.kind === "captcha_required") {
+          // Not a client error and not a transient failure: the campaign is real
+          // and the credential works, but the claim must be finished where a
+          // human can solve the challenge.
+          set.status = 409;
+          return {
+            ok: false,
+            status: "captcha_required",
+            planId: outcome.planId,
+            message: outcome.message,
+            code: "claim_captcha_required",
+          };
+        }
+        if (outcome.kind === "rate_limited") {
+          // 429 rather than 502: the request was valid and the campaign exists,
+          // so this is the vendor's own throttle and the operator can retry.
+          set.status = 429;
+          return {
+            ok: false,
+            status: "rate_limited",
+            planId: outcome.planId,
+            message: outcome.message,
+            code: "claim_rate_limited",
+          };
+        }
+        set.status = 502;
+        return {
+          ok: false,
+          status: "rejected",
+          planId: outcome.planId,
+          message: outcome.message,
+          code: "claim_rejected",
+        };
+      } catch (err) {
+        set.status = 502;
+        return {
+          ok: false,
+          status: "error",
+          message: err instanceof Error ? err.message : "Claim operation failed",
+          code: "claim_failed",
         };
       }
     });

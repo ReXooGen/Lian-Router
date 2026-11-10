@@ -40,6 +40,22 @@ export function formatUptime(seconds: number | null | undefined): string {
   return `${secs}s`;
 }
 
+/**
+ * A past timestamp as a compact relative age (`just now`, `5m ago`, `2h ago`,
+ * `3d ago`). Used where a row needs to answer "when" at a glance without a
+ * full locale string. Absent or unparsable values are `—`.
+ */
+export function formatTimeAgo(value: string | null | undefined): string {
+  if (!value) return "—";
+  const then = new Date(value).getTime();
+  if (!Number.isFinite(then)) return "—";
+  const seconds = Math.round((Date.now() - then) / 1000);
+  if (seconds < 45) return "just now";
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
+}
+
 /** A plain integer count with thousands separators. */
 export function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";

@@ -1,0 +1,295 @@
+/**
+ * Model-status page styling.
+ *
+ * Deliberately standalone: the page is public, mounts into the shared document
+ * without the console's token sheet, and must look identical for every
+ * visitor. Colours are declared here as plain custom properties so the bucket
+ * palette lives in one place — the component references `--st-*` and never a
+ * raw hex.
+ */
+:root {
+  --st-canvas: #08080b;
+  --st-panel: #101014;
+  --st-panel-edge: #1e1e24;
+  --st-text: #f4f4f5;
+  --st-muted: #8b8b94;
+  --st-faint: #5a5a63;
+  --st-ok: #3fbf6a;
+  --st-warn: #d7a13b;
+  --st-bad: #e0524a;
+  --st-idle: #2a2a31;
+  --st-accent: #c8c8cf;
+}
+
+html,
+body {
+  background: var(--st-canvas);
+}
+
+.st {
+  min-height: 100vh;
+  background: var(--st-canvas);
+  color: var(--st-text);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  padding: 48px 20px 64px;
+}
+
+.st-shell {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.st-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 22px;
+}
+
+.st-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--st-muted);
+  text-decoration: none;
+  transition: color 140ms ease;
+}
+
+.st-back:hover {
+  color: var(--st-text);
+}
+
+.st-title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.st-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--st-muted);
+}
+
+/* ── banner ─────────────────────────────────────────────────────────── */
+
+.st-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  margin-bottom: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--st-panel-edge);
+  background: var(--st-panel);
+  font-size: 12.5px;
+}
+
+.st-banner-ok {
+  border-color: color-mix(in srgb, var(--st-ok) 35%, transparent);
+}
+
+.st-banner-warn {
+  border-color: color-mix(in srgb, var(--st-warn) 35%, transparent);
+}
+
+.st-banner-bad {
+  border-color: color-mix(in srgb, var(--st-bad) 45%, transparent);
+  background: color-mix(in srgb, var(--st-bad) 8%, var(--st-panel));
+}
+
+.st-banner-text {
+  font-weight: 600;
+}
+
+.st-banner-bad .st-banner-text {
+  color: var(--st-bad);
+}
+
+.st-banner-warn .st-banner-text {
+  color: var(--st-warn);
+}
+
+.st-banner-ok .st-banner-text {
+  color: var(--st-ok);
+}
+
+.st-banner-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--st-faint);
+}
+
+.st-refresh {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--st-panel-edge);
+  background: transparent;
+  color: var(--st-muted);
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease;
+}
+
+.st-refresh:hover:not(:disabled) {
+  color: var(--st-text);
+  border-color: var(--st-muted);
+}
+
+.st-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ── rows ───────────────────────────────────────────────────────────── */
+
+.st-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.st-row {
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--st-panel-edge);
+}
+
+/* The last row meets the footer's own top border; keeping both draws two rules
+   a few pixels apart with nothing between them. */
+.st-row:last-child {
+  border-bottom: none;
+  padding-bottom: 4px;
+}
+
+.st-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.st-model {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.st-model-id {
+  font-size: 11.5px;
+  color: var(--st-faint);
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+.st-state {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.st-state-ok {
+  color: var(--st-ok);
+}
+
+.st-state-degraded {
+  color: var(--st-warn);
+}
+
+.st-state-down {
+  color: var(--st-bad);
+}
+
+.st-state-idle {
+  color: var(--st-faint);
+}
+
+.st-success {
+  font-size: 11.5px;
+  color: var(--st-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sixty equal bars: `flex: 1` keeps them filling the row at any width, and
+   `min-width: 0` stops the gap from overflowing before they shrink. */
+.st-bars {
+  display: flex;
+  gap: 3px;
+  height: 26px;
+  align-items: stretch;
+}
+
+.st-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 2px;
+}
+
+.st-note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--st-muted);
+}
+
+.st-message {
+  padding: 28px 0;
+  font-size: 13px;
+  color: var(--st-muted);
+}
+
+.st-idle-note {
+  margin: 18px 0 0;
+  font-size: 11.5px;
+  color: var(--st-faint);
+}
+
+/* ── footer ─────────────────────────────────────────────────────────── */
+
+.st-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 40px;
+  padding-top: 18px;
+  border-top: 1px solid var(--st-panel-edge);
+}
+
+.st-foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--st-accent);
+  text-decoration: none;
+}
+
+.st-foot a:hover {
+  color: var(--st-text);
+}
+
+.st-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--st-faint);
+}
+
+.st-brand svg {
+  width: 14px;
+  height: 14px;
+}

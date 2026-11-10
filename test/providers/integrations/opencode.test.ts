@@ -501,9 +501,11 @@ describe("OpenCode bundled catalog", () => {
     expect(lightning?.cost.input).toBe(0);
     expect(lightning?.cost.output).toBe(0);
 
-    // Absent from the committed snapshot, so the explicit limits are the row's
-    // only source: a silent fallback to the generic default would misreport the
-    // window and the output budget the clamp enforces.
+    const minimax = OPENCODE_FREE_MODELS.find(
+      (model) => model.modelId === "minimax-m3.1-flash-free",
+    );
+    expect(minimax).toBeUndefined();
+
     const flint = OPENCODE_FREE_MODELS.find((model) => model.modelId === "flint-40b-free");
     expect(flint).toBeDefined();
     expect(flint?.wireFamily).toBe("chat");
@@ -517,9 +519,32 @@ describe("OpenCode bundled catalog", () => {
   });
 
   test("keeps the bare DeepSeek and GLM flash ids off the Free tier", () => {
-    for (const stale of ["deepseek-v4.1-flash", "glm-5.3-flash", "step-5-preview-free", "mimo-v2.5-free"]) {
+    for (const stale of [
+      "deepseek-v4.1-flash",
+      "glm-5.3-flash",
+      "step-5-preview-free",
+      "mimo-v2.5-free",
+      "longcat-2.5-preview-free",
+      "minimax-m3.1-flash-free",
+    ]) {
       expect(OPENCODE_FREE_MODELS.find((model) => model.modelId === stale)).toBeUndefined();
     }
+    // The live `/zen/v1/models` free set, minus `jev-1.13-free` (System One
+    // protocol on `/zen/v1/systemone`, not a chat row this catalog can serve).
+    const freeIds = OPENCODE_FREE_MODELS.map((model) => model.modelId).sort();
+    expect(freeIds).toEqual([
+      "beam-free",
+      "big-pickle",
+      "deepseek-v4.1-flash-free",
+      "flint-40b-free",
+      "glm-5.3-flash-free",
+      "mimo-v2.6-flash-free",
+      "muse-spark-1.2-contributor-free",
+      "muse-spark-1.3-contributor-free",
+      "nemotron-3-ultra-free",
+      "nemotron-3.5-lightning-free",
+      "nemotron-3.5-super-vl-free",
+    ]);
     // Paid tier keeps the snapshot-covered bare rows.
     for (const bare of ["deepseek-v4.1-flash", "glm-5.3-flash"]) {
       const row = OPENCODE_ZEN_MODELS.find((model) => model.modelId === bare);
@@ -540,8 +565,6 @@ describe("OpenCode bundled catalog", () => {
   test("does not declare tombstoned or unverified free ids", () => {
     const retired = [
       "minimax-m3.1-flash-free",
-      "muse-spark-1.2-contributor-free",
-      "muse-spark-1.3-contributor-free",
       "union-alpha",
       "longcat-2.5-preview-free",
     ];

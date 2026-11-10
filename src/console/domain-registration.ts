@@ -1,5 +1,5 @@
 import { Elysia } from "elysia";
-import { ConsoleDomainError } from "./shared/errors";
+import { recoverAccount } from "../providers/operations/account-health-service";
 import { createCliToolsRoutes } from "./cli-tools/routes";
 import { createAccountQuotaRoutes } from "./quota/account-quota";
 import { createApiKeyRoutes } from "./domains/api-keys/routes";
@@ -15,6 +15,9 @@ import {
   DrizzleProviderCatalogStore,
 } from "./providers/catalog/store";
 import { DrizzleProviderDetailStore } from "./providers/detail/store";
+import { createProviderOutboundResolver } from "./providers/outbound-binding";
+import { createGenerationRoutes } from "./generation/routes";
+import { DrizzleGenerationStore } from "./generation/store";
 import { createModelRoutingRoutes } from "./routing/model/contracts";
 import { createNetworkPoolRoutes } from "./routing/pools/contracts";
 import { DrizzleModelRoutingStore } from "./routing/model/store";
@@ -25,6 +28,8 @@ import { createTunnelRoutes } from "./tunnel/contracts";
 import { getTunnelService } from "./tunnel/service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
 import { createPromptInjectionRoutes } from "./prompt-injection/routes";
+import { createAppealRoutes } from "./automation/appeal/routes";
+import { DrizzleAppealStore } from "./automation/appeal/store";
 import { DrizzlePromptInjectionStore } from "../persistence/prompt-injection-store";
 import { createObservabilityRoutes } from "./domains/stats/contracts";
 import { DrizzleObservabilityStore } from "./domains/stats/store";
@@ -47,6 +52,7 @@ import { DrizzleApiKeyStore } from "../persistence/api-key-store";
 import { DrizzleShareLinkStore } from "../persistence/share-store";
 import { createShareUsagePort } from "./share/share-usage";
 import { resolveSsrfPolicy } from "../config";
+import { flagPoolCooldown } from "../network/pool-health";
 import type { AuditRecorder } from "./auth/service";
 import type { CliToolService } from "./cli-tools/service";
 import type { NetworkPoolSelector } from "../network/pool/selector";
@@ -86,11 +92,6 @@ export interface ConsoleDomainContext {
   /** Password verification against the console user's stored hash. */
   readonly credentialService: Pick<ConsoleCredentialService, "verifyPassword">;
 }
-import { and, eq, isNull, or } from "drizzle-orm";
-import { networkPools, providerRoutingSettings } from "../persistence/schema";
-import { resolveTenantOverride } from "../persistence/tenant-scope";
-import { DEFAULT_PROXY_BYPASS_PROVIDER_IDS } from "../providers/provider-registry";
-import type { ProbeOutboundBinding } from "../providers/discovery/probing-service";
 
 
 export function registerConsoleDomains(
@@ -105,82 +106,26 @@ export function registerConsoleDomains(
     resolveRefresher: (id) => ctx.providerRegistry.resolveRefresher(id),
     refreshService: ctx.oauthRefreshService,
   });
+  const providerOutbound = createProviderOutboundResolver({
+    db: ctx.db,
+    poolSelector: ctx.poolSelector,
+    networkBindingFactory: ctx.networkBindingFactory,
+  });
   const providerCatalogStore = new DrizzleProviderCatalogStore(ctx.db, {
     telemetryBuffer: ctx.telemetryBuffer,
     bundledModelCatalog: ctx.bundledModelCatalog,
     providerRegistry: ctx.providerRegistry,
-    outboundFetchFor: async (tenantId: string, providerId?: string): Promise<ProbeOutboundBinding> => {
-      let bypass = false;
-      if (providerId) {
-        const rows = await ctx.db
-          .select({
-            tenantId: providerRoutingSettings.tenantId,
-            bypassProxy: providerRoutingSettings.bypassProxy,
-          })
-          .from(providerRoutingSettings)
-          .where(
-            and(
-              eq(providerRoutingSettings.providerId, providerId),
-              or(
-                eq(providerRoutingSettings.tenantId, tenantId),
-                isNull(providerRoutingSettings.tenantId),
-              ),
-            ),
-          );
-        const tenantSetting = rows.find((row) => row.tenantId === tenantId)?.bypassProxy;
-        const globalSetting = rows.find((row) => row.tenantId === null)?.bypassProxy;
-        bypass = resolveTenantOverride(
-          tenantSetting,
-          globalSetting,
-          DEFAULT_PROXY_BYPASS_PROVIDER_IDS.has(providerId),
-        );
-      }
-
-      if (!bypass) {
-        const activePools = await ctx.db
-          .select({
-            id: networkPools.id,
-            maxInflight: networkPools.maxInflight,
-            weight: networkPools.weight,
-          })
-          .from(networkPools)
-          .where(and(eq(networkPools.tenantId, tenantId), eq(networkPools.status, "active")));
-
-        if (activePools.length > 0) {
-          const limits: Record<string, number> = {};
-          const weights: Record<string, number> = {};
-          for (const p of activePools) {
-            limits[p.id] = p.maxInflight ?? 10;
-            weights[p.id] = p.weight ?? 100;
-          }
-          const slot = await ctx.poolSelector.tryAcquireAvailablePool(
-            activePools.map((p) => p.id),
-            providerId ?? "default",
-            limits,
-            weights,
-          );
-          if (slot) {
-            return {
-              fetch: ctx.networkBindingFactory.fetch(slot.poolId, tenantId),
-              networkPoolId: slot.poolId,
-              release: slot.release,
-            };
-          }
-          // Every pool is saturated or cooling down: fail closed with an
-          // explicit 503 rather than pinning the first pool and bypassing its
-          // capacity accounting and cooldown.
-          throw new ConsoleDomainError(
-            "pool_unavailable",
-            503,
-            `All network pools are saturated for provider ${providerId ?? "default"}`,
-          );
-        }
-      }
-
-      return { fetch: ctx.networkBindingFactory.fetch(undefined, tenantId) };
-    },
+    outboundFetchFor: providerOutbound,
     snapshotInvalidator: ctx.routeSnapshotService,
     poolSelector: ctx.poolSelector,
+    coolPool: (poolId, providerId, error) => flagPoolCooldown(ctx.poolSelector, ctx.db, poolId, providerId, error),
+  });
+  const generationStore = new DrizzleGenerationStore(ctx.db, {
+    outboundFetchFor: providerOutbound,
+    oauth: {
+      resolveRefresher: (id) => ctx.providerRegistry.resolveRefresher(id),
+      refreshService: ctx.oauthRefreshService,
+    },
   });
   const providerDetailStore = new DrizzleProviderDetailStore(ctx.db);
   const networkPoolStore = new DrizzleNetworkPoolStore(
@@ -218,6 +163,13 @@ export function registerConsoleDomains(
   console.use(createLogRoutes({ accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
   console.use(createPerformanceRoutes({ accessResolver: ctx.accessResolver }));
   console.use(createAuditRoutes({ store: auditReadStore, accessResolver: ctx.accessResolver }));
+  console.use(
+    createGenerationRoutes({
+      store: generationStore,
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+    }),
+  );
   console.use(createProviderCatalogRoutes({
     store: providerCatalogStore,
     accessResolver: ctx.accessResolver,
@@ -264,6 +216,32 @@ export function registerConsoleDomains(
       store: new DrizzlePromptInjectionStore(ctx.db),
       accessResolver: ctx.accessResolver,
       auditSink: ctx.auditRecorder,
+    }),
+  );
+  console.use(
+    createAppealRoutes({
+      store: new DrizzleAppealStore(ctx.db),
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+      resolveCredential,
+      // The recheck judges an appeal by whether the account works again, so it
+      // must ask the same question live traffic asks: the catalog store's
+      // probeModel runs the real adapter, identity headers and health recorder.
+      probeAccount: async ({ tenantId, providerId, accountId, modelId }) => {
+        const result = await providerCatalogStore.probeModel(tenantId, providerId, {
+          modelId,
+          accountId,
+        });
+        return {
+          ok: result.ok,
+          ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
+          ...(result.error === undefined ? {} : { error: result.error }),
+        };
+      },
+      // An accepted appeal is the operator-visible proof that the ban is gone.
+      recoverAccount: async (accountId) => {
+        await recoverAccount(ctx.db, accountId, "appeal_accepted");
+      },
     }),
   );
   console.use(

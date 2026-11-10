@@ -41,6 +41,10 @@ export interface PromptInjectionEntryResponse {
   readonly turns: readonly PromptInjectionTurn[];
   readonly position: PromptInjectionPosition;
   readonly enabled: boolean;
+  /** Client IPs this injection never applies to. */
+  readonly excludedClientIps?: readonly string[];
+  /** API key ids this injection never applies to; a template id skips its children. */
+  readonly excludedApiKeyIds?: readonly string[];
   readonly updatedAt: string;
 }
 
@@ -206,6 +210,8 @@ export function toPromptInjectionEntry(row: PromptInjection): PromptInjectionEnt
     turns: row.turns,
     position: row.position,
     enabled: row.enabled,
+    excludedClientIps: row.excludedClientIps,
+    excludedApiKeyIds: row.excludedApiKeyIds,
     updatedAt: row.updatedAt.toISOString(),
   };
 }

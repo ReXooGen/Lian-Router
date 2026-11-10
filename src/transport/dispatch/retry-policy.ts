@@ -61,3 +61,16 @@ export function shouldCooldownPool(error: unknown): error is GatewayError {
   const scope = error.details.rateLimitScope;
   return scope === "provider" || scope === "network";
 }
+
+/**
+ * A 429 scoped to the egress address alone. Retrying the *same* candidate is
+ * correct here — the selector's cooldown map already hides the burned exit, so
+ * a re-acquire hands back a different one — while a provider- or account-scoped
+ * limit fails identically on every exit, and a retry would only burn attempts.
+ */
+export function isNetworkScopedRateLimit(error: unknown): error is GatewayError {
+  if (!(error instanceof GatewayError) || error.origin !== "upstream" || error.status !== 429) {
+    return false;
+  }
+  return error.details.rateLimitScope === "network";
+}

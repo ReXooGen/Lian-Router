@@ -504,3 +504,47 @@ CREATE UNIQUE INDEX "prompt_injections_tenant_scope_target_name_idx" ON "prompt_
 CREATE UNIQUE INDEX "prompt_injections_active_target_uidx" ON "prompt_injections" USING btree ("tenant_id", "scope", "target") WHERE "active";
 --> statement-breakpoint
 CREATE INDEX "prompt_injections_tenant_idx" ON "prompt_injections" USING btree ("tenant_id");
+--> statement-breakpoint
+CREATE TABLE "provider_report_hits" (
+  "account_id" uuid PRIMARY KEY NOT NULL,
+  "provider_id" text NOT NULL,
+  "hit_at" timestamp with time zone,
+  "hit_count" integer DEFAULT 0 NOT NULL,
+  "last_state" text,
+  "last_error" text,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT "provider_report_hits_account_id_provider_accounts_id_fk" FOREIGN KEY ("account_id") REFERENCES "provider_accounts"("id") ON DELETE cascade,
+  CONSTRAINT "provider_report_hits_last_state_check" CHECK ("last_state" IS NULL OR "last_state" IN ('reported', 'error'))
+);
+--> statement-breakpoint
+CREATE INDEX "provider_report_hits_provider_hit_idx" ON "provider_report_hits" USING btree ("provider_id", "hit_at");
+--> statement-breakpoint
+CREATE TABLE "provider_report_schedule" (
+  "provider_id" text PRIMARY KEY NOT NULL,
+  "enabled" boolean DEFAULT false NOT NULL,
+  "accounts_per_run" integer DEFAULT 5 NOT NULL,
+  "interval_minutes" integer DEFAULT 60 NOT NULL,
+  "last_run_at" timestamp with time zone,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT "provider_report_schedule_accounts_per_run_check" CHECK ("accounts_per_run" BETWEEN 1 AND 100),
+  CONSTRAINT "provider_report_schedule_interval_minutes_check" CHECK ("interval_minutes" BETWEEN 15 AND 1440)
+);
+--> statement-breakpoint
+CREATE TABLE "cb_appeals" (
+  "account_id" uuid PRIMARY KEY NOT NULL,
+  "provider_id" text NOT NULL,
+  "appealed_at" timestamp with time zone,
+  "appeal_count" integer DEFAULT 0 NOT NULL,
+  "feedback_id" bigint,
+  "last_state" text,
+  "last_error" text,
+  "message" text,
+  "verdict" text,
+  "verdict_checked_at" timestamp with time zone,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT "cb_appeals_account_id_provider_accounts_id_fk" FOREIGN KEY ("account_id") REFERENCES "provider_accounts"("id") ON DELETE cascade,
+  CONSTRAINT "cb_appeals_last_state_check" CHECK ("last_state" IS NULL OR "last_state" IN ('appealed', 'error')),
+  CONSTRAINT "cb_appeals_verdict_check" CHECK ("verdict" IS NULL OR "verdict" IN ('accepted', 'declined'))
+);
+--> statement-breakpoint
+CREATE INDEX "cb_appeals_provider_idx" ON "cb_appeals" USING btree ("provider_id", "appealed_at");

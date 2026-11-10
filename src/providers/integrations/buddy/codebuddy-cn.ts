@@ -32,7 +32,8 @@ export const CODEBUDDY_CN_BASE_URL = providerBaseUrl("cbcn");
 // Payload hook — provider CN semantics
 // - force stream=true
 // - reasoning_summary auto only when reasoning_effort
-// - neutralize CN agent prompts (remove system agent instructions)
+// - neutralize foreign agent identities in system text (the CN channel
+//   rejects another vendor's CLI prompt); content decides, not length
 
 function isAgentPromptText(text: string): boolean {
   return /you are claude code|claude.?code.+official.+cli|anthropic.+official.+cli|anxthxropic.+official.+cli|you are (?:cursor|windsurf|cline|aider|continue|copilot|cody)|you are an? (?:ai )?(?:coding |code )?agent|cc_entrypoint\s*=\s*(?:cli|vscode|jetbrains|gui)|claude.?code.+issues|give feedback.+claude.?code|you are .{0,30}(?:powerful )?ai agent|orchestration capabilities|OhMyOpenCode|<agent-identity>|<Role>|<Behavior_Instructions>/i.test(
@@ -61,7 +62,11 @@ function neutralizeCnMessages(messages: Array<Record<string, unknown>>): void {
     if (!message || message["role"] !== "system") continue;
     const content = message["content"];
     const text = flattenContent(content);
-    if (text.length <= 2_000 && !isAgentPromptText(text)) continue;
+    // The neutralizer's contract is an *identity* check: another vendor's
+    // agent prompt confuses the CN channel. Length is not evidence of that —
+    // a long operator prompt-injection, or a client's own long system prompt,
+    // is legitimate content and must reach the model unchanged.
+    if (!isAgentPromptText(text)) continue;
     messages[index] =
       typeof content === "string"
         ? { ...message, content: CODEBUDDY_CN_NEUTRAL_PROMPT }

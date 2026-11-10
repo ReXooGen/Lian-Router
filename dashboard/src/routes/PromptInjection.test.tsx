@@ -17,6 +17,7 @@ import {
   draftDiffersFromEntry,
   groupByTarget,
   loadedEntryNotice,
+  normalizeExclusionIp,
   previewKeyOptions,
   previewOptionsFor,
   previewScopeFilterNotice,
@@ -43,6 +44,8 @@ const draft: PromptInjectionInput = {
   turns: [],
   position: "append",
   enabled: true,
+  excludedClientIps: [],
+  excludedApiKeyIds: [],
 };
 
 const noop = (): void => undefined;
@@ -428,6 +431,33 @@ describe("unsaved editor detection", () => {
     expect(draftDiffersFromEntry({ ...saved, active: true }, saved)).toBe(true);
   });
 
+  test("exclusion lists compare as sets, not sequences", () => {
+    const excluded = {
+      ...saved,
+      excludedClientIps: ["203.0.113.7", "198.51.100.9"],
+      excludedApiKeyIds: ["key-1"],
+    };
+    expect(draftDiffersFromEntry(excluded, excluded)).toBe(false);
+    expect(
+      draftDiffersFromEntry(
+        { ...excluded, excludedClientIps: ["198.51.100.9", "203.0.113.7"] },
+        excluded,
+      ),
+    ).toBe(false);
+    expect(
+      draftDiffersFromEntry(
+        { ...excluded, excludedClientIps: ["198.51.100.9", "203.0.113.8"] },
+        excluded,
+      ),
+    ).toBe(true);
+    expect(draftDiffersFromEntry({ ...excluded, excludedApiKeyIds: [] }, excluded)).toBe(true);
+  });
+
+  test("exclusion addresses canonicalize like the server", () => {
+    expect(normalizeExclusionIp("  ::FFFF:203.0.113.7 ")).toBe("203.0.113.7");
+    expect(normalizeExclusionIp("2001:DB8::1")).toBe("2001:db8::1");
+    expect(normalizeExclusionIp("   ")).toBe("");
+  });
   test("turn content and role are compared, not just the count", () => {
     const base = {
       ...saved,

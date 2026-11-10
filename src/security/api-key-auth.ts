@@ -215,6 +215,14 @@ export interface ResolvedApiKey {
   readonly scopes: readonly AccessScope[];
   readonly snapshot: ApiKeyAuthorizationSnapshot;
   readonly modelPrefix?: string;
+  /**
+   * Share template that issued this key, when the credential is a child.
+   *
+   * Console exclusions name the key the operator sees; excluding a template
+   * must also cover the per-IP credentials it mints, so dispatch needs the
+   * parent on the same hot-path object rather than a second lookup.
+   */
+  readonly parentKeyId?: string;
 }
 
 /** Extracts exactly one supported credential source, preserving public auth statuses. */
@@ -271,5 +279,8 @@ export async function resolveApiKeyAuthorization(
     scopes,
     snapshot,
     ...(row.modelPrefix ? { modelPrefix: row.modelPrefix } : {}),
+    // A share child carries its template on the row so console exclusions
+    // naming the template cover the child without a second lookup.
+    ...(row.parentKeyId ? { parentKeyId: row.parentKeyId } : {}),
   };
 }

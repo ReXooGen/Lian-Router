@@ -118,7 +118,7 @@ const WORKBUDDY_RAW: readonly BuddyRawEntry[] = [
   ["fast-model", "Fast Model", true, false, 128_000, 64_000],
   ["balanced-model", "Balanced Model", true, false, 128_000, 64_000],
   ["deep-model", "Deep Model", true, false, 128_000, 64_000],
-  ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, false, 1_000_000, 384_000],
+  ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true, 1_000_000, 384_000],
   ["deepseek-v4-pro", "DeepSeek V4 Pro", true, false, 1_000_000, 384_000],
   ["deepseek-v4-flash", "DeepSeek V4 Flash", true, false, 1_000_000, 384_000],
   ["glm-5.1", "GLM-5.1", true, false, 200_000, 131_072],

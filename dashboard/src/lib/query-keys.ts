@@ -17,12 +17,36 @@ export const queryKeys = {
     summary: (period: string) => ["console", "usage", "summary", period] as const,
     chart: (period: string) => ["console", "usage", "chart", period] as const,
     by: (period: string, dimension: string) => ["console", "usage", "by", period, dimension] as const,
-    requests: (period: string, limit: number, httpStatus?: number | null) =>
-      ["console", "usage", "requests", period, limit, httpStatus ?? "all"] as const,
+    requests: (
+      period: string,
+      limit: number,
+      httpStatus?: number | null,
+      shared?: boolean,
+      parentKeyId = "",
+      childKeyId = "",
+    ) =>
+      [
+        "console",
+        "usage",
+        "requests",
+        period,
+        limit,
+        httpStatus ?? "all",
+        shared ?? "any",
+        parentKeyId,
+        childKeyId,
+      ] as const,
     requestDetail: (requestId: string) => ["console", "usage", "requests", requestId] as const,
   },
   modelBans: {
     all: ["console", "model-bans"] as const,
+  },
+  generation: {
+    catalog: ["console", "generation", "catalog"] as const,
+    imageTask: (providerId: string, taskId: string) =>
+      ["console", "generation", "images", providerId, taskId] as const,
+    videoTask: (providerId: string, taskId: string) =>
+      ["console", "generation", "videos", providerId, taskId] as const,
   },
   promptInjection: {
     all: ["console", "prompt-injection"] as const,
@@ -39,6 +63,10 @@ export const queryKeys = {
       ["console", "providers", providerId, "accounts"] as const,
     routing: (providerId: string | undefined) =>
       ["console", "providers", providerId, "routing"] as const,
+    claims: (accountId: string | undefined) =>
+      ["console", "providers", "accounts", accountId, "claims"] as const,
+    claimVerification: (accountId: string | undefined) =>
+      ["console", "providers", "accounts", accountId, "claims", "verification"] as const,
     healthEvents: (providerId: string | undefined, accountId: string | undefined) =>
       [
         "console",
@@ -82,6 +110,22 @@ export const queryKeys = {
   audit: {
     list: (filters: { action?: string; actor?: string; cursor?: string; limit?: number }) =>
       ["console", "audit", "list", filters] as const,
+  },
+  automation: {
+    all: ["console", "automation"] as const,
+    // Status is part of the key because the server filters the list; each
+    // filter gets its own cache entry instead of overwriting the last one.
+    reportAccounts: (providerId: string, status: string) =>
+      ["console", "automation", "report", "accounts", providerId, status] as const,
+    // Prefix for invalidating every filtered account list at once.
+    reportAccountsAll: (providerId: string) =>
+      ["console", "automation", "report", "accounts", providerId] as const,
+    reportSchedule: (providerId: string) =>
+      ["console", "automation", "report", "schedule", providerId] as const,
+    appealAccounts: (providerId: string, status: string) =>
+      ["console", "automation", "appeal", "accounts", providerId, status] as const,
+    appealAccountsAll: (providerId: string) =>
+      ["console", "automation", "appeal", "accounts", providerId] as const,
   },
   quota: {
     all: ["console", "quota"] as const,

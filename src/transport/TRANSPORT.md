@@ -426,18 +426,25 @@ then runs `runAttemptLoop` over `eligibleRouteCandidates`.
 last-candidate attempts are terminal, others back off with jittered `fallbackRetryDelayMs` and try the next candidate.
 Terminal attempts record their `errorCategory` via `classifyTerminalCategory` (GatewayError code passthrough, signal-reason
 deadline/close mapping, else `unknown_error`).
-Provider 429s flag a pool cooldown (`flagPoolCooldown`, in `../network/pool-health.ts`, writing the
-volatile flag and the durable `health_events` row through one call) **only when the evidence says the egress was
-limited**. `classifyRateLimitScope` reads the upstream's structured identifiers (`error.code` / `error.type`, never
-prose) and answers `account` | `provider` | `network`: provider-capacity identifiers are `provider`, a provider that
-presents no caller identity at all is `network` (its only discriminator is the source address — `opencodeft`, which is
-`requires_account: false` and sends the literal `Bearer public`), and everything else — including a bare 429 — is
-`account`. Only `provider` and `network` cool the pool; an `account`-scoped limit parks the *account* so routing tries
-another one, because cooling a pool for a credential- or tier-scoped limit sidelines healthy egress for every other
-request to that provider while changing nothing about the limit. A 403 is refreshed only when
-`isOAuthCredentialInvalidated()` finds credential evidence; policy rejections (e.g. CodeBuddy `11140`) are retryable but
-never refresh, so the loop advances to the next candidate. The only same-candidate retry is the post-refresh re-entry, which
-by definition runs only when the credential was actually refreshed.
+A 429's `rateLimitScope` (from `classifyRateLimitScope`) states what upstream limited: `provider` (its own capacity) or
+`network` (an allowance keyed on the egress address, e.g. OpenCode Free) both flag a pool cooldown (`flagPoolCooldown`, in
+`../network/pool-health.ts`, writing the volatile flag and the durable `health_events` row through one call); `account` does
+not, because another exit cannot change a credential's limit. `classifyRateLimitScope` reads the upstream's structured
+identifiers (`error.code` / `error.type`, never prose), never the message text: a provider that presents no caller
+identity at all is `network` (its only discriminator is the source address), and everything else — including a bare
+429 — is `account`. A network-scoped 429 or a refused proxy CONNECT
+(`ProxyConnectError`) on a candidate carrying more than one pool also retries the *same* candidate
+(up to `MAX_EGRESS_FAILOVERS` = 2 extra tries): the cooldown is already visible to the selector's
+local map, so the re-acquired slot is a different exit. A refused tunnel never reached the upstream,
+so no account health is recorded for it. Those retries commit no usage — neither a 429 nor a
+refused tunnel consumed upstream tokens — and only the final attempt writes telemetry. A 403 is refreshed only when
+`isOAuthCredentialInvalidated()` finds credential evidence; policy rejections (e.g. CodeBuddy `11140`) never refresh.
+One of those rejections is also terminal: a buddy `11140` whose body names a restriction on the account
+("restricted", "unusual activity", an appeal action) is a ban, so `classifyUpstreamFailure` marks it
+non-retryable. The same bytes fail identically on every account carrying that ban, so retrying only spends the
+client's retry budget — one request against a fully-banned pool walked thousands of candidates and never
+answered. Every other `11140` (a request-shape refusal) stays retryable, because it may be one account's
+problem while a sibling still works.
 
 **Streaming handoff.** The first upstream event is primed before the 200 commits, so failover can still fire. The attempt then
 calls `retainLeases()` and hands ownership to the stream: `releaseStreamResources()` runs once on completion/cancel and

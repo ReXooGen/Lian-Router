@@ -111,7 +111,14 @@ export async function resolveCredentialForAccount(
   if (row.credentialKind === "oauth" && oauth && dueAt !== undefined && dueAt <= Date.now()) {
     const refresher = await oauth.resolveRefresher(row.providerId);
     if (refresher) {
-      secret = await oauth.refreshService.ensureFreshAccessToken(accountId, refresher) ?? undefined;
+      // A refresh that yields nothing must not erase the credential that is
+      // already here. The stored secret is still the best material available —
+      // the refresh may be impossible (a provider whose flow issues no refresh
+      // token), temporarily failing (network, 5xx), or racing a peer's lease.
+      // Assigning `undefined` over it turned an unreachable token endpoint into
+      // "no credential configured" and took a working account out of service.
+      const refreshed = await oauth.refreshService.ensureFreshAccessToken(accountId, refresher);
+      if (refreshed !== null && refreshed.length > 0) secret = refreshed;
     }
   }
 

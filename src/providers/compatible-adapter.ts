@@ -454,6 +454,27 @@ export class OpenAICompatibleAdapter extends BaseProviderAdapter {
         "upstream",
       );
     }
+    // A `{code, msg}` envelope with a non-zero code is an error even though it
+    // carries neither an `error` field nor a completion shape. Measured live:
+    // the plan lane answers a spent balance with `HTTP 200
+    // {"code":1005,"msg":"exceed quota limit"}`. Without this branch that body
+    // decoded as a completion with no content, so the client received
+    // `content: null` with `finish_reason: "stop"` in 0.3s — a silent empty
+    // answer that reads to the user as the model being slow or broken, while
+    // the real cause (no quota) was dropped on the floor.
+    if (!hasCompletionShape) {
+      const envelopeCode = json["code"];
+      if (typeof envelopeCode === "number" && envelopeCode !== 0) {
+        const message = extractUpstreamMessage(json) || `Upstream reported code ${envelopeCode}`;
+        throw new GatewayError(
+          "quota_exceeded",
+          429,
+          message.slice(0, 300),
+          { upstreamStatus: res.status, providerCode: envelopeCode },
+          "upstream",
+        );
+      }
+    }
     for (const ev of decodeWireResponse(wireFamily, json, request)) yield ev;
   }
 }

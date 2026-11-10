@@ -1,5 +1,9 @@
 import type { healthStatus } from "../../../src/persistence/schema";
 import type { SessionStatusResponse } from "../../../src/console/auth/session";
+import type {
+  AppealAccountRow as BackendAppealAccountRow,
+  AppealCounts as BackendAppealCounts,
+} from "../../../src/console/automation/appeal/contracts";
 /**
  * Type-only projections of the console API contracts.
  *
@@ -77,6 +81,8 @@ export type {
 export type {
   SharedKeySummary,
   SharedKeyActivityDetail,
+  OwnerSharedKeyRequestEvent,
+  OwnerSharedKeyActivityDetail,
   SharedKeyModelUsage,
   SharedKeyRequestEvent,
 } from "../../../src/console/share/share-usage";
@@ -177,6 +183,10 @@ export interface PromptInjectionEntry {
   readonly turns: readonly PromptInjectionTurn[];
   readonly position: PromptInjectionPosition;
   readonly enabled: boolean;
+  /** Client IPs this injection never applies to; absent in older fixtures means an empty list. */
+  readonly excludedClientIps?: readonly string[];
+  /** API key ids this injection never applies to; a template id skips its children. */
+  readonly excludedApiKeyIds?: readonly string[];
   readonly updatedAt: string;
 }
 
@@ -201,6 +211,90 @@ export interface PromptInjectionInput {
   readonly turns: readonly PromptInjectionTurn[];
   readonly position: PromptInjectionPosition;
   readonly enabled: boolean;
+  /** Client IPs this injection never applies to (normalized, compared as sets). */
+  readonly excludedClientIps?: readonly string[];
+  /** API key ids this injection never applies to; a template id skips its children. */
+  readonly excludedApiKeyIds?: readonly string[];
+}
+
+// Type-only re-exports from the appeal domain, mirrored from the report block
+// above: the backend module is browser-safe under `export type` erasure.
+export type {
+  AppealSendResponse,
+  AppealSendResult,
+} from "../../../src/console/automation/appeal/contracts";
+
+/** Latest upstream re-check outcome for an appealed account. */
+export type AppealVerdict = "accepted" | "declined";
+
+/** A re-check result also carries the arm that is not decided yet. */
+export type AppealRecheckVerdict = AppealVerdict | "pending";
+
+/** Global counts keep the backend totals and add the verdict split. */
+export interface AppealCounts extends BackendAppealCounts {
+  readonly accepted: number;
+  readonly declined: number;
+}
+
+/**
+ * One banned account. The verdict is layered over the appeal bookkeeping: an
+ * acknowledgment can be accepted or declined, and `null` means not re-checked.
+ */
+export interface AppealAccountRow extends BackendAppealAccountRow {
+  readonly verdict: AppealVerdict | null;
+  readonly verdictCheckedAt: string | null;
+}
+
+export interface AppealAccountsResponse {
+  readonly providerId: string;
+  readonly counts: AppealCounts;
+  readonly accounts: readonly AppealAccountRow[];
+}
+
+/**
+ * `status` query parameter on `GET /automation/appeal/accounts`. Server-side
+ * filter like the report surface's; `counts` stays global either way.
+ */
+export type AppealStatusFilter =
+  | "all"
+  | "pending"
+  | "appealed"
+  | "failed"
+  | "accepted"
+  | "declined";
+
+/** Wire body for `POST /automation/appeal/send`. */
+export interface AppealSendRequest {
+  readonly providerId: "cb";
+  readonly limit: number;
+  /** Empty string ⇒ the backend's default per-account message. */
+  readonly message: string;
+  /** Re-send to accounts that already have an acknowledged appeal. */
+  readonly resend: boolean;
+}
+
+/** Wire body for `POST /automation/appeal/recheck`. */
+export interface AppealRecheckRequest {
+  readonly providerId: "cb";
+  readonly limit: number;
+  /** Omitted by this page: the backend picks its default model. */
+  readonly modelId?: string;
+}
+
+export interface AppealRecheckResult {
+  readonly accountId: string;
+  readonly label: string;
+  readonly verdict: AppealRecheckVerdict;
+  readonly error: string | null;
+}
+
+export interface AppealRecheckResponse {
+  readonly providerId: string;
+  readonly attempted: number;
+  readonly accepted: number;
+  readonly declined: number;
+  readonly pending: number;
+  readonly results: readonly AppealRecheckResult[];
 }
 
 export interface PromptInjectionPreviewEntry {
@@ -224,4 +318,75 @@ export interface ModelAbuseBan {
   readonly ip: string;
   readonly reason: "repeated_invalid_model_requests";
   readonly expiresAt: number;
+}
+
+/** Generation surface: image/video output over an OpenAI-style provider. */
+export type GenerationKind = "image" | "video";
+
+export type GenerationTaskStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export interface GenerationModel {
+  readonly providerId: string;
+  readonly providerLabel: string;
+  readonly modelId: string;
+  readonly kind: GenerationKind;
+}
+
+export interface GenerationCatalog {
+  readonly models: readonly GenerationModel[];
+}
+
+export interface GenerationImageItem {
+  readonly url?: string;
+  readonly b64Json?: string;
+  readonly revisedPrompt?: string;
+}
+
+export interface GenerationImageTask {
+  readonly id: string;
+  readonly status: GenerationTaskStatus;
+  readonly progress: number;
+  readonly createdAt: number;
+  readonly model?: string;
+  readonly images: readonly GenerationImageItem[];
+  readonly error?: string;
+}
+
+export interface GenerationVideoAsset {
+  readonly url: string;
+  readonly mime?: string;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+export interface GenerationVideoTask {
+  readonly id: string;
+  readonly status: GenerationTaskStatus;
+  readonly progress: number;
+  readonly createdAt: number;
+  readonly model?: string;
+  readonly video?: GenerationVideoAsset;
+  readonly error?: string;
+}
+
+export interface GenerationImageRequest {
+  readonly providerId: string;
+  readonly model: string;
+  readonly prompt: string;
+  readonly n: number;
+  readonly size?: string;
+}
+
+export interface GenerationVideoRequest {
+  readonly providerId: string;
+  readonly model: string;
+  readonly prompt: string;
+  readonly size?: string;
+  readonly duration?: number;
 }

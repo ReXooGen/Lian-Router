@@ -21,6 +21,8 @@ function injection(overrides: Partial<PromptInjection>): PromptInjection {
     turns: [],
     position: "append",
     enabled: true,
+    excludedClientIps: [],
+    excludedApiKeyIds: [],
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -68,6 +70,71 @@ describe("prompt injection resolution", () => {
       { provider_id: "provider", model_id: "model" },
     ]);
     expect(names).toEqual(["provider/model", "model"]);
+  });
+
+  test("skips an entry whose client IP is excluded", () => {
+    const entries = [
+      injection({ content: "global", excludedClientIps: ["203.0.113.7"] }),
+      injection({ scope: "model", target: "model", content: "model", excludedClientIps: ["203.0.113.7"] }),
+    ];
+    const excluded = selectPromptInjections(entries, {
+      clientIp: "203.0.113.7",
+      modelNames: ["model"],
+    });
+    expect(excluded).toEqual([]);
+    const included = selectPromptInjections(entries, {
+      clientIp: "203.0.113.8",
+      modelNames: ["model"],
+    });
+    expect(included.map((entry) => entry.content)).toEqual(["global", "model"]);
+  });
+
+  test("matches an IPv4-mapped exclusion against the bare address", () => {
+    const entries = [injection({ content: "global", excludedClientIps: ["203.0.113.7"] })];
+    expect(
+      selectPromptInjections(entries, { clientIp: "::ffff:203.0.113.7", modelNames: [] }),
+    ).toEqual([]);
+  });
+
+  test("ignores IP exclusions when the request carries no client address", () => {
+    const entries = [injection({ content: "global", excludedClientIps: ["203.0.113.7"] })];
+    expect(selectPromptInjections(entries, { modelNames: [] }).length).toBe(1);
+  });
+
+  test("an exclusion naming a share template covers its child key", () => {
+    const entries = [injection({ content: "global", excludedApiKeyIds: ["parent-1"] })];
+    expect(
+      selectPromptInjections(entries, {
+        apiKeyId: "child-1",
+        parentApiKeyId: "parent-1",
+        modelNames: [],
+      }),
+    ).toEqual([]);
+    expect(
+      selectPromptInjections(entries, {
+        apiKeyId: "child-2",
+        parentApiKeyId: "parent-2",
+        modelNames: [],
+      }).length,
+    ).toBe(1);
+  });
+
+  test("skips an entry whose API key is excluded", () => {
+    const entries = [
+      injection({ scope: "key", target: "key-1", content: "keyed" }),
+      injection({ scope: "key", target: "key-2", content: "blocked", excludedApiKeyIds: ["key-2"] }),
+      injection({ scope: "model", target: "model", content: "model", excludedApiKeyIds: ["key-1"] }),
+    ];
+    expect(
+      selectPromptInjections(entries, { apiKeyId: "key-1", modelNames: ["model"] }).map(
+        (entry) => entry.content,
+      ),
+    ).toEqual(["keyed"]);
+    expect(
+      selectPromptInjections(entries, { apiKeyId: "key-2", modelNames: ["model"] }).map(
+        (entry) => entry.content,
+      ),
+    ).toEqual(["model"]);
   });
 });
 

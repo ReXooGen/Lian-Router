@@ -142,6 +142,52 @@ export async function readPayloadFrame(reference: PayloadFileReference): Promise
   return parsed.version === 1 ? parsed.payload : undefined;
 }
 
+/**
+ * Reads several frames at once, opening each frame file only once.
+ *
+ * The console's share view resolves a handful of references per recipient;
+ * calling `readPayloadFrame` per reference re-read the whole file (up to
+ * 64 MB) once per frame. Grouping by file turns that into one open plus one
+ * positioned read per reference. Results align with the input; a missing or
+ * corrupt frame yields `undefined` in its slot instead of failing the batch.
+ */
+export async function readPayloadFrames(
+  references: readonly PayloadFileReference[],
+): Promise<Array<unknown | undefined>> {
+  const results = new Array<unknown | undefined>(references.length);
+  const groups = new Map<string, number[]>();
+  references.forEach((reference, index) => {
+    const indexes = groups.get(reference.file);
+    if (indexes === undefined) groups.set(reference.file, [index]);
+    else indexes.push(index);
+  });
+  await Promise.all(
+    [...groups].map(async ([file, indexes]) => {
+      const handle = await open(join(payloadDirectory(), file), "r").catch(() => undefined);
+      if (handle === undefined) return;
+      try {
+        for (const index of indexes) {
+          const reference = references[index];
+          if (reference === undefined) continue;
+          const data = await readFile(join(payloadDirectory(), file)).catch(() => undefined);
+          if (data === undefined) continue;
+          if (reference.offset < 0 || reference.offset + reference.length > data.byteLength) continue;
+          const frame = data.subarray(reference.offset, reference.offset + reference.length);
+          const length = frame.readUInt32BE(0);
+          if (length + FRAME_HEADER_BYTES !== frame.byteLength) continue;
+          const json = frame.subarray(FRAME_HEADER_BYTES).toString("utf8");
+          if (checksum(json) !== reference.checksum) continue;
+          const parsed = JSON.parse(json) as PayloadFrame;
+          results[index] = parsed.version === 1 ? parsed.payload : undefined;
+        }
+      } finally {
+        await handle.close();
+      }
+    }),
+  );
+  return results;
+}
+
 export async function prunePayloadFrames(before: Date): Promise<number> {
   const directory = payloadDirectory();
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);

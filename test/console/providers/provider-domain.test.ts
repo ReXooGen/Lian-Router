@@ -1259,6 +1259,44 @@ describe("provider-catalog routes", () => {
       expect(provider.oauthFlows).toEqual({ browser: false, device: true });
     });
 
+    it("hides the browser button for a device-only client that inherits the base methods", async () => {
+      // Every client extending the shared base carries `buildAuthorizeUrl` and
+      // `exchangeCode` on its prototype; those throw for a device-only client.
+      // Probing only for their presence advertised a browser flow that failed
+      // on click for every device-only provider.
+      const factory = detailFactory({
+        supportsDeviceCode: true,
+        supportsBrowserCode: false,
+        buildAuthorizeUrl: () => {
+          throw new Error("does not support browser authorization");
+        },
+        exchangeCode: async () => {
+          throw new Error("does not support browser code exchange");
+        },
+        startDeviceAuth: async () => ({
+          verificationUri: "https://login.test/device",
+          userCode: "",
+          deviceAuthId: "d1",
+          intervalSeconds: 2,
+          expiresInSeconds: 300,
+        }),
+      });
+      const provider = await factory.getProviderDetail(tenantAccess, "vendor");
+      expect(provider.oauthFlows).toEqual({ browser: false, device: true });
+    });
+
+    it("keeps browser login for a client that omits the capability flag", async () => {
+      // Clients written before the flag existed still default to browser
+      // support; only an explicit `false` hides the button.
+      const factory = detailFactory({
+        supportsDeviceCode: false,
+        buildAuthorizeUrl: () => "https://login.test/authorization?state=s",
+        exchangeCode: async () => ({ access: "a", refresh: "r", expiresAt: new Date() }),
+      });
+      const provider = await factory.getProviderDetail(tenantAccess, "vendor");
+      expect(provider.oauthFlows).toEqual({ browser: true, device: false });
+    });
+
     it("omits oauthFlows entirely when no login client is registered", async () => {
       const factory = detailFactory(undefined);
       const provider = await factory.getProviderDetail(tenantAccess, "vendor");

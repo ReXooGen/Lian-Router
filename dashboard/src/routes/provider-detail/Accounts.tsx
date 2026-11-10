@@ -19,6 +19,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { HealthEventsModal } from "../../components/HealthEventsModal";
+import { AccountProbeDialog, type AccountProbeModel } from "./AccountProbeDialog";
 import { Dialog } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
@@ -27,6 +28,7 @@ import { Stack } from "../../components/ui/stack";
 import {
   useCreateProviderAccount,
   useExportProviderAccounts,
+  useProviderModels,
   useRecoverAccount,
   useUpdateProviderAccount,
 } from "../../lib/hooks/providers";
@@ -223,6 +225,8 @@ function AccountRow({
   selected,
   onToggleSelect,
   onDelete,
+  models,
+  modelsLoading,
 }: {
   readonly providerId: string;
   readonly account: ProviderAccountResponse;
@@ -231,6 +235,9 @@ function AccountRow({
   readonly selected: boolean;
   readonly onToggleSelect: (accountId: string, next: boolean) => void;
   readonly onDelete: (account: ProviderAccountResponse) => void;
+  /** The provider's catalog, loaded once by the list for every probe dialog. */
+  readonly models: readonly AccountProbeModel[];
+  readonly modelsLoading: boolean;
 }): ReactNode {
   const update = useUpdateProviderAccount();
   const recover = useRecoverAccount();
@@ -241,6 +248,7 @@ function AccountRow({
   const isRecoverable =
     account.status === "cooldown" || hasActiveCooldown || account.status === "degraded";
   const [showHistory, setShowHistory] = useState(false);
+  const [showProbe, setShowProbe] = useState(false);
   const [, setTick] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
@@ -506,6 +514,15 @@ function AccountRow({
           <Button
             size="icon"
             variant="secondary"
+            icon={<FlaskConical size={12} />}
+            label="Probe"
+            aria-label={`Probe ${label}`}
+            onClick={() => setShowProbe(true)}
+            title="Probe one model with this account"
+          />
+          <Button
+            size="icon"
+            variant="secondary"
             icon={disabled ? <LockOpen size={12} /> : <PowerOff size={12} />}
             label={disabled ? "Enable" : "Disable"}
             aria-label={disabled ? `Enable ${label}` : `Disable ${label}`}
@@ -553,6 +570,15 @@ function AccountRow({
             emptyMessage: "Status transitions, rate limits, and auto-recoveries will appear here.",
           }}
           onClose={() => setShowHistory(false)}
+        />
+      )}
+      {showProbe && (
+        <AccountProbeDialog
+          providerId={providerId}
+          account={account}
+          models={models}
+          modelsLoading={modelsLoading}
+          onClose={() => setShowProbe(false)}
         />
       )}
     </>
@@ -611,6 +637,13 @@ export function AccountsList({
   // Loaded once for the whole list rather than per row: the picker on every
   // account offers the same tenant pools.
   const poolsQuery = useNetworkPools();
+  // One catalog query for the whole list: every row's probe dialog picks from
+  // the same enabled models, so rows must not each fetch their own copy.
+  const modelsQuery = useProviderModels(providerId);
+  const models = useMemo<readonly AccountProbeModel[]>(
+    () => modelsQuery.data ?? [],
+    [modelsQuery.data],
+  );
   const poolOptions = useMemo<readonly NetworkPoolOption[]>(
     () => (poolsQuery.data ?? []).map((pool) => ({ id: pool.id, label: networkPoolLabel(pool) })),
     [poolsQuery.data],
@@ -871,6 +904,8 @@ export function AccountsList({
             selected={selected.has(account.id)}
             onToggleSelect={toggleSelect}
             onDelete={onDelete}
+            models={models}
+            modelsLoading={modelsQuery.isPending}
           />
         ))}
       </div>

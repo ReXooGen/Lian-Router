@@ -31,6 +31,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   nvidia: "NVIDIA NIM",
   gmi: "GMI Cloud",
   zai: "Z.AI",
+  zcode: "ZCODE",
   hermes: "Nous Research",
   bai: "B.AI",
   browseruse: "Browser Use",

@@ -42,6 +42,10 @@ const Banned = lazyWithRetry(() => import("./routes/Banned"), "banned");
 const Overview = lazyWithRetry(() => import("./routes/Overview"), "overview");
 const Usage = lazyWithRetry(() => import("./routes/Usage"), "usage");
 const ProviderDetail = lazyWithRetry(() => import("./routes/ProviderDetail"), "provider-detail");
+const AccountProbeAll = lazyWithRetry(
+  () => import("./routes/AccountProbeAll"),
+  "account-probe-all",
+);
 const Providers = lazyWithRetry(() => import("./routes/Providers"), "providers");
 const PromptInjection = lazyWithRetry(() => import("./routes/PromptInjection"), "prompt-injection");
 const Combos = lazyWithRetry(() => import("./routes/Combos"), "combos");
@@ -49,11 +53,13 @@ const Quota = lazyWithRetry(() => import("./routes/Quota"), "quota");
 const Proxy = lazyWithRetry(() => import("./routes/Proxy"), "proxy");
 const Settings = lazyWithRetry(() => import("./routes/Settings"), "settings");
 const Automation = lazyWithRetry(() => import("./routes/Automation"), "automation");
+const Appeal = lazyWithRetry(() => import("./routes/Appeal"), "appeal");
 const CliTools = lazyWithRetry(() => import("./routes/CliTools"), "cli-tools");
 const CliToolDetail = lazyWithRetry(() => import("./routes/CliToolDetail"), "cli-tool-detail");
 const ConsoleLog = lazyWithRetry(() => import("./routes/ConsoleLog"), "console-log");
 const Customization = lazyWithRetry(() => import("./routes/Customization"), "customization");
 const Studio = lazyWithRetry(() => import("./routes/Studio"), "studio");
+const Generation = lazyWithRetry(() => import("./routes/Generation"), "generation");
 const Share = lazyWithRetry(() => import("./routes/Share"), "share");
 
 /**
@@ -182,16 +188,22 @@ function ProtectedRoutes(): ReactNode {
           <Route path="/providers" element={<Providers />} />
           <Route path="/prompt-injection" element={<PromptInjection />} />
           <Route path="/providers/:providerId" element={<ProviderDetail />} />
+          <Route
+            path="/providers/:providerId/accounts/test"
+            element={<AccountProbeAll />}
+          />
           <Route path="/combos" element={<Combos />} />
           <Route path="/quota" element={<Quota />} />
           <Route path="/proxy" element={<Proxy />} />
           <Route path="/customization" element={<Customization />} />
           <Route path="/model-lab" element={<Studio />} />
+          <Route path="/generation" element={<Generation />} />
           <Route path="/cli-tools" element={<CliTools />} />
           <Route path="/cli-tools/:toolId" element={<CliToolDetail />} />
           <Route path="/console-log" element={<ConsoleLog />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/automation" element={<Automation />} />
+          <Route path="/automation/appeal" element={<Appeal />} />
           <Route path="/share" element={<Share />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

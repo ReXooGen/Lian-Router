@@ -245,7 +245,11 @@ exclusive `gateway_user_agent` (boolean) instead stamps `user-agent: LianRouter/
    capability/cost reconciliation, never touches operator `enabled`.
 3. **Live discovery**: credential-free providers are TTL-cached, credential-scoped discovery is always live.
    Generic path is `fetchOpenAICompatibleModels()`; one-shot connectivity probes go through
-   `discovery/probing-service.ts`, sharing the catalog contract with console routes.
+   `discovery/probing-service.ts`, sharing the catalog contract with console routes. Discovery also
+   records what a model *generates*: an entry's `kind` (`image`/`video`, as served by generation
+   backends) or an OpenRouter-style `output_modalities` array lands in `modalities.output`, which the
+   console generation catalog reads. Without it every discovered model claimed text output, so a
+   text-to-image model was indistinguishable from a chat model.
 
 ## Authentication: the OAuth kit
 
@@ -375,7 +379,11 @@ database. Per-provider entry points live in `integrations/`, registered as each 
   computation, and sample extraction — live in `discovery/probe-phases.ts` as plain functions taking a small
   args object, so the method body reads as named steps. The dispatch-and-retry step stays inline: it owns
   the event stream, TTFB, captured request, and pool binding across the retry, and its `release` must run on
-  the same frame as the binding. A probe's pre-stream budget is `LIANROUTER_UPSTREAM_TIMEOUT_MS` — the same
+  the same frame as the binding. A refused CONNECT (`ProxyConnectError`) retries the *same* account on a
+  fresh exit (up to `MAX_PROBE_EGRESS_FAILOVERS` = 2 extra tries) and reports the failed pair through the
+  injected `coolPool` port, which the console wires to `flagPoolCooldown`. Burning one account attempt per
+  bad exit misreported a proxy fault as an account fault and exhausted the attempt budget before reaching a
+  working exit. A probe's pre-stream budget is `LIANROUTER_UPSTREAM_TIMEOUT_MS` — the same
   contract live dispatch enforces — and the streamed retry re-arms both the signal and the deadline, because
   a budget already consumed by the first attempt cannot also cover the retry. A tighter fixed budget reports
   a healthy reasoning model as `transport_closed` and the operator reads "request was cancelled" for a
@@ -504,10 +512,17 @@ deadlines. Routing, console, and discovery consume providers through these servi
   content-policy rejections (`11140` and its safety-review phrasing) and hosted-tool failures
   (`web_search`/`x_search`/`web_fetch`) are excluded, because refreshing the token cannot change them.
   The buddy family (`cb`/`cbcn`/`workbuddy`, declared once as `BUDDY_PROVIDER_IDS` in
-  `provider-metadata.ts`) is the one exception, and only as a cooldown: its `11140`
-  block persists across every subsequent invocation, so the account is parked in a 24h
-  `policy_blocked` cooldown (never `disabled` — the credential is valid and the block clears upstream)
-  to stop routing from selecting it.
+  `provider-metadata.ts`) is the one family whose `11140` the classifier splits, because that code
+  carries two opposite verdicts and the body is the only thing that separates them. A body naming a
+  restriction on the account ("Your account has been restricted due to unusual activity", with an
+  appeal action) is a ban: the credential is refused, not throttled, so it becomes
+  `policy_blocked_banned` and disables immediately with no deadline. A cooldown was the old bug —
+  the row stayed in the plan for the whole window, so a client's retry budget burned healthy sibling
+  accounts. A body that only refuses the request (a safety review, or `11128` channel verification)
+  becomes `policy_blocked_invalid_request` and mutates nothing: the credential is fine and the fault
+  is the request shape. A refused proxy CONNECT is likewise never an account fault — the tunnel never
+  opened, so no upstream saw the request — and is scoped to the pool with no account penalty: dispatch
+  and the probe both cool the `(pool, provider)` pair and retry the same target on another exit.
   A 402 is quota-shaped and cools down rather than disabling, and a 407 is `network`-origin so it can never
   mutate an upstream account.
   `reportAttemptOutcome` is the per-attempt hook, `recoverAccount` / `sweepExpiredCooldowns` run recovery, and
@@ -629,6 +644,141 @@ Bearer token.
 A `chat` row for a video model would advertise a capability dispatch cannot serve, so the catalog carries
 only the five chat ids. Adding video means a new wire family and a job-polling dispatch path, not a catalog
 row.
+**`zcode/` — the ZCode start-plan lane.** A second Z.AI-shaped row that is *not* the paid API: the
+credential is the plan JWT the ZCode desktop login mints, and calls are metered against the grants the
+account already owns. Three properties make it unlike every other spec:
+
+- **The `system` field is a gate.** The plan lane inspects it as content and requires exactly three blocks —
+  the CLI prefix verbatim, the canonical stable text byte-exact (leading newline included), then the
+  caller's own prompt — refusing anything else with `405 {"code":3012}` regardless of headers. The captured
+  text lives in `zcode/identity.ts` and `buildZcodeSystem()` is the only builder; `prePayload` replaces the
+  encoder's `system` array wholesale, after the Messages encoder has already hoisted `system`/`developer`
+  turns out of `messages[]`, so the caller's words can only land in block 3.
+- **Signing headers must be absent.** `x-client-sig` / `x-client-pow` / `x-app-id` authenticate but route the
+  request onto the paid lane, which answers `429 {"code":1113}` even with a full plan balance.
+- **The identity asset is client-version-tied.** `ZCODE_APP_VERSION` and the captured text are one unit; a
+  desktop-app update that starts returning 3012 means re-capture the blocks and bump both together.
+
+`zcode/zcode-oauth.ts` is the device flow: init is a JSON POST authenticated by a random bearer,
+the poll is a `GET` carrying the flow id in the path with the server's `poll_token` as the bearer, and
+`ready` carries the plan JWT in `data.token` alongside the vendor `zai.access_token`/`refresh_token`
+pair. The plan JWT has **no `exp` claim** (claims are `{user_id, token_version, sub, iat}`), so the
+recorded expiry is the flow's own lifetime — stamping a fabricated hour would make the refresh sweep
+discard a credential that is still valid, which is the exact defect the lane's reference
+implementation had to fix. A stored credential is either the bare JWT or the OAuth envelope
+`{planToken, accessToken, user}`; `zcodePlanToken()` accepts both so a pasted token and a logged-in
+account reach the lane identically.
+
+`zcode/zcode-claim.ts` reads and claims the time-boxed campaigns the plan advertises. The list is the
+union of `billing/preview` and the `claim_zcode_plan` buttons inside `marketing/touch` deliveries
+(depth-bounded walk over untrusted JSON), and claiming is captcha-gated upstream: `code 3007` is
+reported as `captcha_required`, never as a generic rejection.
+
+The gate is solvable in this dashboard. The desktop app does not solve the challenge itself — it reads
+`client/configs` and renders the vendor's Aliyun widget, then returns the token as
+`x-aliyun-captcha-verify-param` (with `x-aliyun-captcha-verify-region`) on the claim. Both halves are
+implemented here: `fetchZcodeClaimVerificationConfig()` reads `data.configs.captcha`
+(`{enabled, prefix, region, sceneId, skip_model_request}` — live: enabled, prefix `no8xfe`, region `sgp`,
+scene `11xygtvd`), the dashboard loads the same SDK with those values, and `claimZcodePlan()` takes the
+solved token and sends it in that header pair. Telling the operator to "claim it in the desktop app" was
+therefore wrong: it pointed at an application that is not special and is usually not installed.
+
+The widget cannot run inside the dashboard document. The dashboard is served with `script-src` limited
+to its own bundle, and the widget needs remote scripts, its own stylesheet and icon font, remote frames and
+region-scoped challenge hosts. Widening the dashboard policy would weaken every screen to buy one dialog, so
+the challenge lives in its own document: `dashboard/claim-captcha.html` plus
+`dashboard/captcha/claim-captcha.ts`, built as a second Vite entry, served with
+`claimCaptchaContentSecurityPolicy()`. The dashboard policy stays exactly as strict as before and only gains
+`frame-src 'self'`. The page holds no credential, calls no console API, and returns one value — the solved
+token — to its opener over `postMessage`; the dashboard performs the claim.
+
+The allowlist in that page's policy was measured, not guessed. A first pass allowed only `o.alicdn.com`,
+and the widget rendered nothing while reporting its own "Network Err. Please refresh" panel — a message that
+names the network while the cause is a policy block. A real Chromium load of the deployed page then named the
+hosts: `o.` boots the SDK, `g.` and `x.` serve its dynamic JS, CSS and fonts, and the challenge itself is
+region- and prefix-scoped — measured `no8xfe.captcha-open-southeast.aliyuncs.com` for this account's scene,
+plus `upload.` and `cloudauth-device-dualstack.` siblings. That family is templated, so `https://*.aliyuncs.com`
+is matched by domain; enumerating regions would break the moment the vendor adds one. After those entries the
+same probe reported zero CSP failures and a live challenge frame.
+
+One more trap worth recording: a page placed in `dashboard/public/` ships byte-for-byte, so a `.ts` file there
+is served as raw source and the browser never runs it. The page is a Vite entry for that reason. And the SDK's entry point is the global `initAliyunCaptcha(options)` callback, with the scene id in
+`SceneId` and `region`/`prefix` set on `window.AliyunCaptchaConfig` before the call; it is not an object with
+an `init()` method, and treating it as one is the other way to get a load error against a script that
+downloaded perfectly.
+
+An enabled gate and an absent one are different states, and the reader keeps them apart: a missing
+`captcha` object returns `enabled: false` instead of rendering a widget for a challenge the vendor is not
+asking for, and the verify headers are omitted entirely rather than sent empty — the gateway rejects an
+empty value as a malformed challenge instead of reading it as "none supplied".
+
+Both surfaces are vendor-filtered, and the strongest filter is the client version
+the lane claims. A campaign the vendor does not send cannot be recovered by guessing, but an
+empty answer is not proof that no campaign exists — it can mean the request presented an app
+version the vendor no longer serves campaigns to.
+
+> **Koreksi.** An earlier revision of this section concluded from an empty
+> `deliveries` list that the vendor simply did not send the account a campaign,
+> and recorded that as settled. That was wrong, and the sweep behind it missed
+> the answer: it tested 3.16.3, then 3.17.0, 3.18.0 and up, but never 3.17.2.
+> Re-measured with 3.17.2 on the same account, `marketing/touch` returned a live
+> delivery (`zcode-v3-start-plan-1109`, "ZCODE GLOBAL BUILD", 300,000,000 token
+> grant), while 3.16.3 returned `deliveries: []`. The gate is the claimed client
+> version, and the lane was pinning the wrong one.
+
+That is why the two versions are separate constants: `ZCODE_APP_VERSION` is the inference
+identity, locked to the captured system prompt and changed only by re-capturing the blocks;
+`ZCODE_CAMPAIGN_APP_VERSION` is what the billing and marketing faces claim, and it must track a
+client version recent enough to still be served campaigns. Folding them together would either
+break inference (raising the inference version without re-capturing the prompt) or keep campaigns
+invisible (lowering the campaign version to match the prompt), which is exactly the defect this
+split removes. The claim lane pins the version as a literal in its test, so a silent downgrade
+fails instead of rendering an empty section.
+
+`zcode/zcode-quota.ts` reads grants, not a single percentage: `billing/balance` answers plan definitions
+plus usage and needs a UUID `x-device-mid`, while `billing/current` carries definitions only and must be
+sent with bare auth because the control headers empty its payload. `zcodeDeviceId()` derives that UUID from
+the credential (the same determinism `qoderMachineIdFromPat` uses) so a restart does not present itself as a
+new device. Grants are rendered one window per entitlement, and an entitlement defined but unused still
+renders. An account can hold several plans at once (a referral grant beside a start plan). Those are
+two entitlements, so the result keeps them apart: each window carries its granting plan in `group`, and
+the account-level `plan` names the plan holding the most grants. It must never join the names into
+`"A + B"` — that rendered two plans as one plan by that name, and the operator could not see which pool a
+figure came from or that a second plan was being counted at all. Both plan surfaces are read through
+`getJsonWithRateLimitRetry`: the vendor answers a burst of reads with `429` and an empty body, and reporting
+that refusal as the account's quota told an operator holding a live plan that the account had none.
+
+A grant can also be **scheduled**: the plan is `active`, its size is known, and the vendor still refuses
+every request until the entitlement's `effective_at`. Measured on a live claim — plan `active`, `grant_units`
+300000000, `effective_at` three hours in the future, `balances` empty. That instant travels through as
+`availableAt` on the window, and the dashboard reports it as `Pending <day> <time>` in both Quota Management and
+the claim card. Without it the card drew an empty bar under a bare `limit 300,000,000`, which reads as a broken
+readout: the grant is neither missing nor spendable, and only the schedule says so. A window with no
+`effective_at` reports `null` and renders exactly as before.
+
+A plan whose every grant is spent is still reported by the vendor, but it grants nothing.
+`isQuotaExhausted()` (in `quota/quota-contracts.ts`) is the one predicate for that state, and the projection
+carries it as `exhausted`: the claim card hides a spent grant block and the quota list drops a spent account
+from its default view while keeping it reachable under the `Spent` filter. The predicate is deliberately
+narrow — a read error, an empty window list, or any `null` percentage means the balance is *unknown*, and an
+unknown balance must never be presented as "used up", because that would hide an account that still has
+capacity.
+
+The plan lane reports a spent balance as `HTTP 200 {"code":1005,"msg":"exceed quota limit"}` — no
+`error` field, no completion shape. That body used to decode as a completion with no content, so the client
+received `content: null` with `finish_reason: "stop"` in about 0.3 s: a silent empty answer that reads as the
+model being slow or broken, while the real cause was dropped. The adapter now treats any non-zero `code` in an
+otherwise shapeless envelope as an upstream quota error, so the answer is `429` with the vendor's own message.
+This is why a claimed 300 M grant that the balance endpoint does not report shows up as an empty reply rather
+than a quota error.
+
+`ZCODE_MODELS` declares its own limits and vision. The base catalog keys these ids under `zai`, so a `zcode`
+lookup misses and every row would inherit the shared defaults (200k context, 64k output, no image input) while
+the plan lane serves 1M context / 128k output — a live request carrying 259k prompt tokens was accepted, which
+a 200k ceiling could not have done. Vision is declared per row for the same reason it cannot be inferred: sent
+one 512×512 image, `glm-5.3-flash` described the shapes correctly and `glm-5.3` reported seeing a blank page,
+and the base catalog agrees (`zai/glm-5.3` lists text-only input). Claiming it on both rows would strip the image
+at preflight for one model and hand it to a model that cannot read it on the other.
 
 **Bespoke adapters** stay hand-written classes implementing `ProviderAdapter` when the wire is outside the
 factory's reach, each carrying a `Factory-blocked` or `Bespoke by wire protocol` header comment naming the
@@ -654,6 +804,65 @@ The adapter used to keep a private copy of that table which mapped every 5xx to 
 an upstream outage in the public envelope and degraded the network pool, since `pool-health-machine.ts` treats
 `proxy_unreachable` as a pool fault.
 
+**Qoder's body is an agent request, not a chat request.** `agent_chat_generation` is the CLI's own endpoint, so the
+adapter sends what the CLI sends: a leading system turn carrying the client's agent prompt (`qoder-system-prompt.ts`,
+byte-identical to the shipped text), a `business` envelope (`product`/`version`/`type`/`id`/`name`/`begin_at`/`stage`),
+`model_config` with the catalog capability flags, tool declarations as OpenAI `function` entries, and the caller's
+generation controls under `parameters`. Three properties of that shape are load-bearing and none is cosmetic:
+
+- **Key order is part of the request.** The gateway fingerprints the serialized body. The same fields in a different
+  order are answered by holding the request in the model queue (`10605`) instead of serving it, which reads as a
+  provider outage. `buildQoderRequest` emits the native order and the test suite pins it.
+- **The agent prompt is the calling channel's identity.** With tools declared but no agent prompt the model answers
+  that it has no such tool and never emits a `tool_call`; the caller's own system text therefore rides *after* the
+  vendor prompt instead of replacing it.
+- **The thinking switches are per-model enums.** Each catalog row publishes its own accepted ladder and its own
+  default, and only some rows publish a `disabled` arm. `qoderResolveEffort` clamps a requested tier upward into the
+  model's ladder (an out-of-ladder value is dropped silently upstream, which reads as "the client asked for high and
+  got the default") and honours `none` only where the model can actually switch thinking off. The switches are sent
+  only when the caller named an effort; a default run carries `max_tokens` alone and the server applies the model's
+  own default.
+
+A `10605` envelope is model backpressure, not a dead credential. Two behaviours depend on that distinction, and both
+matter because a Qoder deployment often holds exactly one PAT:
+
+- **The adapter waits it out.** The official client resends after the delay the envelope names, and the adapter does
+  the same, bounded by the request's own deadline: same `request_set_id`, fresh `request_id`/`chat_record_id`. A
+  single-PAT provider has no sibling to rotate to, so failing the request would fail the only account that can serve
+  it. When the budget runs out the error says how many attempts were made and for how long, so an operator can tell a
+  throttle from a bug.
+- **The failure is provider-scoped, not account-scoped.** `capacity_exhausted` with `rateLimitScope: "provider"` keeps
+  the account healthy in routing: it is retried, never parked as a bad credential.
+
+The device identity presented with the PAT is derived from the PAT itself (`qoderMachineIdFromPat`), not generated per
+process. Qoder binds a PAT to the machine that first exchanged it and throttles on device count, so a random id per
+restart makes a healthy credential look shared: every model then answers `10605` with `subCode: RESOURCE_LIMIT` while
+the quota endpoint stays perfectly healthy.
+
+Tool-call streaming repeats the call id and name on every fragment. Qoder names a call only on its first delta; a
+continuation that invents a placeholder id reads downstream as a second, nameless call, and the assembled call arrives
+with an empty `id`/`name` that no client can execute.
+
+An image turn fills `content` *and* `contents` with the same part array. The CLI builds one array and assigns it to both
+fields, and the upstream reads `contents` when a turn carries an image: a text-only mirror leaves the image invisible
+and the model answers that nothing was attached, even though `content` holds it. `chat_context.imageUrls` stays `null`
+— it is not the image channel — while `chat_context.text` must carry the turn's instruction, because that is what the
+model reads.
+
+`qoder-quota.ts` reads the account's plan and credit balance from `openapi.qoder.sh`, which authenticates with a
+short-lived job token minted from the PAT (`/api/v1/jobToken/exchange`, cached for the process). The plan endpoint
+reports paid tiers under one indistinguishable `personal_professional` label, so the display name is derived from the
+credit total instead of the tier string; a trial keeps the name the API returned.
+
+`qfmodel` is the one row the catalog prices at zero (`is_free`); it is declared
+`free: true` so billing reports the tier's real price instead of the base
+catalog's rate for the underlying model. The same flag is read by discovery, so
+a sync cannot reintroduce a price the upstream does not charge.
+
+`discoverQoderModels` reads the live `chat` catalog through the same COSY-signed GET the CLI issues, so the console can
+sync a new or retired model without a release. The static `QODER_MODELS` list remains the dispatch contract — it is
+what a route resolves against when no sync has run.
+
 | Directory | Shape | Contents |
 |---|---|---|
 | Single-file (`openai.ts`, `gemini.ts`, `openrouter.ts`, …) | `*_SPEC` or adapter class, plus a `*_MODELS` catalog where the provider ships one (openrouter relies on live discovery) | Whole provider contract; `loadAdapter` imports it directly |
@@ -663,6 +872,7 @@ an upstream outage in the public envelope and degraded the network pool, since `
 | `antigravity/`, `cline/`, `kimi/`, `grok/`, `muse/` | `<name>.ts` + `<name>-{oauth,quota}.ts` (+ `shared`/extra splits where the provider needs them) | OAuth login, quota parser beside the adapter |
 | `buddy/` | `codebuddy.ts` + `codebuddy-{cn,oauth,quota,shared}.ts`, `workbuddy.ts` + `workbuddy-{oauth,quota,shared}.ts`, `buddy-{catalog,chat,oauth,quota}-shared.ts` | Tencent buddy family (provider IDs `cb`, `cbcn`, `workbuddy`): cn variant split, per-brand headers, shared Tencent payload/quota/oauth/catalog kernels, plus `buddy-checkin.ts` (daily check-in + growth activity report) for the `daily-checkin` worker |
 | `zai/` | `spec.ts` + `zai-quota.ts` | Minimal pair: declarative spec plus one quota parser |
+| `qoder.ts` + `qoder-quota.ts` + `qoder-system-prompt.ts` | adapter, credit/plan collector, and the shipped agent prompt as its own module | The prompt is data (16 KB of text), so it stays out of the adapter's logic; the quota collector shares nothing with dispatch but the PAT and the job-token exchange |
 
 The CodeBuddy family (`buddy/`, provider IDs `cb`, `cbcn`, `workbuddy`) shares `buddy-chat-shared.ts`, `buddy-quota-shared.ts`,
 `buddy-oauth-shared.ts`, and `buddy-catalog-shared.ts`. The last owns the seven-field `BuddyRawEntry` tuple
@@ -672,7 +882,10 @@ passes `WORKBUDDY_CHAT_PATH` explicitly). Identity headers stay per provider —
 `workbuddyHeaders` send genuinely different bytes. All three variants (`cb`, `cbcn`, `workbuddy`) share the upstream chat contract —
 mandatory `stream`, `reasoning_summary` only with a `reasoning_effort`, agent-field stripping — and run the same
 message-envelope tail (`finalizeBuddyMessages`: coalesce consecutive `user` turns, drop empty-content turns the
-upstream rejects with `11151`, guarantee a leading `system` turn for `11128`), so those rules live once. A request
+upstream rejects with `11151`, guarantee a leading `system` turn for `11128`), so those rules live once. The CN
+variant additionally neutralizes a system turn that carries a *foreign agent identity* (another vendor's CLI
+prompt, matched by content); an operator injection or client system prompt of any length is preserved, because
+length alone is not evidence of a foreign identity. A request
 bound for any of the three additionally drops incomplete tool rounds in the preparer (`dropIncompleteToolRounds`):
 the buddy gateway rejects a partial batch outright with `11148`, where the generic policy synthesizes an
 error-labeled placeholder result for strict Anthropic/Gemini wires. They share the Tencent billing-meter

@@ -5,6 +5,7 @@ import { createAutomationProxy } from "./console/automation/proxy";
 import { createStaticHandler } from "./console/dashboard-assets";
 import { createShareRouter } from "./console/share/share-router";
 import { createShareUsagePort } from "./console/share/share-usage";
+import { createModelStatusRoutes } from "./console/status/routes";
 import { DrizzleShareLinkStore } from "./persistence/share-store";
 import { chatAdapter } from "./transport/surface/chat/adapter";
 import { responsesAdapter } from "./transport/surface/responses/adapter";
@@ -429,6 +430,12 @@ export function createGatewayApp(deps: GatewayAppDeps) {
       );
     }
 
+    // Public status readout: aggregates over telemetry and account cooldown
+    // state, reachable without a session because a status page is read by
+    // people who cannot log in. Registered before the SPA catch-all so the
+    // JSON route wins over the document handler.
+    app.use(createModelStatusRoutes({ db: deps.db }));
+
     // Public share API routes are registered before the SPA catch-all, and
     // enrollment uses only the peer address captured by the trusted boundary.
     app.use(
@@ -466,6 +473,8 @@ export function createGatewayApp(deps: GatewayAppDeps) {
   app.all("/share/*", serveDashboard);
   app.all("/console", serveDashboard);
   app.all("/console/*", serveDashboard);
+  app.all("/status", serveDashboard);
+  app.all("/status/*", serveDashboard);
   // Root-level build output (hashed bundles, chapter art, provider icons,
   // favicons). Registered last so every real API route above wins.
   app.all("/*", serveRootFallback);

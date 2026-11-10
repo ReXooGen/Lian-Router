@@ -27,7 +27,16 @@ import type { TelemetryBatchBuffer } from "../../observability/telemetry-buffer"
 import { flagPoolCooldown } from "../../network/pool-health";
 import { completeAttempt, estimatedUsage, type ProviderExchangeCapture } from "./attempt-finalize";
 import { repriceUsage } from "../../providers/usage";
-import { shouldCooldownPool, isOAuthCredentialInvalidated, isPoolConnectFailure } from "./retry-policy";
+import { shouldCooldownPool, isNetworkScopedRateLimit, isOAuthCredentialInvalidated, isPoolConnectFailure } from "./retry-policy";
+
+/**
+ * Extra exits a single request may burn when the *egress* failed: an
+ * egress-keyed upstream limit, or a pool whose CONNECT handshake the proxy
+ * answered with a non-200 (a dead or target-filtering exit). Two retries keep
+ * the request bounded while giving rotation a real chance: the failed pair is
+ * cooling and the next admission must pick a different one.
+ */
+const MAX_EGRESS_FAILOVERS = 2;
 
 /** Route-specific preconditions resolved for one candidate before its leases are taken. */
 interface PreparedAttempt<TAdapter> {
@@ -93,6 +102,7 @@ export async function runAttemptLoop<TResult, TAdapter>(
   const { state, deps, candidates, leaseSource } = input;
   let lastError: unknown = input.exhaustedError;
   const refreshedCandidates = new Set<string>();
+  const egressFailovers = new Map<number, number>();
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     if (!candidate) continue;
@@ -146,6 +156,12 @@ export async function runAttemptLoop<TResult, TAdapter>(
       const cancelled =
         state.abortController.signal.aborted ||
         (error instanceof GatewayError && error.code === "transport_closed");
+      const egressFailover =
+        !cancelled &&
+        deps.poolSelector !== undefined &&
+        (isNetworkScopedRateLimit(error) || isPoolConnectFailure(error)) &&
+        (candidate.network_pool_ids?.length ?? 0) > 1 &&
+        (egressFailovers.get(index) ?? 0) < MAX_EGRESS_FAILOVERS;
       const terminalAttempt =
         cancelled || !isRetryableFailure(error) || index === candidates.length - 1;
       await completeAttempt(state, {
@@ -218,6 +234,13 @@ export async function runAttemptLoop<TResult, TAdapter>(
             continue;
           }
         }
+      }
+      if (egressFailover) {
+        // The cooldown above is already visible to the selector's local map,
+        // so the re-acquired slot cannot be the exit that just refused us.
+        egressFailovers.set(index, (egressFailovers.get(index) ?? 0) + 1);
+        index -= 1;
+        continue;
       }
       if (terminalAttempt) {
         metrics.proxy_requests_total.inc(1, { status: cancelled ? "cancelled" : "failed" });

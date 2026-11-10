@@ -394,6 +394,9 @@ export const PROVIDER_CAPABILITIES = {
   qoder: {
     loadAdapter: async () => (await import("./integrations/qoder")).createQoderAdapter(),
     loadModels: async () => (await import("./integrations/qoder")).QODER_MODELS,
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/qoder")).discoverQoderModels({ credential, ...(fetcher ? { fetcher } : {}) }),
+    loadQuotaCollector: quotaCapability(() => import("./integrations/qoder-quota"), "fetchQoderQuota"),
   },
   "qoder-cn": {
     loadAdapter: async () => (await import("./integrations/qoder")).createQoderCnAdapter(),
@@ -436,6 +439,13 @@ export const PROVIDER_CAPABILITIES = {
         credential,
         ...(fetcher ? { fetcher } : {}),
       }),
+  },
+  zcode: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/zcode/spec")).ZCODE_SPEC),
+    loadModels: async () => (await import("./integrations/zcode/spec")).ZCODE_MODELS,
+    loadQuotaCollector: quotaCapability(() => import("./integrations/zcode/zcode-quota"), "fetchZcodeQuota"),
+    loadAuthentication: oauthCapability(() => import("./integrations/zcode/zcode-oauth"), "zcodeOAuthClient", { withRefresher: true }),
+    endpointPathsByWireFamily: { messages: "/api/v1/zcode-plan/anthropic/v1/messages" },
   },
   perplexity: {
     // Two surfaces: `sonar` chat and the raw `/search` codec. `native` is a

@@ -640,6 +640,27 @@ describe("OpenAICompatibleAdapter upstream framing tolerance", () => {
       .join("");
   }
 
+  /**
+   * A `{code, msg}` envelope with a non-zero code is an error even though it
+   * carries no `error` field and no completion shape. Measured live: the ZCode
+   * plan lane answers a spent balance with `HTTP 200 {"code":1005,"msg":"exceed
+   * quota limit"}`. Decoding that as a completion produced `content: null` with
+   * `finish_reason: "stop"` in 0.3s — a silent empty answer, so the real cause
+   * (no quota) reached neither the client nor the operator.
+   */
+  test("a non-zero code envelope is an error, not an empty completion", async () => {
+    await expect(
+      dispatchAgainst(JSON.stringify({ code: 1005, msg: "exceed quota limit" }), "application/json"),
+    ).rejects.toThrow(/exceed quota limit/);
+  });
+
+  test("a zero-code envelope and a real completion still decode", async () => {
+    // Providers that wrap successful payloads in an envelope with `code: 0`
+    // must keep working; only a non-zero code signals a failure.
+    const events = await dispatchAgainst(chatJson, "application/json");
+    expect(textOf(events)).toBe("hello");
+  });
+
   test("decodes a JSON body with a trailing SSE terminator", async () => {
     const events = await dispatchAgainst(`${chatJson}\ndata: [DONE]\n`, "application/json");
     expect(textOf(events)).toBe("hello");

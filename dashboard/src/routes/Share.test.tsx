@@ -1,16 +1,17 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { SharedKeyActivityDetail, SharedKeySummary } from "../lib/contracts";
+import type { OwnerSharedKeyActivityDetail, SharedKeySummary } from "../lib/contracts";
 
 const summary: SharedKeySummary = {
   id: "child-secret-id-not-displayed", label: "Recipient", keyPrefix: "rk_child", issuedClientIp: "203.0.113.*",
   createdAt: "2026-09-24T12:00:00.000Z", revokedAt: null, allTime: { requests: 9, errors: 1, inputTokens: 100, outputTokens: 200, totalTokens: 300 },
   today: { requests: 4, errors: 0, inputTokens: 45, outputTokens: 80, totalTokens: 125 }, lastUsedAt: "2026-09-25T12:30:00.000Z",
 };
-const activity: SharedKeyActivityDetail = {
+let activity: OwnerSharedKeyActivityDetail = {
   models: [{ providerId: "openai", modelId: "gpt-5", retainedRequests: 8, retainedErrors: 1, retainedTokens: 270, todayRequests: 4, todayErrors: 0, todayTokens: 125 }],
-  requests: [{ requestId: "event-1", startedAt: "2026-09-25T12:30:00.000Z", providerId: "openai", modelId: "gpt-5", status: "success", httpStatus: 200, clientIp: "203.0.113.*", inputTokens: 10, outputTokens: 15, totalTokens: 25 }],
+  requests: [{ requestId: "event-1", startedAt: "2026-09-25T12:30:00.000Z", providerId: "openai", modelId: "gpt-5", status: "success", httpStatus: 200, clientIp: "203.0.113.*", inputTokens: 10, outputTokens: 15, totalTokens: 25, prompt: "Explain the offset drift.", promptTruncated: false }],
+  promptCaptureEnabled: true,
 };
 mock.module("../lib/hooks/api-keys", () => ({
   useApiKeys: () => ({ data: [{ id: "parent-id", label: "Team", keyMode: "share", createdAt: "2026-09-01", revokedAt: undefined }], isPending: false, isError: false, refetch: () => Promise.resolve() }),
@@ -36,7 +37,7 @@ describe("owner share dashboard", () => {
     expect(markup).not.toContain("child-secret-id-not-displayed");
   });
 
-  test("expanded activity contains top model totals and only bare request metadata", () => {
+  test("expanded activity shows the captured prompt on its own request row", () => {
     const markup = renderToStaticMarkup(createElement(ChildDetail, { parentId: "parent-id", childId: summary.id }));
     expect(markup).toContain("Top models");
     expect(markup).toContain("gpt-5");
@@ -49,5 +50,46 @@ describe("owner share dashboard", () => {
     expect(markup).toContain("Input tokens");
     expect(markup).toContain("Output tokens");
     expect(markup).toContain("203.0.113.*");
+    expect(markup).toContain("latest captured user prompt");
+    expect(markup).toContain("Explain the offset drift.");
+    expect(markup).toContain('class="share-event-prompt-text"');
+  });
+
+  test("request rows explain the missing prompt when payload capture is off", () => {
+    const withCaptureOn = activity;
+    activity = {
+      ...withCaptureOn,
+      requests: withCaptureOn.requests.map(({ prompt: _prompt, promptTruncated: _truncated, ...event }) => event),
+      promptCaptureEnabled: false,
+    };
+    try {
+      const markup = renderToStaticMarkup(createElement(ChildDetail, { parentId: "parent-id", childId: summary.id }));
+      expect(markup).toContain("payload capture is off");
+      expect(markup).not.toContain("Explain the offset drift.");
+      expect(markup).not.toContain('class="share-event-prompt-text"');
+    } finally {
+      activity = withCaptureOn;
+    }
+  });
+
+  test("request rows name the retention window when capture is on but no prompt survived", () => {
+    const withCaptureOn = activity;
+    activity = {
+      ...withCaptureOn,
+      requests: withCaptureOn.requests.map(({ prompt: _prompt, promptTruncated: _truncated, ...event }) => event),
+      promptCaptureEnabled: true,
+    };
+    try {
+      const markup = renderToStaticMarkup(createElement(ChildDetail, { parentId: "parent-id", childId: summary.id }));
+      // Distinct from the capture-off copy: promising prompts exist while
+      // saying none were recorded is the defect being fixed.
+      expect(markup).toContain("no prompt captured for these requests");
+      expect(markup).toContain("retention window may have passed");
+      expect(markup).not.toContain("latest captured user prompt");
+      expect(markup).not.toContain("payload capture is off");
+      expect(markup).not.toContain('class="share-event-prompt-text"');
+    } finally {
+      activity = withCaptureOn;
+    }
   });
 });

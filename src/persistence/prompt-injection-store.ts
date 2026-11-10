@@ -35,11 +35,19 @@ export interface PromptInjectionInput {
   readonly turns: readonly PromptInjectionTurn[];
   readonly position: PromptInjectionPosition;
   readonly enabled: boolean;
+  /** Client IPs this injection never applies to (normalized, compared as sets). */
+  readonly excludedClientIps?: readonly string[];
+  /** API key ids this injection never applies to; a template id skips its children. */
+  readonly excludedApiKeyIds?: readonly string[];
 }
 
 export interface PromptInjectionResolutionContext {
   /** The API key that authenticated the request, for the `key` scope. */
   readonly apiKeyId?: string | undefined;
+  /** Template key that issued the caller's child, when the caller enrolled through a share link. */
+  readonly parentApiKeyId?: string | undefined;
+  /** The caller's address, compared against `excludedClientIps` in normalized form. */
+  readonly clientIp?: string | undefined;
   /**
    * Names the client may call this model by, most specific first: the
    * requested name, `provider/model`, and the bare model id. The first enabled
@@ -64,28 +72,59 @@ export function invalidatePromptInjectionCache(tenantId?: string): void {
  * request that happens to match by both alias and provider/model must not
  * receive the same persona twice.
  */
+/** Mirrors the dashboard's exclusion-address canonical form. */
+export function normalizeExcludedClientIp(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+}
+
 export function selectPromptInjections(
   entries: readonly PromptInjection[],
   context: PromptInjectionResolutionContext,
 ): readonly PromptInjection[] {
   const selected: PromptInjection[] = [];
+  const excluded = (entry: PromptInjection): boolean => {
+    if (
+      context.apiKeyId !== undefined &&
+      entry.excludedApiKeyIds.includes(context.apiKeyId)
+    ) {
+      return true;
+    }
+    if (
+      context.parentApiKeyId !== undefined &&
+      entry.excludedApiKeyIds.includes(context.parentApiKeyId)
+    ) {
+      return true;
+    }
+    if (context.clientIp === undefined || context.clientIp.trim().length === 0) return false;
+    return entry.excludedClientIps.includes(normalizeExcludedClientIp(context.clientIp));
+  };
 
   const global = entries.find(
-    (entry) => entry.scope === "global" && entry.enabled && entry.active,
+    (entry) => entry.scope === "global" && entry.enabled && entry.active && !excluded(entry),
   );
   if (global !== undefined) selected.push(global);
 
   if (context.apiKeyId !== undefined) {
     const keyed = entries.find(
       (entry) =>
-        entry.scope === "key" && entry.enabled && entry.active && entry.target === context.apiKeyId,
+        entry.scope === "key" &&
+        entry.enabled &&
+        entry.active &&
+        entry.target === context.apiKeyId &&
+        !excluded(entry),
     );
     if (keyed !== undefined) selected.push(keyed);
   }
 
   for (const name of context.modelNames) {
     const model = entries.find(
-      (entry) => entry.scope === "model" && entry.enabled && entry.active && entry.target === name,
+      (entry) =>
+        entry.scope === "model" &&
+        entry.enabled &&
+        entry.active &&
+        entry.target === name &&
+        !excluded(entry),
     );
     if (model !== undefined) {
       selected.push(model);
@@ -147,6 +186,8 @@ export class DrizzlePromptInjectionStore {
         turns: input.turns,
         position: input.position,
         enabled: input.enabled,
+        excludedClientIps: input.excludedClientIps ?? [],
+        excludedApiKeyIds: input.excludedApiKeyIds ?? [],
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -164,6 +205,8 @@ export class DrizzlePromptInjectionStore {
           turns: input.turns,
           position: input.position,
           enabled: input.enabled,
+          excludedClientIps: input.excludedClientIps ?? [],
+          excludedApiKeyIds: input.excludedApiKeyIds ?? [],
           updatedAt: now,
         },
       })

@@ -1,4 +1,4 @@
-import { Play, Plus, Save, Syringe, Trash2 } from "lucide-react";
+import { Play, Plus, Save, Settings2, Syringe, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Badge, type BadgeTone } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -56,6 +56,8 @@ const EMPTY_DRAFT: PromptInjectionInput = {
   turns: [],
   position: "append",
   enabled: true,
+  excludedClientIps: [],
+  excludedApiKeyIds: [],
 };
 
 /**
@@ -176,6 +178,12 @@ const SAVED_FILTERS: readonly { readonly value: "all" | Scope; readonly label: s
   { value: "model", label: "Per model" },
 ];
 
+/** Mirrors the server's exclusion-address canonical form. */
+export function normalizeExclusionIp(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+}
+
 function toDraft(entry: PromptInjectionEntry): PromptInjectionInput {
   return {
     name: entry.name,
@@ -186,6 +194,8 @@ function toDraft(entry: PromptInjectionEntry): PromptInjectionInput {
     turns: entry.turns,
     position: entry.position,
     enabled: entry.enabled,
+    excludedClientIps: entry.excludedClientIps,
+    excludedApiKeyIds: entry.excludedApiKeyIds,
   };
 }
 
@@ -302,9 +312,17 @@ export function draftDiffersFromEntry(
   ) {
     return true;
   }
-  return draft.turns.some(
-    (turn, index) =>
-      turn.role !== entry.turns[index]?.role || turn.content !== entry.turns[index]?.content,
+  // Exclusion lists are sets in behavior, not sequences: reordering them is
+  // not an edit the operator made.
+  const sameList = (a: readonly string[], b: readonly string[]): boolean =>
+    a.length === b.length && [...a].sort().join("\u0000") === [...b].sort().join("\u0000");
+  return (
+    draft.turns.some(
+      (turn, index) =>
+        turn.role !== entry.turns[index]?.role || turn.content !== entry.turns[index]?.content,
+    ) ||
+    !sameList(draft.excludedClientIps ?? [], entry.excludedClientIps ?? []) ||
+    !sameList(draft.excludedApiKeyIds ?? [], entry.excludedApiKeyIds ?? [])
   );
 }
 
@@ -741,6 +759,13 @@ export default function PromptInjection(): ReactNode {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveModel, setSaveModel] = useState("");
+  // Exclusion editor for one saved entry. Kept separate from `draft` so
+  // changing who an injection skips never requires loading it into the
+  // compose view first.
+  const [settingsRow, setSettingsRow] = useState<PromptInjectionCatalogEntry | null>(null);
+  const [settingsIps, setSettingsIps] = useState<readonly string[]>([]);
+  const [settingsKeyIds, setSettingsKeyIds] = useState<readonly string[]>([]);
+  const [ipDraft, setIpDraft] = useState("");
   const [loadedKey, setLoadedKey] = useState("");
   const [previewLoadedKey, setPreviewLoadedKey] = useState("");
   const [shareChildId, setShareChildId] = useState("");
@@ -1058,6 +1083,86 @@ export default function PromptInjection(): ReactNode {
     }
   };
 
+  const openEntrySettings = (row: PromptInjectionCatalogEntry): void => {
+    setSettingsRow(row);
+    setSettingsIps(row.excludedClientIps ?? []);
+    setSettingsKeyIds(row.excludedApiKeyIds ?? []);
+    setIpDraft("");
+  };
+
+  const addExcludedIp = (): void => {
+    const value = normalizeExclusionIp(ipDraft);
+    if (value.length === 0) return;
+    setSettingsIps((current) => (current.includes(value) ? current : [...current, value]));
+    setIpDraft("");
+  };
+
+  const toggleExcludedKey = (id: string): void => {
+    setSettingsKeyIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
+  };
+
+  /**
+   * Saves only the exclusion lists, rebuilt onto the stored entry.
+   *
+   * The editor's draft is deliberately not the source: settings can be changed
+   * for an entry that was never loaded, and reusing an unrelated draft would
+   * overwrite its prompt with whatever the compose pane happens to hold.
+   */
+  const saveEntrySettings = async (): Promise<void> => {
+    const row = settingsRow;
+    if (row === null) return;
+    const input: PromptInjectionInput = {
+      name: row.name,
+      active: row.active,
+      mode: row.mode,
+      preset: row.preset,
+      content: row.content,
+      turns: row.turns,
+      position: row.position,
+      enabled: row.enabled,
+      excludedClientIps: settingsIps,
+      excludedApiKeyIds: settingsKeyIds,
+    };
+    const payload: SavePromptInjectionRequest =
+      row.scope === "global"
+        ? { global: input }
+        : row.scope === "key"
+          ? { keyId: row.target, ...input }
+          : { model: row.target, ...input };
+    try {
+      await save.mutateAsync(payload);
+      if (loadedKey === entryKey(row)) {
+        setDraft((current) => ({
+          ...current,
+          excludedClientIps: settingsIps,
+          excludedApiKeyIds: settingsKeyIds,
+        }));
+      }
+      setSettingsRow(null);
+      toast.success("Injection settings saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save injection settings");
+    }
+  };
+
+  const exclusionKeyOptions = useMemo(() => {
+    const options = (keys.data ?? []).map((key) => ({
+      id: key.id,
+      label: key.label || `key ${key.id.slice(0, 8)}…`,
+      prefix: key.keyPrefix ?? "",
+    }));
+    // Keep a stored exclusion visible even when its key row is gone, so saving
+    // this dialog cannot silently delete it.
+    for (const id of settingsKeyIds) {
+      if (!options.some((option) => option.id === id)) {
+        options.push({ id, label: `key ${id.slice(0, 8)}…`, prefix: "" });
+      }
+    }
+    return options;
+  }, [keys.data, settingsKeyIds]);
+
   /**
    * A custom persona is saved through a named dialog. The name is shown in the
    * saved list; the target is whichever scope is active, never a model chosen
@@ -1313,6 +1418,18 @@ export default function PromptInjection(): ReactNode {
             <span>{row.preset}</span>
             <span>·</span>
             <span>{row.enabled ? "enabled" : "disabled"}</span>
+            {(row.excludedClientIps ?? []).length > 0 ? (
+              <>
+                <span>·</span>
+                <span>skips {(row.excludedClientIps ?? []).length} IP{(row.excludedClientIps ?? []).length === 1 ? "" : "s"}</span>
+              </>
+            ) : null}
+            {(row.excludedApiKeyIds ?? []).length > 0 ? (
+              <>
+                <span>·</span>
+                <span>skips {(row.excludedApiKeyIds ?? []).length} key{(row.excludedApiKeyIds ?? []).length === 1 ? "" : "s"}</span>
+              </>
+            ) : null}
           </div>
         </div>
         <Inline gap="6px">
@@ -1327,6 +1444,14 @@ export default function PromptInjection(): ReactNode {
             onClick={() => void useSaved(row.scope, row.target, row.name)}
           >
             Use
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            aria-label={`Settings for ${row.name || "untitled injection"}`}
+            onClick={() => openEntrySettings(row)}
+          >
+            <Settings2 size={13} /> Settings
           </Button>
           <Button
             size="sm"
@@ -2015,6 +2140,147 @@ export default function PromptInjection(): ReactNode {
           modelOptions={modelOptions}
           modelLoading={modelCatalog.isLoading}
         />
+      </Dialog>
+
+      <Dialog
+        open={settingsRow !== null}
+        onClose={() => setSettingsRow(null)}
+        title="Injection settings"
+        description={settingsRow === null ? "Exclusions" : `Exclusions for ${settingsRow.name || "untitled injection"}`}
+        width={560}
+        footer={
+          <Inline gap="8px" justify="flex-end">
+            <Button variant="secondary" onClick={() => setSettingsRow(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={save.isPending} onClick={() => void saveEntrySettings()}>
+              Save settings
+            </Button>
+          </Inline>
+        }
+      >
+        <Stack gap="16px">
+          <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
+            Exclusions stop this injection from applying to a request. Every other request still
+            receives it; the list is checked against the authenticated client IP and API key at
+            dispatch time. Excluding a share template also skips the child keys it issued.
+          </p>
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "6px" }}>
+              Skip these client IPs
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                <Input
+                  id="pi-exclude-ip"
+                  label="Client IP"
+                  placeholder="203.0.113.7 or 2001:db8::1"
+                  value={ipDraft}
+                  onChange={(event) => setIpDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addExcludedIp();
+                    }
+                  }}
+                />
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={ipDraft.trim().length === 0}
+                onClick={addExcludedIp}
+              >
+                Add IP
+              </Button>
+            </div>
+            {settingsIps.length === 0 ? (
+              <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-tertiary)" }}>
+                No IP excluded.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                {settingsIps.map((ip) => (
+                  <span
+                    key={ip}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "4px 8px",
+                      border: "1px solid var(--inner-border)",
+                      borderRadius: "9999px",
+                      background: "var(--surface-muted)",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "11px",
+                    }}
+                  >
+                    {ip}
+                    <button
+                      type="button"
+                      aria-label={`Stop excluding ${ip}`}
+                      onClick={() => setSettingsIps((current) => current.filter((value) => value !== ip))}
+                      style={{
+                        display: "inline-flex",
+                        padding: 0,
+                        border: 0,
+                        background: "transparent",
+                        color: "var(--text-tertiary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "6px" }}>
+              Skip these API keys
+            </div>
+            <div
+              style={{
+                maxHeight: "220px",
+                overflowY: "auto",
+                border: "1px solid var(--inner-border)",
+                borderRadius: "10px",
+                padding: "4px 10px",
+              }}
+            >
+              {exclusionKeyOptions.length === 0 ? (
+                <p style={{ margin: "8px 0", fontSize: "11px", color: "var(--text-tertiary)" }}>
+                  No API keys yet.
+                </p>
+              ) : (
+                exclusionKeyOptions.map((option) => (
+                  <label
+                    key={option.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "7px 0",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={settingsKeyIds.includes(option.id)}
+                      onChange={() => toggleExcludedKey(option.id)}
+                    />
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {option.label}
+                      {option.prefix ? ` · ${option.prefix}…` : ""}
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+        </Stack>
       </Dialog>
     </Stack>
   );

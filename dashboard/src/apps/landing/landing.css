@@ -1,0 +1,1088 @@
+/* LianRouter landing — glassmorphism over a black canvas.
+   Two primitives carry the whole page: a floating glass pill for navigation
+   and one card panel (icon + badge row, title, body, ruled meta foot) reused
+   for capabilities, setup, the pipeline, and the provider catalog. No
+   gradients anywhere — depth comes from blur, hairlines, and translucency. */
+
+.lr {
+  --lr-ink: #f4f7ff;
+  --lr-muted: rgba(226, 234, 250, .62);
+  --lr-faint: rgba(226, 234, 250, .4);
+  --lr-line: rgba(255, 255, 255, .1);
+  --lr-line-soft: rgba(255, 255, 255, .06);
+  --lr-accent: #c2cad6;
+  --lr-glass: rgba(255, 255, 255, .04);
+  --lr-glass-strong: rgba(255, 255, 255, .07);
+  position: relative;
+  min-height: 100svh;
+  overflow-x: clip;
+  background: #000;
+  color: var(--lr-ink);
+  font-family: var(--font-sans);
+  letter-spacing: -.011em;
+}
+
+.lr-shell {
+  width: min(calc(100% - 4rem), 1180px);
+  margin-inline: auto;
+}
+
+/* Content sits above the scene. */
+.lr-navwrap,
+.lr-hero,
+.lr-section,
+.lr-foot { position: relative; z-index: 1; }
+
+/* ── Scroll progress ──────────────────────────────────────────────────────────
+   A hairline that fills as the page is read. Sits above the nav so it reads as
+   a page-level indicator rather than a nav decoration. */
+.lr-progress {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 40;
+  height: 2px;
+  pointer-events: none;
+  background: rgba(255, 255, 255, .06);
+}
+.lr-progress-bar {
+  width: 100%;
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  background: var(--lr-accent);
+}
+
+/* ── Floating glass pill navigation ───────────────────────────────────────── */
+.lr-navwrap {
+  position: sticky;
+  top: 1.35rem;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  padding-inline: 1rem;
+  pointer-events: none;
+}
+.lr-nav-pill {
+  display: flex;
+  width: min(100%, 940px);
+  align-items: center;
+  gap: 1.5rem;
+  padding: .55rem .6rem .55rem 1.1rem;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-top-color: rgba(255, 255, 255, .16);
+  border-radius: 999px;
+  background: rgba(11, 11, 15, .6);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .1),
+    0 18px 50px -10px rgba(0, 0, 0, .85);
+  pointer-events: auto;
+}
+.lr-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  color: var(--lr-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.lr-brand-mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--lr-line);
+  border-radius: 999px;
+  background: var(--lr-glass-strong);
+  color: var(--lr-accent);
+}
+.lr-brand-mark svg { width: 18px; height: 18px; }
+.lr-brand-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.015em;
+}
+.lr-nav {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 1.6rem;
+}
+.lr-nav a {
+  color: var(--lr-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 140ms ease;
+}
+.lr-nav a:hover { color: #fff; }
+.lr-nav-cta {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: .4rem;
+  padding-inline: .95rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: #fff;
+  color: #05070f;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .5),
+    0 4px 16px 0 rgba(0, 0, 0, .55);
+  transition: background-color 140ms ease;
+}
+.lr-nav-cta:hover { background: #e6eaf0; }
+
+/* ── Shared card primitive ──────────────────────────────────────────────────
+   A dark translucent ground rather than
+   white haze, a brighter top border so the panel catches light from above, and
+   two shadows — an inset hairline highlight plus a deep drop — which is what
+   makes the surface read as a lit pane instead of a flat rectangle. */
+.lr-card {
+  position: relative;
+  padding: 1.5rem 1.5rem 1.25rem;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-top-color: rgba(255, 255, 255, .16);
+  border-radius: 16px;
+  background: rgba(11, 11, 15, .6);
+  backdrop-filter: blur(40px) saturate(1.4);
+  -webkit-backdrop-filter: blur(40px) saturate(1.4);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .1),
+    0 24px 56px -14px rgba(0, 0, 0, .95);
+  transition: border-color 220ms ease, transform 220ms ease, box-shadow 220ms ease;
+}
+
+/* The pointer light: a soft pool that follows the cursor across the panel, plus
+   a slight tilt toward it. `--mx`/`--my` are published by `useCursorLight`;
+   the defaults keep the pool centred when no pointer has entered yet, so the
+   card is never left with an undefined position. */
+.lr-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 260ms ease;
+  background: radial-gradient(
+    var(--lr-pool, 30rem) var(--lr-pool, 30rem) at var(--mx, 50%) var(--my, 0%),
+    rgba(255, 255, 255, .085),
+    rgba(255, 255, 255, .028) 34%,
+    transparent 66%
+  );
+}
+
+/* A pool sized for a wide panel would swamp a 380px card, so the small panels
+   carry their own radius and the wide ones keep the default. */
+.lr-grid > .lr-card { --lr-pool: 18rem; }
+.lr-final { --lr-pool: 34rem; }
+.lr-card:hover::before { opacity: 1; }
+
+/* Keep card content above the light layer. */
+.lr-card > * { position: relative; z-index: 1; }
+
+.lr-card:hover {
+  border-top-color: rgba(255, 255, 255, .24);
+  transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .14),
+    0 30px 64px -14px rgba(0, 0, 0, .95);
+}
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  .lr-card { background: rgba(14, 14, 18, .92); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lr-card { transition: none; }
+  .lr-card:hover { transform: none; }
+  .lr-card::before { display: none; }
+}
+.lr-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.lr-card-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-top-color: rgba(255, 255, 255, .18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .055);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, .08);
+  color: var(--lr-accent);
+}
+.lr-badge {
+  padding: .34rem .68rem;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-top-color: rgba(255, 255, 255, .16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .04);
+  color: var(--lr-faint);
+  font: 600 9px/1 var(--font-mono-tech);
+  letter-spacing: .16em;
+  white-space: nowrap;
+}
+.lr-card-title {
+  margin: 1.1rem 0 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+.lr-card-body {
+  margin: .6rem 0 0;
+  color: var(--lr-muted);
+  font-size: 13.5px;
+  line-height: 1.68;
+}
+.lr-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.35rem;
+  padding-top: .85rem;
+  border-top: 1px solid var(--lr-line-soft);
+  color: var(--lr-faint);
+  font: 500 10.5px/1.4 var(--font-mono-tech);
+  letter-spacing: .03em;
+}
+.lr-card-status { color: var(--lr-muted); white-space: nowrap; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.lr-cta {
+  display: inline-flex;
+  height: 40px;
+  align-items: center;
+  gap: .45rem;
+  padding-inline: 1.15rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: #fff;
+  color: #05070f;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, .5),
+    0 4px 16px 0 rgba(0, 0, 0, .55);
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+.lr-cta:hover {
+  background: #e6eaf0;
+  transform: translateY(-1px);
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────────── */
+.lr-hero { padding: clamp(3.5rem, 8vw, 6.5rem) 0 clamp(2.5rem, 5vw, 4rem); }
+/* The hero copy is the only column left after the 3D object was replaced by
+   the page-wide constellation. It stays left-aligned like every section below
+   it, and the measure cap keeps the lede from stretching across the shell. */
+.lr-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(2rem, 5vw, 4rem);
+}
+.lr-hero-copy {
+  min-width: 0;
+  max-width: 68ch;
+}
+
+/* Decorative backdrop, mounted as the first child of `.lr`. Fixed to the
+   viewport so the backing store stays viewport-sized; the component scrolls
+   the world behind it, so the web still travels with the content.
+   `pointer-events: none` keeps every link and control clickable. */
+.lr-constellation {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.lr-eyebrow {
+  margin: 0;
+  color: var(--lr-faint);
+  font: 500 10px/1 var(--font-mono-tech);
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+.lr-hero-title {
+  margin: clamp(1.1rem, 2.5vw, 1.6rem) 0 0;
+  font-family: var(--font-display);
+  font-size: clamp(40px, 6.4vw, 78px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -.048em;
+  color: #fff;
+  text-wrap: balance;
+}
+.lr-hero-lede {
+  max-width: 62ch;
+  margin: 1.5rem 0 0;
+  color: var(--lr-muted);
+  font-size: clamp(14.5px, 1.3vw, 16px);
+  line-height: 1.75;
+}
+.lr-hero-actions { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 1.9rem; }
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.lr-section { padding: clamp(3.5rem, 7vw, 6rem) 0 0; }
+.lr-section--end { padding-bottom: clamp(3rem, 6vw, 4.5rem); }
+.lr-heading {
+  margin: 1.1rem 0 0;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 3.4vw, 42px);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -.04em;
+  text-wrap: balance;
+}
+.lr-sub {
+  max-width: 64ch;
+  margin: 1.1rem 0 0;
+  color: var(--lr-muted);
+  font-size: 14.5px;
+  line-height: 1.72;
+}
+
+.lr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 1rem;
+  margin-top: 2.4rem;
+}
+
+/* Four setup panels read as an orphan row in the auto-fit grid (3 + 1), so
+   they get an explicit balanced pair layout instead. */
+.lr-grid--pair {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* ── Card grid motion ────────────────────────────────────────────────────────
+   The motion is the icon itself, not a light passing over the card: each icon
+   redraws its strokes from nothing, holds, then lets them run off the far end,
+   on a 7.2 s cycle. The wave crosses the grid one card per 1.2 s — the delay
+   lives on the card as `--icon-delay` and both animations read it, so the
+   redraw and the icon's small lift stay on the same beat.
+
+   `stroke-dasharray` is set past the longest lucide path, so every stroke
+   hides at offset 90 and fully draws at 0 no matter how long it is; shorter
+   strokes simply finish first. */
+.lr-grid > .lr-card .lr-card-icon {
+  animation: lr-card-icon 7.2s linear infinite;
+  animation-delay: var(--icon-delay, 0s);
+}
+.lr-grid > .lr-card .lr-card-icon svg :is(path, circle, rect, line, polyline, polygon) {
+  stroke-dasharray: 90;
+  animation: lr-icon-draw 7.2s linear infinite;
+  animation-delay: var(--icon-delay, 0s);
+}
+.lr-grid--pair > .lr-card .lr-card-icon,
+.lr-grid--pair > .lr-card .lr-card-icon svg :is(path, circle, rect, line, polyline, polygon) {
+  animation-duration: 4.8s;
+}
+
+.lr-grid > .lr-card:nth-child(1) { --icon-delay: 0s; }
+.lr-grid > .lr-card:nth-child(2) { --icon-delay: 1.2s; }
+.lr-grid > .lr-card:nth-child(3) { --icon-delay: 2.4s; }
+.lr-grid > .lr-card:nth-child(4) { --icon-delay: 3.6s; }
+.lr-grid > .lr-card:nth-child(5) { --icon-delay: 4.8s; }
+.lr-grid > .lr-card:nth-child(6) { --icon-delay: 6s; }
+
+/* The reveal enters as a wave instead of all at once. `transition-delay`
+   names only opacity and translate — the two properties `.lr-reveal`
+   declares — so whatever timing the hover already has is untouched. */
+.lr-grid > .lr-card:nth-child(2) { transition-delay: 70ms, 70ms; }
+.lr-grid > .lr-card:nth-child(3) { transition-delay: 140ms, 140ms; }
+.lr-grid > .lr-card:nth-child(4) { transition-delay: 210ms, 210ms; }
+.lr-grid > .lr-card:nth-child(5) { transition-delay: 280ms, 280ms; }
+.lr-grid > .lr-card:nth-child(6) { transition-delay: 350ms, 350ms; }
+
+/* Draw, hold, then let the strokes run off the far end. Offsets +90 and -90
+   both hide a stroke shorter than the dasharray, so the loop's jump back to
+   +90 happens while the icon is invisible rather than flashing a half-drawn
+   shape.
+
+   The proportions matter more than they look: the hold owns three quarters of
+   the cycle and the erase is a fraction of a second, so a reader sees a
+   finished icon and catches it being drawn rather than catching a card whose
+   glyph is half there. */
+@keyframes lr-icon-draw {
+  0%    { stroke-dashoffset: 90 }
+  16%   { stroke-dashoffset: 0 }
+  93%   { stroke-dashoffset: 0 }
+  98%   { stroke-dashoffset: -90 }
+  100%  { stroke-dashoffset: -90 }
+}
+@keyframes lr-card-icon {
+  0%    { scale: 1 }
+  8%    { scale: 1.09 }
+  16.7% { scale: 1 }
+  100%  { scale: 1 }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lr-grid > .lr-card .lr-card-icon,
+  .lr-grid > .lr-card .lr-card-icon svg :is(path, circle, rect, line, polyline, polygon) {
+    animation: none;
+  }
+  .lr-grid > .lr-card { transition-delay: 0ms, 0ms; }
+}
+
+/* Scroll-driven reveal: sections and panels rise as they enter the viewport.
+   The class is applied by the observer in `useScrollReveal`; without it the
+   content is already visible, so a reader with JS disabled loses nothing.
+
+   This uses the standalone `translate` property, not `transform`. `.lr-card`
+   composes its hover tilt with `transform`, and the two would otherwise
+   overwrite each other at equal specificity — `translate` and `transform` are
+   independent channels, so both can animate at once. */
+.lr-reveal {
+  opacity: 0;
+  translate: 0 18px;
+  transition:
+    opacity 620ms cubic-bezier(.16, 1, .3, 1),
+    translate 620ms cubic-bezier(.16, 1, .3, 1);
+}
+.lr-reveal.is-revealed {
+  opacity: 1;
+  translate: 0 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lr-reveal {
+    opacity: 1;
+    translate: none;
+    transition: none;
+  }
+}
+
+/* ── Pipeline strip ───────────────────────────────────────────────────────── */
+.lr-stages {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin: 2.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.lr-stage {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  padding: 1.2rem 1.1rem 1.3rem;
+  border-right: 1px solid var(--lr-line-soft);
+}
+.lr-stage:last-child { border-right: 0; }
+.lr-stage-index {
+  color: var(--lr-accent);
+  font: 600 10px/1 var(--font-mono-tech);
+  letter-spacing: .18em;
+}
+.lr-stage-name {
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.lr-stage-detail {
+  color: var(--lr-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* The strip carries the page's one looping animation, because it is the page's
+   core story: six steps every request takes, in order. A soft light walks the
+   stages and the strip then rests before repeating, so the motion reads as
+   traffic moving through the gateway rather than as ambient decoration.
+
+   Only `opacity` and `color` animate. The pools are static backgrounds, so the
+   walk costs no layout and no per-frame repaint of the surrounding glass. */
+.lr-stage { position: relative; }
+.lr-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    15rem 9rem at 50% 0%,
+    rgba(255, 255, 255, .1),
+    rgba(255, 255, 255, .03) 40%,
+    transparent 72%
+  );
+  animation: lr-stage-flow 9s ease-in-out infinite;
+}
+.lr-stage-index { animation: lr-stage-index-flow 9s ease-in-out infinite; }
+
+/* One stage every 1.05 s, then a 3.75 s rest before the next request walks the
+   strip. The hold is what makes it read as a request finishing and another
+   arriving; without it the loop is just a loading indicator. */
+@keyframes lr-stage-flow {
+  0% { opacity: 0; }
+  5% { opacity: 1; }
+  11.67% { opacity: 1; }
+  16% { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes lr-stage-index-flow {
+  0% { color: var(--lr-accent); }
+  5%, 11.67% { color: #fff; }
+  16%, 100% { color: var(--lr-accent); }
+}
+.lr-stage:nth-child(1)::before,
+.lr-stage:nth-child(1) .lr-stage-index { animation-delay: 0s; }
+.lr-stage:nth-child(2)::before,
+.lr-stage:nth-child(2) .lr-stage-index { animation-delay: 1.05s; }
+.lr-stage:nth-child(3)::before,
+.lr-stage:nth-child(3) .lr-stage-index { animation-delay: 2.1s; }
+.lr-stage:nth-child(4)::before,
+.lr-stage:nth-child(4) .lr-stage-index { animation-delay: 3.15s; }
+.lr-stage:nth-child(5)::before,
+.lr-stage:nth-child(5) .lr-stage-index { animation-delay: 4.2s; }
+.lr-stage:nth-child(6)::before,
+.lr-stage:nth-child(6) .lr-stage-index { animation-delay: 5.25s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lr-stage::before { display: none; }
+  .lr-stage-index { animation: none; }
+}
+
+/* ── How it works: a request travelling the rail ────────────────────────────
+   Eight equal cells — client, the six stages, the provider account — with a
+   packet that walks out along the rail and stops at the provider. It does not
+   walk back: rewinding along the same rail reads as tape running backwards
+   rather than as a request being served, so the packet fades out at the end
+   and the next cycle starts again from the client.
+
+   Equal cells are what keep this cheap: cell k sits at k/7 of the track that
+   runs between the first and last cell centre, so one keyframe lands the
+   packet exactly on every node. The lit trail needs no animation of its own —
+   it is a static full-width child hanging off the wrapper's left edge, so
+   moving the wrapper is what grows it, and the track's overflow cuts whatever
+   would otherwise reach past the end.
+
+   One 8 s cycle drives everything. The request walks out over the first 5.6 s
+   (0.8 s per hop), the account is named, then the packet fades and the rail
+   rests. Anything meaning "the packet got here" is an `animation-delay` on its
+   own 8 s cycle rather than a bespoke keyframe: the pings, the readout, and
+   the packet share a period and start together, so they stay in step without
+   any of them referencing another.
+
+   The delays below are therefore a timetable, not tuning. They must match the
+   stops in `lr-flow-x`: 10 % of 8 s = 0.8 s per hop. */
+.lr-howcard { --lr-pool: 34rem; }
+
+.lr-flow-railwrap { position: relative; }
+
+/* Paint order inside the wrapper is DOM order: the pool goes first and stays
+   under the labels, the rail sits in the middle, and the track — wire, trail,
+   packet — rides above the cells. Only the track's contents overlap
+   the text, and they all run along the wire where nothing sits. */
+.lr-flow-poolclip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+/* Same box as the track and the packet's own keyframes, so one percentage
+   puts the light, the trail and the dot on the same cell. */
+.lr-flow-pool {
+  position: absolute;
+  top: 116px;
+  right: 6.25%;
+  left: 6.25%;
+  height: 1px;
+  opacity: 0;
+  animation: lr-flow-x 8s linear infinite;
+}
+.lr-flow-pool-light {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 300px;
+  height: 240px;
+  translate: -50% -50%;
+  background: radial-gradient(
+    closest-side,
+    rgba(255, 255, 255, .13),
+    rgba(255, 255, 255, .05) 50%,
+    transparent 75%
+  );
+}
+
+.lr-flow-rail {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lr-flow-cell {
+  position: relative;
+  display: flex;
+  min-height: 236px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: .6rem;
+  padding: 1.15rem .5rem 1.25rem;
+  border-right: 1px solid var(--lr-line-soft);
+  text-align: center;
+}
+.lr-flow-cell:last-child { border-right: 0; }
+
+/* The timetable, keyed off markup order: client, six stages, provider. */
+.lr-flow-rail > :nth-child(1) { --d: 0s; }
+.lr-flow-rail > :nth-child(2) { --d: .8s; }
+.lr-flow-rail > :nth-child(3) { --d: 1.6s; }
+.lr-flow-rail > :nth-child(4) { --d: 2.4s; }
+.lr-flow-rail > :nth-child(5) { --d: 3.2s; }
+.lr-flow-rail > :nth-child(6) { --d: 4s; }
+.lr-flow-rail > :nth-child(7) { --d: 4.8s; }
+.lr-flow-rail > :nth-child(8) { --d: 5.6s; }
+
+.lr-flow-end-label,
+.lr-flow-index {
+  color: var(--lr-faint);
+  font: 500 10px/1 var(--font-mono-tech);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+.lr-flow-index { color: var(--lr-accent); }
+.lr-flow-cell-body {
+  display: flex;
+  flex-direction: column;
+  /* A fixed offset from the cell top, not a bottom anchor. Stage details wrap
+     to different line counts, so a bottom-anchored body would sit at a
+     different height in every cell and the stage names would not line up. */
+  margin-top: 108px;
+  gap: .3rem;
+}
+.lr-flow-name {
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.lr-flow-detail {
+  color: var(--lr-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.lr-flow-method {
+  color: #fff;
+  font: 600 10.5px/1.35 var(--font-mono-tech);
+  letter-spacing: .1em;
+}
+.lr-flow-path {
+  color: var(--lr-muted);
+  font: 500 11px/1.35 var(--font-mono-tech);
+}
+.lr-flow-hint {
+  margin-top: .3rem;
+  color: var(--lr-faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+/* Three accounts take one request each, on a 24 s cycle — three request
+   cycles — so the reader sees rotation rather than one blessed account. */
+.lr-flow-accounts { gap: .35rem; }
+.lr-flow-account {
+  color: var(--lr-ink);
+  font: 500 11px/1.5 var(--font-mono-tech);
+  letter-spacing: .04em;
+  opacity: .45;
+}
+.lr-flow-account:nth-child(1) { animation: lr-flow-account 24s 5.6s linear infinite; }
+.lr-flow-account:nth-child(2) { animation: lr-flow-account 24s 13.6s linear infinite; }
+.lr-flow-account:nth-child(3) { animation: lr-flow-account 24s 21.6s linear infinite; }
+
+/* The wire, the node, and the body are all measured from the top of the rail
+   rather than from its centre. Cell content varies — one detail line wrapping
+   to three rows makes its cell taller — and anything pinned to 50 % would
+   travel with that growth while a top-measured body would not. 116 px clears
+   the label above and the expanding ping below; 108 px of body margin clears
+   the ping at its widest. */
+.lr-flow-node {
+  position: absolute;
+  top: 116px;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  translate: -50% -50%;
+}
+/* A core that brightens as the packet reaches it and a ring that leaves from
+   the same instant; both inherit the cell's timetable. */
+.lr-flow-node-core {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .95);
+  opacity: .34;
+  scale: .9;
+  animation: lr-flow-core 8s var(--d, 0s) linear infinite;
+}
+.lr-flow-node-ping {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, .7);
+  border-radius: 50%;
+  opacity: 0;
+  scale: 1;
+  animation: lr-flow-ping 8s var(--d, 0s) linear infinite;
+}
+
+/* The rail: wire, lit trail, packet. `pointer-events` stays off so the panel
+   underneath keeps its cursor light across the whole card. */
+.lr-flow-track {
+  position: absolute;
+  /* 115 px rather than 116 so a 2 px strip straddles the node centres at
+     116 px. The wire and the trail are the same box and the same height,
+     which is what keeps the lit stretch and the dark stretch reading as one
+     line instead of a step where the trail ends. */
+  top: 115px;
+  right: 6.25%;
+  left: 6.25%;
+  height: 2px;
+  pointer-events: none;
+}
+.lr-flow-wire {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, .17);
+}
+/* Exactly the strip, no taller: the trail is the same height as the wire, so
+   it has to be positioned from the same origin or it floats above the wire and
+   reads as a second line. Its left and right edges are what cut the trail back
+   to nothing as the packet fades at the end. */
+.lr-flow-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.lr-flow-mover,
+.lr-flow-packet {
+  position: absolute;
+  inset: 0;
+  animation: lr-flow-x 8s linear infinite;
+}
+/* Bright at the right end, which is always where the packet is: the trail
+   spans from the client out to the packet in both directions, so the head
+   lights up whichever way it is travelling. The gradient is painted once —
+   only the wrapper's transform moves it. */
+.lr-flow-trail {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, .06),
+    rgba(255, 255, 255, .45) 55%,
+    rgba(255, 255, 255, 1)
+  );
+}
+.lr-flow-dot {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 12px rgba(255, 255, 255, .55);
+  translate: -50% -50%;
+}
+
+/* The readout. Absolutely positioned so a changing line never reflows the
+   card, and spaced at exactly one hop so each line ends as the next begins. */
+.lr-flow-status {
+  position: relative;
+  min-height: 1.7em;
+  margin-top: 1.5rem;
+  color: var(--lr-muted);
+  font: 500 11.5px/1.7 var(--font-mono-tech);
+  letter-spacing: .02em;
+}
+.lr-flow-note {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: lr-flow-note 8s linear infinite;
+}
+/* The resting line: with motion suppressed the readout still says what the
+   diagram is, rather than showing an empty bar. */
+.lr-flow-note:nth-child(1) { opacity: 1; }
+.lr-flow-note:nth-child(2) { animation-delay: .8s; }
+.lr-flow-note:nth-child(3) { animation-delay: 1.6s; }
+.lr-flow-note:nth-child(4) { animation-delay: 2.4s; }
+.lr-flow-note:nth-child(5) { animation-delay: 3.2s; }
+.lr-flow-note:nth-child(6) { animation-delay: 4s; }
+.lr-flow-note:nth-child(7) { animation-delay: 4.8s; }
+.lr-flow-note:nth-child(8) { animation-delay: 5.6s; }
+.lr-flow-note:nth-child(9) { animation-delay: 6.4s; }
+.lr-flow-note:nth-child(10) { animation-delay: 7.2s; }
+
+/* Outbound only. Seven hops of 10 % each reach the provider at 70 %, the
+   packet holds while the account is named, fades, and the next cycle starts
+   again from the client — it never rewinds along the rail. The jump from
+   100 % back to 0 % sits between 84 % and 100 %, when the packet is already
+   invisible. */
+@keyframes lr-flow-x {
+  0%   { transform: translateX(0); opacity: 0 }
+  2%   { opacity: 1 }
+  10%  { transform: translateX(14.2857%) }
+  20%  { transform: translateX(28.5714%) }
+  30%  { transform: translateX(42.8571%) }
+  40%  { transform: translateX(57.1429%) }
+  50%  { transform: translateX(71.4286%) }
+  60%  { transform: translateX(85.7143%) }
+  70%  { transform: translateX(100%) }
+  78%  { transform: translateX(100%); opacity: 1 }
+  84%  { transform: translateX(100%); opacity: 0 }
+  100% { transform: translateX(100%); opacity: 0 }
+}
+
+@keyframes lr-flow-core {
+  0%   { opacity: 1; scale: 1 }
+  11%  { opacity: 1; scale: 1 }
+  20%  { opacity: .34; scale: .9 }
+  100% { opacity: .34; scale: .9 }
+}
+@keyframes lr-flow-ping {
+  0%   { opacity: .85; scale: 1 }
+  12%  { opacity: 0; scale: 2.2 }
+  100% { opacity: 0; scale: 2.2 }
+}
+@keyframes lr-flow-account {
+  0%   { opacity: 1 }
+  10%  { opacity: 1 }
+  14%  { opacity: .45 }
+  100% { opacity: .45 }
+}
+@keyframes lr-flow-note {
+  0%   { opacity: 0 }
+  1%   { opacity: 1 }
+  7%   { opacity: 1 }
+  8%   { opacity: 0 }
+  100% { opacity: 0 }
+}
+
+/* Below this width the eight cells stack. Rows are pinned to a fixed height
+   because the track's endpoints are cell centres: `top: 6.25%` and
+   `bottom: 6.25%` are only cell centres if all eight rows are equal, and a
+   few pixels of drift would leave the wire hanging short of the first node. */
+@media (max-width: 900px) {
+  .lr-flow-rail {
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: 116px;
+  }
+  .lr-flow-cell {
+    min-height: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: .25rem;
+    padding: 0 .9rem 0 3.5rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--lr-line-soft);
+    text-align: left;
+  }
+  .lr-flow-cell:last-child { border-bottom: 0; }
+  .lr-flow-cell-body { margin-top: 0; }
+  /* Rows are pinned, so the row's own centre is the right anchor again. */
+  .lr-flow-node { top: 50%; left: 26px; }
+
+  .lr-flow-track {
+    top: 6.25%;
+    right: auto;
+    bottom: 6.25%;
+    left: 0;
+    width: 52px;
+    height: auto;
+  }
+  .lr-flow-wire { inset: 0 auto 0 50%; width: 2px; margin-left: -1px; }
+  .lr-flow-clip { inset: 0; }
+  .lr-flow-trail {
+    top: auto;
+    right: auto;
+    bottom: 100%;
+    left: 50%;
+    width: 2px;
+    height: 100%;
+    margin-left: -1px;
+  }
+  .lr-flow-dot { top: 0; left: 50%; }
+  .lr-flow-pool {
+    top: 6.25%;
+    right: auto;
+    bottom: 6.25%;
+    left: 0;
+    width: 52px;
+    height: auto;
+    animation-name: lr-flow-y;
+  }
+  .lr-flow-pool-light {
+    left: 50%;
+    width: 260px;
+    height: 200px;
+  }
+  .lr-flow-mover,
+  .lr-flow-packet { animation-name: lr-flow-y; }
+}
+
+@keyframes lr-flow-y {
+  0%   { transform: translateY(0); opacity: 0 }
+  2%   { opacity: 1 }
+  10%  { transform: translateY(14.2857%) }
+  20%  { transform: translateY(28.5714%) }
+  30%  { transform: translateY(42.8571%) }
+  40%  { transform: translateY(57.1429%) }
+  50%  { transform: translateY(71.4286%) }
+  60%  { transform: translateY(85.7143%) }
+  70%  { transform: translateY(100%) }
+  78%  { transform: translateY(100%); opacity: 1 }
+  84%  { transform: translateY(100%); opacity: 0 }
+  100% { transform: translateY(100%); opacity: 0 }
+}
+
+/* Motion off: every animated element falls back to its resting style, which
+   is a legible diagram — dim nodes, one live readout, a request waiting at
+   the client. Stated here rather than left to the global suppression in
+   `base.css`, so the resting state is a decision and not a side effect. */
+@media (prefers-reduced-motion: reduce) {
+  .lr-flow-pool,
+  .lr-flow-mover,
+  .lr-flow-packet,
+  .lr-flow-node-core,
+  .lr-flow-node-ping,
+  .lr-flow-account,
+  .lr-flow-note { animation: none; }
+}
+
+/* ── Provider catalog ─────────────────────────────────────────────────────── */
+.lr-providercard { margin-top: 2.4rem; }
+.lr-providers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: clamp(1.25rem, 3.5vw, 3rem);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lr-provider {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .72rem 0;
+  border-bottom: 1px solid var(--lr-line-soft);
+}
+.lr-provider-name { font-size: 13.5px; font-weight: 500; }
+.lr-provider-id {
+  color: var(--lr-faint);
+  font: 500 10.5px/1 var(--font-mono-tech);
+  letter-spacing: .04em;
+}
+.lr-providercard .lr-card-meta { margin-top: 1.1rem; }
+
+/* ── Closing panel ────────────────────────────────────────────────────────── */
+.lr-final {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr);
+  gap: clamp(2rem, 5vw, 4rem);
+  align-items: center;
+  padding: clamp(1.75rem, 4vw, 3rem);
+}
+.lr-final h2 {
+  margin: 1rem 0 0;
+  font-family: var(--font-display);
+  font-size: clamp(25px, 3vw, 38px);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -.04em;
+  text-wrap: balance;
+}
+.lr-final .lr-sub { margin-top: 1rem; }
+.lr-final-side { display: flex; flex-direction: column; align-items: flex-start; gap: 1.25rem; }
+
+.lr-final-url {
+  color: var(--lr-faint);
+  font: 500 10.5px/1.7 var(--font-mono-tech);
+  word-break: break-word;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+.lr-foot {
+  margin-top: clamp(3rem, 6vw, 5rem);
+  border-top: 1px solid var(--lr-line-soft);
+}
+.lr-foot-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem 1.5rem;
+  padding: 1.15rem 0;
+  color: var(--lr-faint);
+  font: 500 11px/1 var(--font-mono-tech);
+  letter-spacing: .04em;
+}
+.lr-foot-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  color: var(--lr-ink);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.lr-foot a { margin-left: auto; color: var(--lr-muted); text-decoration: none; }
+.lr-foot a:hover { color: #fff; }
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 1020px) {
+  .lr-stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lr-stage:nth-child(3n) { border-right: 0; }
+  .lr-stage:nth-child(-n + 3) { border-bottom: 1px solid var(--lr-line-soft); }
+  .lr-providers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lr-final { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 820px) {
+  .lr-nav { display: none; }
+  .lr-nav-pill { width: 100%; justify-content: space-between; padding-left: .75rem; }
+}
+@media (max-width: 700px) {
+  .lr-shell { width: min(calc(100% - 2rem), 1180px); }
+  .lr-navwrap { top: .85rem; }
+  .lr-hero { padding-top: 2.75rem; }
+  .lr-grid,
+  .lr-grid--pair { grid-template-columns: minmax(0, 1fr); }
+  .lr-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lr-stage:nth-child(3n) { border-right: 1px solid var(--lr-line-soft); }
+  .lr-stage:nth-child(2n) { border-right: 0; }
+  .lr-stage:nth-child(-n + 4) { border-bottom: 1px solid var(--lr-line-soft); }
+  .lr-stage:nth-child(n + 5) { border-bottom: 0; }
+  .lr-providers { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lr-nav a,
+  .lr-cta,
+  .lr-nav-cta { transition: none; }
+}

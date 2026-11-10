@@ -59,6 +59,14 @@ export interface ApiKeyProviderSpec {
   readonly gatewayUserAgent?: boolean;
   /** `false` drops OpenAI prompt-cache controls from the payload (OpenCode). */
   readonly promptCache?: boolean;
+  /**
+   * Whether streamed calls ask the upstream for a usage frame.
+   *
+   * The shared factory injects an OpenAI-shaped `stream_options` unless this is
+   * `"none"`. A non-OpenAI wire (Anthropic Messages) must opt out: the field is
+   * meaningless there and an upstream that inspects the body rejects it.
+   */
+  readonly streaming_usage_mode?: "include_usage" | "none";
   /** Canonical request hook, applied before wire translation. Use for
    * provider-side request contracts (e.g. OpenCode Free's agent tool
    * fingerprint) so every wire codec serializes the same canonical input.
@@ -96,6 +104,9 @@ export function createApiKeyAdapter(
       ...(spec.buildExtraHeaders ? { buildExtraHeaders: spec.buildExtraHeaders } : {}),
       ...(spec.credential_forwarding ? { credential_forwarding: spec.credential_forwarding } : {}),
       ...(spec.promptCache === false ? { supports_prompt_caching: false } : {}),
+      ...(spec.streaming_usage_mode === undefined
+        ? {}
+        : { streaming_usage_mode: spec.streaming_usage_mode }),
       ...(spec.prepareRequest ? { prepareRequest: spec.prepareRequest } : {}),
       ...(spec.prePayload ? { prePayload: spec.prePayload } : {}),
       ...(spec.onUpstreamFailure ? { onUpstreamFailure: spec.onUpstreamFailure } : {}),

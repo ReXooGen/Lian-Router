@@ -1,452 +1,586 @@
 # Changelog
 
-## 2.2.2
-
-A patch across the launcher/gateway boundary. The gateway half fixes the free
-tier's diagnostic surface, which was spending an allowance the operator cannot
-buy back, and corrects the roster it reads; the launcher half adds one thing —
-it now says when something newer exists. `2.2.2` is the launcher's version; the
-gateway archive ships under its own release tag.
-
-### A console Test spent a free-tier allowance unit, every click
-
-The free tier's allowance is keyed on the source address, so one completion
-through a spent exit is a unit gone for the day. The console's Test button
-dispatched a real completion per click and "Test all" dispatched one per model,
-so the diagnostic surface was what emptied the address pool — and it did it
-again every time a cooldown expired and the pools came back.
-
-An egress-scoped provider's probe now answers from the published catalog
-(`GET /zen/v1/models`), fetched through the same outbound binding dispatch would
-have used: it still exercises the exit and still reports which pool served it,
-but no completion is sent and nothing is charged. `probeAllModels` reads that
-catalog once for the whole batch. The result states which question it answered —
-`mode: "catalog"` means the id is published upstream, `mode: "dispatch"` means a
-completion went upstream — so a listing can no longer render as a successful
-generation. A real dispatch stays available behind `spendQuota: true`, because
-only generation proves a model works and the operator decides when that proof is
-worth an exit. Credential-keyed providers are untouched. The result also carries
-`networkPoolId` and `poolHost`, so a repeated failure is no longer
-indistinguishable from a gateway that never left through a pool.
-
-The refusal message was wrong in the same way: a `FreeUsageLimitError` now states
-the cooldown the gateway actually applies, derived from the upstream
-`Retry-After`, instead of claiming that adding pools is the only remedy. That
-header is a fixed deadline — measured at 61323 → 61217 across 106 s elapsed, a
-delta of zero — so it is reported as the absolute window it is.
-
-### The free roster named five ids upstream no longer serves
-
-`OPENCODE_FREE_MODELS` carried rows that do not generate:
-`minimax-m3.1-flash-free` and both `muse-spark-*` contributor ids answer `410
-ModelDeprecated`, and `union-alpha` answers `400 "Model is unavailable"` on
-`/chat/completions` and `/messages` alike. A `403` from the gate means the id was
-*accepted*, which is why they survived this long — the tombstone is `410`, and
-generation is the only proof.
-
-The roster is nine rows now, re-measured by generating once per id through the
-real `opencode.exe` 1.18.34, with `flint-40b-free` added (262144/65536,
-text-only, reasoning). `longcat-2.5-preview-free` is retired as unverified rather
-than dead. The `messages` family was dropped from `opencodeft` because
-`union-alpha` was its only model, and a declared family with no model behind it
-makes the adapter post an Anthropic-shaped payload at a route nothing on this
-catalog serves; `responses` stays, since a served wire without a current row is a
-different fact. The version floor is declared rather than implied —
-`minVersion: "1.18.0"` on the opencode source — because the gate answers `426
-UpgradeRequired` below it and a registry publishing an older artifact must never
-be stamped on a dispatch.
-
-### The pool row could not say why a pool was parked
-
-The row showed status, failures, and latency, but not whether the exit had ever
-carried a request: an `active` row with zero failures and one that had never
-completed anything looked identical. And `cooldownUntil` was dropped when a row
-was mapped out of the store, so a pool in a live cooldown had no visible reason
-for it.
-
-The row now renders `Last success …` or `Never` beside the failure count, and
-`cooldownUntil` survives the store map. A successful probe is dispatch-grade
-evidence and promotes a parked pool back to `active`, with the route snapshot
-invalidated so the recovery applies immediately rather than after some unrelated
-mutation.
-
-### The launcher said nothing when a newer build existed
-
-`lianrouter` opened the menu with no indication that either artifact was behind.
-The menu row covers a gateway archive; nothing covered the package that was
-running, because `checkForUpdate()` never asks about it.
-
-Startup now prints at most two lines before the menu — one when a newer
-`lianrouter` is published on npm, one when a newer gateway archive is released.
-The registry check is bounded at 2.5 s and starts before the gateway boot, so its
-deadline overlaps seconds the boot already costs; every failure is silent and
-changes no exit code. `LIANROUTER_NO_UPDATE_CHECK=1` disables both checks through
-one authority. The lines do not print for `status`, `stop`, `update`, `init`,
-`--version`, `--help`, `--background`, or `--headless` — the first group answers
-a question or is itself the update path, and the last two print no menu to read a
-notice from.
-
-## 2.2.1
-
-A launcher-side patch: no gateway binary, dashboard bundle, or configuration
-surface changes. Three defects in the self-update path, all reported from a real
-install.
-
-### An update that installed successfully reported failure, forever
-
-`lianrouter update` printed `install complete` and then
-`error: update failed` with `EPERM: operation not permitted, rm
-'...\.backup\2026-10-24T08-01-55-200Z'`. The install had in fact committed —
-the new binary, `migrations/`, and `dist/` were all on disk — but the backup
-directory held the image of the process doing the deleting, and Windows keeps a
-mapped executable undeletable until that process exits. The `rm` sat outside the
-rollback window yet inside the function, so its throw escaped
-`installAtomically()` and `runUpdate()` never reached `writeInstalledVersion()`.
-Result: a new tree with a stale `version.json`, so every launch offered the same
-update and every attempt re-downloaded the archive and failed identically.
-
-Cleanup is now garbage collection, not part of the transaction. The commit point
-is the last successful copy; after it, `sweepBackups()` attempts every timestamped
-directory under `<root>/.backup` and swallows per-entry failures. The locked
-backup is collected on the next run, when the old process is gone. Rollback is
-unchanged: a failure *inside* the copy loop still restores the previous tree and
-still rethrows.
-
-### Versions were stored with the release tag's `v`, then displayed with another
-
-GitHub tags are `v2.1.0`; `GitHubReleaseSource` returned the tag verbatim, so the
-menu rendered `Update to vv2.1.0` and `version.json` recorded `v2.0.0`. Versions
-are now bare everywhere except the display site that adds the prefix:
-normalization happens once, in `normalizeVersion()`, at the release source and at
-both ends of the version file. A legacy `{"version":"v2.0.0"}` record reads back
-as `2.0.0` instead of producing a second `v`.
-
-### The menu row named the launcher's version as the gateway's
-
-The update row describes a *gateway* archive, but the `current:` label was built
-from `CLI_VERSION`. A 2.2.0 launcher with a 2.0.0 gateway read
-`Update to v2.1.0 (current: v2.2.0)` — the wrong number, and one that made the
-offer look like a downgrade. `MenuInput.update` is now
-`{ latest, current }` with both resolved from the install root; the header keeps
-`MenuInput.version`, which is the launcher's own.
-
-## 2.2.0
-
-2.2.0 is a minor release, not a patch: it adds a subcommand and a new
-configuration surface that 2.1.1 did not have. The gateway binary and the
-dashboard bundle are unchanged.
-
-### An installed copy has a config file, and a missing one fails early
-
-Running `lianrouter` from a global install printed `lianrouter: gateway did not
-answer /health on port 12800` and then quoted the gateway: `DATABASE_URL is
-required`. The message was accurate and the operator had nowhere to put the
-value. The mechanism was the working directory. A source checkout spawns the
-gateway from the repository root, where Bun loads the repository's `.env`
-automatically, so the file appeared to work. An installed copy spawns from the
-install root, which held no `.env` at all, and the launcher passed exactly one
-environment variable — the install-root hint for the control plane — so nothing
-ever supplied `DATABASE_URL` or `LIANROUTER_ENCRYPTION_KEY`.
-
-The install root now owns a config file at `<installRoot>/.env`, read by the
-launcher and merged into the child environment before spawn. The seam is the
-launcher, not the gateway, because `src/config.ts` documents its resolvers as
-pure with respect to `process.env` at call time and the gateway bootstraps from
-that environment; keeping the file read in the launcher leaves the binary a
-plain environment consumer and adds no parser to it. A value already exported
-in the shell wins over the file, so a one-off `DATABASE_URL=... lianrouter`
-still overrides the stored one.
-
-Because the file is resolved before the spawn, a missing required value now
-fails immediately with the file path, the missing variable names, and the next
-step, instead of a thirty-second health wait followed by the gateway's own
-error. `lianrouter init` writes a starter file with a generated 32-byte
-base64 encryption key and a commented `DATABASE_URL` placeholder, and refuses
-to overwrite an existing file. Failures that are not configuration problems —
-a port conflict, a missing `migrations/`, an unreachable database — still report
-the gateway's logged line through `describeFailure()`.
-
-## 2.1.1
-
-### The update command compares the installed gateway version
-
-`lianrouter update` on 2.1.0 printed "LianRouter 2.1.0 is up to date." and
-installed nothing, while `%LOCALAPPDATA%\LianRouter\version.json` still recorded
-`v2.0.0`. The mechanism was the comparison input: the update sequence was handed
-the launcher's own version, so a release that matched the launcher never looked
-newer than what the command believed was installed, and the sequence returned
-before the download. The sequence now resolves the installed gateway's version
-from `version.json` itself, at one choke point, so no caller can pass the wrong
-number and the launcher's version is no longer consulted for this question.
-
-2.1.0 shipped with that defect and keeps it. 2.1.1 is the fixed build; the
-gateway binary and the dashboard bundle are unchanged.
-
-## 2.1.0
-
-> 2.0.0 is published on npm and exists as a GitHub release; this document
-> covers the changes shipped since that release. Sections below 2.1.0 were
-> written before it shipped and are kept in the order they landed.
-
-### Update compares against the installed gateway version
-
-`lianrouter update` was a no-op on a machine whose gateway was older than the
-launcher. With the launcher at 2.1.0 and the release also at 2.1.0, the command
-printed "LianRouter 2.1.0 is up to date." and installed nothing, while
-`%LOCALAPPDATA%\LianRouter\version.json` still recorded `v2.0.0`. The mechanism
-was the comparison input: `runUpdateSequence()` was handed `CLI_VERSION`, the
-launcher's own version, and asked `checkForUpdate()` to judge the release
-against it. The release matched the launcher, so it never looked newer, so the
-sequence returned before the download. The sequence now resolves the installed
-gateway version from `version.json` itself, because the launcher and the gateway
-are versioned independently and only the gateway's recorded version describes
-what is actually on disk. The launcher's version remains the fallback for an
-install that never recorded one, and `resolveCurrentVersion()` keeps preferring
-the compiled version for `--version`, which is a different question.
-
-### The Meta Model API provider
-
-Meta's Model API is API-key authenticated against the same `api.meta.ai`
-origin and the same `muse-spark-*` catalog as Muse Code, so the new `meta`
-provider is not a second adapter. The credential is the only difference: an
-operator key minted in the Meta developer dashboard, rather than the
-subscription-minted key the Muse device login exchanges for. The adapter is
-therefore the shared `createApiKeyAdapter` factory over a spec, the model list
-is the imported `MUSE_CODE_MODELS` declaration rather than a copy that drifts
-the moment either side is edited, and the metadata row owns the origin so the
-spec declares no `base_url`. There is no `loadAuthentication`, because the
-default key-only credential path plus `probeApiKeyConnectivity` already is the
-account test, and no quota collector or discovery hook because neither has an
-upstream endpoint to read. The console reuses the Muse mark for the same
-reason the backend reuses the wire: there is no separate `meta` asset on that
-host, and inventing one would imply a vendor distinction the API does not
-make.
-
-### Repeated invalid-model requests escalate to a ban
-
-A request naming a model the key may not use is rejected with 404
-`model_not_found`. One such rejection is a client mistake; a stream of them is
-a probe, and each attempt leaves a failed row in the console and in usage. Ten
-rejections inside thirty minutes now block the client address for six hours.
-
-The block is keyed on the address, not on the API key, and that choice is the
-whole design. One key is shared by every recipient of a share link or a team
-seat, so banning the key punishes callers that did nothing wrong while the
-address that actually probed mints a fresh key and carries on. The gate runs
-before request preparation, so a blocked address does no routing work, and a
-valid request does not reset the window, so a prober that occasionally guesses
-a real model name cannot erase its own history. The ban lapses on its own when
-the TTL expires, which means a false positive heals without an operator.
-
-Every strike call is best-effort, and this layer is **fail-open on a store
-outage** — deliberately the inverse of admission, which fails closed. The
-asymmetry is the point: admission protects a quota the operator has already
-committed to, so an unreadable counter must refuse rather than overspend, while
-a strike counter that cannot be read must never refuse a legitimate request.
-The worst case here is a missed strike; the worst case of the other choice is
-an outage that locks out every client. A future reader who finds this and
-reaches for symmetry will make the gateway deny service during a Redis blip,
-so the reason is recorded in `src/security/SECURITY.md` and
-`src/transport/TRANSPORT.md` as well as here. Thresholds are module constants
-rather than environment knobs, because a tunable would invite raising it to
-unblock oneself.
-
-The console gains `/console/api/model-bans`, platform-admin only because a
-block is cross-tenant, with list, lift, and instant-ban, plus a blocked-clients
-dialog opened from the API Credentials header.
-
-### The coverage gate runs under the suite's own timeout
-
-`bun run check:coverage` invoked `bun test` directly, so it ran with Bun's
-default 5 s per-test timeout instead of the 60 s budget every other gate gets
-from `scripts/ops-run-tests.ts`. That was invisible while the suite stayed
-fast, and it broke as soon as a test legitimately needed more than five
-seconds: `test/network/outbound-fetch.test.ts` drives a blackholed proxy
-through the 15 s CONNECT bound in `src/network/pool/agent.ts` and asserts the
-dial fails rather than hanging, so it cannot finish in 5 s by design. It
-passed under `bun run test` and timed out under `check:coverage`, which made
-the coverage gate fail for a reason that had nothing to do with coverage.
-
-The script now runs through the same wrapper as `test` and `test:contracts`,
-so one timeout governs every suite and the two entry points cannot drift
-apart again.
-
-### The console ships no bundled character artwork
-
-Six images sat in `dashboard/public/` with no product role. Five had no
-consumer at all: `og_bansos.webp`, `default-background.webp`,
-`default-backgrounds.jpg`, `default-backgrounds.webp`, and `favicon.webp`.
-They are deleted rather than left in the tree, because a file that nothing
-references still ends up in the release archive and in every operator's
-install, and the audit that found them should not have to run twice. The
-social preview is `og_image.webp`, which is the brand banner and stays; the
-favicon chain is `favicon.svg` plus the generated PNGs, and the manifest uses
-`favicon-192.png` and `favicon-512.png`.
-
-The sixth, `favicon_love.webp`, was the sidebar's fallback brand mark: it
-rendered only when an operator's custom branding upload failed to load. It was
-character art, not product identity, so the fallback now points at
-`favicon.svg`, the committed vector that the PNG set is rasterised from.
-Rendering an SVG inside the existing `<img>` needs no extra handling, and the
-fallback now matches the mark the rest of the console already shows.
-
-### `lianrouter tray` starts on an install from npm
-
-The tray was unreachable for every install that came from a package.
-`resolveTrayEntry()` in `cli/src/tray-launcher.ts` looked for
-`<installRoot>/dist/tray.js`, and nothing ever writes that file: the release
-archive contains only the gateway executable, `migrations/`, and
-`dist/dashboard`, while the tray bundle ships inside the npm package next to
-the launcher. The launcher therefore reported that the tray bundle was missing
-and told the operator to run `bun run build:cli`, which is advice for someone
-with a checkout and not for someone who installed a package.
-
-The tray now resolves from the launcher's own bundle directory, which is where
-`bun add -g lianrouter` puts `dist/tray.js` beside `dist/cli.js`. That also
-version-locks the tray to the launcher that spawned it, which matters because
-the tray speaks the launcher's control protocol; resolving it from the gateway
-install root would have let an old tray outlive a launcher upgrade. The
-dev-checkout candidate stays first so `bun run cli:dev` keeps using the freshly
-built bundle, and the install-root candidate is gone rather than kept as a
-speculative fallback. A missing bundle now names every path that was probed and
-gives situation-specific advice: build the bundle from a checkout, reinstall the
-package from an install.
-
-### The published launcher installs the gateway on first run
-
-`npm i -g lianrouter` (or `bun add -g lianrouter`) followed by `lianrouter`
-used to fail on a machine that had never run LianRouter: the package ships only
-the launcher, and the supervisor spawned `<installRoot>/lianrouter.exe`, which
-did not exist. `ensureGatewayInstalled()` in `cli/src/bootstrap.ts` now runs
-before the supervisor is constructed when there is no dev checkout: it returns
-immediately if the binary is present (no network), otherwise fetches the release
-for this platform, verifies its sha256, extracts it, installs it atomically, and
-records `version.json`. A release with no asset for the host, no digest, or no
-release at all is refused with a one-line message naming the platform and the
-releases page; an archive whose payload is nested is reported with the entries it
-actually contained instead of leaving a spawn error on the next run. The check is
-skipped for `status`, `stop`, `--version`, and `--help`, and never happens during
-`bun add` / `npm i` — the package's `postinstall` only prints that the download
-happens on first run.
-
-`bun run build:release` (`scripts/build-release.ts`) packages the archive both
-the updater and the bootstrap consume: `lianrouter-<platform>-<arch>.zip` with
-the gateway executable, `migrations/`, and `dist/dashboard/` at the top level. It
-prints the sha256 the release asset's digest must carry, because an asset without
-a digest is refused by the install path. `scripts/build-cli.ts` now anchors every
-path to its own location and pins its bundling cwd, so `prepublishOnly` from
-`cli/` and `bun run build:cli` from the repository root emit byte-identical
-bundles; `cli/package.json` ships `README.md` alongside `dist`, and the root and
-dashboard manifests report `2.0.0` so the launcher and the console agree.
-
-### The first install no longer requires a newer release
-
-The bootstrap gate asked `checkForUpdate()` whether a release was *available*,
-and that predicate requires a strictly newer version plus an asset for the host.
-The natural first release is tagged with the launcher's own version, so a fresh
-machine saw `available: false` and refused to install a release that existed,
-printing "no release published yet" about a release it had just read. The
-update engine now also exports `resolveInstallCandidate()`, which answers the
-install question — newest release for this host, and its asset — with no version
-comparison and a discriminated result that keeps "no release" distinct from "no
-build for this platform". The launcher installs whatever it can run, including a
-tag that equals or precedes its own, because a launcher that cannot install a
-gateway is useless. `checkForUpdate()` is unchanged.
-
-### The tray host exists, and it does not block the event loop
-
-The tray is a real process now: `cli/tray/` gained `pump.ts`, `icon.ts`,
-`host.ts`, `connection.ts`, and `update-watch.ts` alongside the existing
-`win32.ts`, `paths.ts`, `protocol.ts`, and `control-client.ts`, and
-`scripts/build-cli.ts` bundles `cli/tray/host.ts` to `cli/dist/tray.js` next to
-`cli/dist/cli.js` so `lianrouter tray` has an entry to spawn. The pump polls
-rather than waiting: it drains the queue with `PeekMessageW(PM_REMOVE)` and then
-awaits `Bun.sleep(8)`. A blocking `GetMessageW` cannot work, because a blocked
-thread cannot run JavaScript — a pending `fetch` stays unresolved for the whole
-block — and a Worker is not the answer either, since `RegisterClassExW` fails
-there with `ERROR_INVALID_PARAMETER`; a non-blocking pump on the main thread is
-the only shape that holds. `WM_NCCREATE` must return `1n`, because returning
-zero makes `CreateWindowExW` fail with `GetLastError() == 0` and no cause to
-read. The icon is drawn at runtime from the brand mark into a supersampled BGRA
-DIB, so a packaged build needs no asset file and no font. `connection.ts`
-re-reads `run/control.json` on every action and retries once when the port or
-token changed, because the control server binds an ephemeral port and mints a
-new token on every start. `update-watch.ts` polls `GET /update/state` after
-`POST /update/start` and reports a failed install, because the `202` alone says
-nothing about the outcome.
-
-### The console offers updates and shows the install progress
-
-The console can now offer an update instead of only the tray being able to.
-`src/console/update/` (`contracts.ts`, `routes.ts`, `launcher-client.ts`)
-proxies the launcher's loopback control plane through `GET /console/api/update`
-and `POST /console/api/update/start`; the gateway reads
-`LIANROUTER_LAUNCHER_HOME`, which the launcher injects, plus `run/control.json`,
-so the bearer token never reaches the browser. `GET /update/state` on the
-launcher is durable, which is what lets progress survive the gateway being
-stopped and replaced mid-install. The dashboard gained
-`dashboard/src/lib/hooks/update.ts` and
-`dashboard/src/components/UpdateModal.tsx`, mounted once in `Shell.tsx`.
-`cli/src/update-flow.ts` keeps the gateway alive through check, download,
-verify, and extract, and stops it exactly once on the first `installing` frame,
-because Windows holds the running executable open and the atomic install's
-rename would fail; the `restart` hook then starts the new binary. A failure
-before `installing` leaves the console working, while a failure after it
-restarts the gateway so the page's `/health` wait can recover, and the modal
-reloads the page when `/health` answers again.
-
-### The login screen no longer prints a password the server rejects
-
-`usesDefaultPassword` was computed from the environment value alone, so once the
-console took ownership of the password the sign-in hint still rendered the
-shipped default — and that value returned `401`, because the stored hash was
-authoritative. The hint is now combined with the DB ownership flag at the
-request boundary in `consolePasswordGateWithOwnership`, so it disappears exactly
-when the environment value stops being the effective password.
-`releaseConsolePasswordOwnership` now takes a tenant id and scopes its `UPDATE`;
-it previously had no `WHERE`, which would have cleared the claim on every tenant
-row when a rotated environment value reclaimed ownership — a cross-tenant write
-in the path that decides who owns the console credential. Reconciliation in
-`reconcileConsolePasswordUser` logs one `warn` line when it changes the
-credential and stays silent on the no-op path, so a routine restart no longer
-repeats the same line on every boot.
-
-### The launcher explains why the gateway did not start
-
-`ensureStarted` used to throw `gateway did not answer /health on port N` with no
-cause, leaving a missing `DATABASE_URL`, a missing `migrations/`, and a refused
-Postgres indistinguishable from outside. `cli/src/supervisor.ts` now keeps the
-last fatal line the child wrote — pino JSON, pino-pretty, or Bun's
-uncaught-error banner — and `describeFailure()` appends
-`The gateway logged: <line>` to the thrown message; with no fatal line it names
-the log path instead of inventing a cause. First-run installs render progress
-through `cli/src/progress.ts`, which rewrites one line on a TTY and emits one
-line per phase on a pipe, because a tens-of-megabytes download previously
-printed two lines and then nothing. `cli/src/shutdown.ts` installs
-`SIGINT`/`SIGTERM` handlers that stop the control server and the gateway and
-remove `run/control.json` and `run/lianrouter.pid`; a forced kill cannot be
-intercepted — and on Windows the signal is not delivered to a JS handler at all
-— so the tray host's stale-pid check and its re-resolving tooltip are what keep
-a surviving icon from pointing at a socket nobody owns.
-
-### The tray keeps working when the launcher is gone
-
-The tray could outlive its only backend and never say so: the icon stayed
-alive, every menu item answered "Could not reach the CLI control port", and
-the handshake on disk still named a live pid, so the dead-pid guard never
-fired. `callRecovering()` in `connection.ts` now re-resolves the handshake on a
-connection failure and retries once; when the recorded pid is dead,
-`resurrectLauncher()` in `resurrect.ts` spawns a launcher and waits 10 s,
-polling every 250 ms, for a handshake naming a different pid before retrying
-the action. The mode is `--headless`, never `--background`: background stops
-the control server and returns, so a resurrected launcher would publish a
-handshake and immediately delete it. The new launcher adopts a running gateway
-and binds a new ephemeral control port, which is why the tray re-resolves per
-action instead of caching. Open Console falls back to the last known URL, or
-`http://localhost:12800/console`, without the control server at all. `state.ts`
-gives the tooltip four texts — running, gateway stopped, launcher not running,
-control unreachable — and the update row now polls `GET /update/state` after
-the `202` to report a failed or unknown outcome.
+## Unreleased
+
+### Public model-status page over the shared (bansos) catalog
+
+`/status` renders a service-health timeline for the models the shared links hand
+out — sixty buckets over the last day, the model's cooling deadline, and its
+success share. It reads `GET /status/models`, an unauthenticated aggregate over
+telemetry plus each account's per-model cooldown state, so the page costs one
+grouped query and no upstream calls.
+
+Two decisions shape it. The scope is the share keys' model allowlists, not the
+published catalog: a status page exists for visitors who hold a shared key, and
+listing every private model id would both answer a question they did not ask and
+publish the operator's routing choices. And a cooling model reports as failing
+regardless of its recent traffic — the gateway has already stopped dialling it,
+so "operational" would contradict the router.
+
+A refusal is a state, not a number: a model with no traffic in the window draws
+a flat grey timeline and drops its bucket array entirely, which took the payload
+from 2.1 MB for 452 models to 9.6 KB for the two shared ones.
+
+> All changes below are pre-release. LianRouter has not been tagged or
+> released; this document reflects the current production codebase architecture and capabilities.
+
+### ZCode models advertised 200k context and no image input
+
+Both ZCode models rendered as `200k ctx · 64k out` with a text-only input, while the plan lane serves 1M
+context / 128k output and the account page already showed `28.1K/1M`. The static rows declared no limits, and
+the base catalog keys `glm-5.3` under `zai`, so the `zcode` lookup missed and every row inherited the shared
+defaults. Declaring them on the row fixes the display and — more importantly — the request preparer's
+eligibility check, which had been treating a 1M model as a 200k one. A live request carrying 259k prompt tokens
+is accepted, which a 200k ceiling could not do.
+
+Vision was wrong in the other direction once the row stopped saying "text only": sent one 512×512 image,
+`glm-5.3-flash` described the shapes correctly while `glm-5.3` reported a blank page, so only the flash row
+publishes image input. The base catalog agrees, and these rows never read it.
+
+### ZCode quota reported a planless account whenever the vendor rate-limited a read
+
+The plan a start-plan account holds now renders on the **Claim plan** card,
+beside the campaign list. The card answers "what can I claim", and an empty
+campaign list said nothing about the account: a login holding three live grants
+rendered only "No claimable campaign", indistinguishable from one with nothing
+attached. It reads the account quota route, which was already serving that data.
+
+> **Koreksi.** An earlier revision of this note claimed the plan was added to
+> each account row under Provider detail. That row was built and then removed at
+> the operator's request — it made a dense row denser, and the claim card is
+> where a plan is actually read. The account-row read is gone with it.
+
+Three separate faults made a ZCode account with a live plan show as one with
+none, and made the reason unreadable when it did show.
+
+A `429` from either plan surface was reported as the account's quota. The
+vendor answers a burst of reads with `429` and an empty body, and that refusal
+became "No plan grants on this account" — a statement about the account that
+the vendor never made. Both surfaces now go through one rate-limit retry, and a
+refused read says it was refused. The dashboard copied the same confusion in
+reverse: every collector error opens with "Quota endpoint rejected request", so
+the generic `quota` match swallowed the `429` that followed it and told the
+operator to wait for a reset window. Rate limits are now named before that
+branch, and an account the vendor answered for with no grants renders as a
+state ("no plan yet") rather than a red provider error.
+
+An account holding two plans reported only the first name, so a referral grant
+beside a start plan read as a single plan and half the grants had no visible
+owner. The first fix joined the names, which replaced one wrong reading with
+another: `"ZCode Start Plan + ZCode Referral Global"` is not a plan, it is two
+plans rendered as one. Each window now carries its granting plan in `group` and
+the account label names the plan with the most grants, so the claim card draws
+one block per plan and the quota page draws a heading per plan when an account
+holds more than one.
+
+> **Koreksi.** The paragraph above previously read that "the name now joins
+> every plan the account reports", presented as the fix. That was wrong: joining
+> names is what made two plans look like one plan called "A + B". The per-plan
+> split replaced it.
+
+A plan whose every grant is spent is no longer presented as a held plan. The
+vendor keeps reporting it, and the dashboard used to keep showing it as
+capacity the account could draw. `isQuotaExhausted()` is now the single
+predicate for the state, surfaced as `exhausted` on the quota view: the claim
+card drops a spent grant block, and the quota list removes a spent account from
+its default view while keeping it reachable through a new **Spent** filter.
+The predicate treats a read error, an empty grant list, and any unknown
+percentage as *not* spent — an unknown balance must never be hidden as if it
+were used up.
+
+The quota page also hid the accounts this affected. Its default "With quota"
+filter dropped any entry with no windows, and a failed read has no windows, so
+the accounts in the most trouble were the ones missing from the list.
+
+### Claiming a captcha-gated campaign no longer dead-ends at "use the desktop app"
+
+Clicking **Claim** on the ZCODE GLOBAL BUILD campaign answered "Captcha required —
+claim this campaign in the ZCode desktop app." That message was wrong twice over:
+the campaign is claimable from here, and the desktop app is not even the thing
+that solves the challenge.
+
+The vendor gates the claim with an Aliyun captcha (`code 3007`). What the desktop
+app does is read `client/configs`, render the vendor's own widget with the
+`captcha` object from that payload, and send the solved token back as
+`x-aliyun-captcha-verify-param` alongside `x-aliyun-captcha-verify-region`. None
+of that needs a webview the dashboard lacks — it needs the config and the header
+pair, and both are implemented now.
+
+`fetchZcodeClaimVerificationConfig()` reads the live config
+(`enabled, prefix: no8xfe, region: sgp, sceneId: 11xygtvd, skip_model_request`),
+served to the browser through `GET /accounts/:id/claims/verification`. The claim
+card opens `ClaimCaptchaDialog` only after the vendor actually answers `3007`, so
+an account that can claim directly never pays for the extra read. The solved
+token travels on the claim request and the claim completes in place.
+
+The widget loaded but reported its own "Network Err. Please refresh" panel, and
+"Verify and claim" did nothing. That pause was two faults stacked: the widget's
+remote subresources were refused by the dashboard policy, and the page holding
+the bootstrap had been placed in `dashboard/public/`, which Vite ships
+byte-for-byte — so the browser received raw TypeScript where HTML was expected.
+
+The fix is structural rather than another policy widening. The challenge now runs
+in its own document, `claim-captcha.html`, built as a second Vite entry and served
+with its own `claimCaptchaContentSecurityPolicy()`; the dashboard policy keeps its
+strict `script-src` and gains only `frame-src 'self'`. The page holds no
+credential and makes no console calls: it returns the solved token to its opener
+through `postMessage` (origin-checked on both ends) and the dashboard posts the
+claim.
+
+The page's allowlist came from measuring the deployed page in a real headless
+Chromium, not from reading the SDK. Hosts observed: `o.alicdn.com` boots the
+script, `g.alicdn.com` and `x.alicdn.com` serve its dynamic JS, CSS and fonts, and
+this account's challenge host is `no8xfe.captcha-open-southeast.aliyuncs.com`
+with `upload.` and `cloudauth-device-dualstack.` siblings. The service family is
+templated, so it is matched as `https://*.aliyuncs.com`; listing regions by hand
+would break when the vendor adds one. The same probe after those entries reported
+no CSP failures and a rendered challenge frame.
+
+> **Koreksi.** Earlier revisions of this entry described widening the *dashboard*
+> policy to admit the widget. That worked as far as loading the script and then
+> stalled: the widget's own subresources were still refused, which it reports as
+> a network error. Scoping the policy to a dedicated page is the fix; the
+> dashboard no longer carries any vendor origin.
+
+The widget then reported its own "Network Err. Please refresh" panel. That is the
+captcha service call, refused under the same policy: allowing only the script
+CDN let the widget load and then fail at the challenge. The service hosts are
+region-templated (`*.aliyuncs.com`), and enumerating them would break whenever
+the vendor adds a region, so that one wildcard is allowed — scoped to a single
+registered domain, not the open web.
+
+A vendor throttle is now its own answer. Repeated claims answer a bare `HTTP 429`
+from `billing/claim`, and the dashboard read that as "Claim rejected", which says
+the campaign is gone when only the rate window expired. It maps to
+`claim_rate_limited` with a "still live, retry shortly" message, and the route
+answers 429 rather than 502 so the client can tell timing apart from failure.
+
+The widget appeared but immediately reported "Could not load the captcha SDK".
+The script itself was served fine — the dashboard's CSP was blocking it, since
+`script-src 'self'` allows only bundled modules. `o.alicdn.com` is now a named
+allowlist entry covering `script-src`, `img-src`, `connect-src` and `frame-src`,
+which is the minimum surface the widget needs to load, draw and post its token.
+The allowlist stays named rather than widening to `https:`: a wildcard would let
+any injected string reach any origin.
+
+The SDK wiring was wrong too, and it would have failed the same way: the script
+publishes a global `initAliyunCaptcha(options)` callback with the scene id in
+`SceneId` and `region`/`prefix` on `window.AliyunCaptchaConfig`, not an object
+with an `init()` method. Reading `AliLogin.init` reported a load failure against
+a script that had downloaded correctly, so the dialog now names the origin in its
+error instead of blaming the network.
+
+Two states stay distinct. A missing `captcha` object is `enabled: false`, not an
+enabled gate — rendering a widget for a challenge nobody asked for would fail
+confusingly. And the verify headers are omitted rather than sent empty, because
+the gateway rejects an empty value as a malformed challenge instead of reading it
+as "no challenge supplied"; a bare claim must stay bare.
+
+### A campaign the desktop app showed was invisible because of the claimed client version
+
+The desktop client showed a "ZCODE GLOBAL BUILD — 300,000,000 tokens" claim
+card for an account whose Claim plan section reported "No claimable campaign".
+Two campaign surfaces were measured directly against that account across every
+input that could plausibly gate them: `app_version`, `platform` for
+windows/darwin/linux on x64 and arm64 plus `web`, a freshly generated
+`x-device-mid`, the stored synthetic one, no device id at all, and `zh-CN` with
+the full control identity headers.
+
+The first sweep covered 3.16.3 and then 3.17.0, 3.18.0 upward, and every one of
+those answered `billing/preview` with no `data` key and `marketing/touch` with
+`deliveries: []`. The conclusion drawn from that — the vendor simply does not
+send this account a campaign — was wrong, and it shipped. The sweep had skipped
+3.17.1 and 3.17.2, which is precisely where the gate sits: re-measured with
+3.17.2, the same account's `marketing/touch` returned a live delivery
+(`zcode-v3-start-plan-1109`, "ZCODE GLOBAL BUILD", a 300,000,000-token grant),
+while 3.16.3 returned an empty list. The lane had been pinning 3.16.3.
+
+> **Koreksi.** This entry previously recorded the empty `deliveries` list as
+> settled evidence that no campaign existed for the account. That was a false
+> conclusion from an incomplete sweep, and it was corrected by testing the
+> version the sweep skipped.
+
+The fix separates two identities that had been one constant.
+`ZCODE_APP_VERSION` stays at the captured 3.16.3 because the inference lane is
+version-locked to the system prompt captured from that client — raising it
+without re-capturing the prompt would be refused with `3012`.
+`ZCODE_CAMPAIGN_APP_VERSION` is new, set to 3.17.2, and is what `billing/balance`,
+`billing/preview`, `marketing/touch` and the claim call now present. The claim
+test pins the wire value as a literal rather than comparing the constant to
+itself, so lowering it fails the suite instead of silently emptying the section.
+
+### A granted campaign read as a broken quota bar until its unlock time
+
+A claimed GLOBAL BUILD campaign (300,000,000 units, plan `active`) rendered in
+Quota Management as an empty bar under `limit 300,000,000`, and in the claim card
+as a grant with no numbers. Both read as a failed read. The vendor's own app
+shows the same grant as **Pending Today 22:00**.
+
+The cause is a field we were dropping: the entitlement carries `effective_at`,
+and until that instant the grant may not be spent — which is also why
+`balances[]` is empty and why an inference call answers `1005 exceed quota limit`
+in the meantime. The read now projects it as `availableAt`, and both surfaces say
+`Pending <day> <time> · in <distance>` instead of drawing a percentage the vendor
+never sent. Once the instant passes, the label disappears on its own and the
+normal balance renders.
+
+The distinction matters because the two wrong readings lead to opposite actions: "no
+quota" says re-claim or re-login, "spendable" says the gateway is broken, and
+neither was true.
+
+### ZCode answered an empty completion instead of naming the missing quota
+
+A chat sent to `zcode/glm-5.3-flash` returned `HTTP 200` in about 0.3 s with
+`content: null`, `usage: null` and `finish_reason: "stop"`, so the client sat
+waiting for text that never came. Two faults sat behind that silence.
+
+The vendor reports a spent balance as `HTTP 200 {"code":1005,"msg":"exceed quota
+limit"}` — no `error` field and no completion shape, which is why the existing
+envelope check skipped it. It then decoded as a normal completion with no
+content. Any non-zero `code` in a shape-less envelope is now an upstream quota
+error, answered `429` with the vendor's own message. Measured after the fix: four
+consecutive requests returned `content: "OK"`, 1.3–4.4 s, with `usage` populated.
+
+The second fault is the balance itself. A claimed GLOBAL BUILD grant (300 M
+units, `status: active` in the plan definitions) is absent from `balances[]`
+until it is first used, so the quota page draws that grant's bar with no number.
+That is what a recorded claim looks like before any traffic, not a lost grant.
+
+The claimed prompt-identity asset was also re-checked against the vendor rather
+than assumed: the shipped three-block prompt answered `200` with text on the same
+account, while the replacement asset from the reference project answered `405`.
+The prompt in this repository is the working one; its version constant was left
+alone.
+
+### Qoder speaks the agent wire, with tools, per-model reasoning, quota and live catalog
+
+The Qoder adapter sent a chat-shaped body to an endpoint that serves the CLI's
+agent protocol. It reached the model, so a probe said "OK", but the parts that
+make the endpoint worth routing through were missing: no agent prompt (so the
+model answered that it had no tools and never emitted a `tool_call`), no
+`business` envelope, no tool declarations, no reasoning switch, no session
+reuse. Three live captures located the cause and the fix:
+
+- **Body shape.** The endpoint is `agent_chat_generation`, the CLI's own agent
+  request. The adapter now sends what the CLI sends — leading agent prompt,
+  `business` envelope, `model_config` capability flags, OpenAI-shaped tool
+  declarations, generation controls under `parameters` — and the caller's own
+  system text rides after the agent prompt instead of replacing it.
+- **Key order.** The gateway fingerprints the serialized body. The same fields
+  in a different order are answered by holding the request in the model queue
+  (`10605`) instead of serving it, which looks exactly like a provider outage;
+  with the native order restored, the same account answered in ~1s. The order
+  is pinned by a test.
+- **Reasoning is per model.** Each catalog row publishes its own accepted
+  ladder (`qmodel_38max`: `low`/`medium`/`xhigh`; `dmodel`: `high`/`max`;
+  `auto`/`efficient`/`mmodel`: none) and only some rows can switch thinking
+  off. A requested tier is clamped into the model's own ladder, and the
+  switches are sent only when the caller named an effort.
+
+A `10605` envelope is model backpressure, and three fixes follow from that.
+The adapter now waits out the delay the envelope names and resends with the
+same `request_set_id` and a fresh `request_id` — the official client's own
+recovery — because a single-PAT deployment has no sibling account to rotate to;
+when the bounded wait runs out the error reports how many attempts were made
+and for how long. The failure stays provider-scoped, so the account is retried
+rather than parked as a bad credential. And the device identity sent with the
+PAT is now derived from the PAT instead of being random per process: Qoder binds
+a credential to the machine that first exchanged it and throttles on device
+count, so a gateway restart used to make a healthy PAT look shared and every
+model answered `10605` with `subCode: RESOURCE_LIMIT` while the quota endpoint
+stayed healthy.
+
+Tool-call streaming repeats the call id and name on every fragment. Qoder names
+a call only on its first delta, and treating the continuations as new calls
+delivered `{"id":"","name":""}` to the client — a tool call nobody could
+execute.
+
+Images now reach the model. An image turn mirrors the same part array into
+`content` and `contents`; the upstream reads `contents` when a turn carries an
+image, so the previous text-only mirror made every vision request answer that no
+image was attached — with a live `200` and a plausible-sounding refusal hiding
+the loss.
+
+Two Qoder surfaces the console previously could not reach are wired: the
+account's plan and credit balance (`openapi.qoder.sh`, authenticated with a
+job token minted from the PAT) appear on the quota page, and model sync reads
+the live `chat` catalog through the same signed GET the CLI issues, so a new
+or retired tier key lands without a release. The static catalog now matches the
+live one exactly: it gained `fast`, `smodel`, `cmodel`, `qmodel_38max`,
+`qfmodel`, `gmodel` and `gfmodel`, and dropped `performance`, `lite`, `qmodel`,
+`qmodel_latest`, `qmodel_preview` and `gm51model`, which the upstream no longer
+publishes. The bundled seed deletes those stale rows on boot, so the model list
+cannot keep offering a key that answers nothing. `qfmodel` is carried at the
+zero price the catalog reports for it (`is_free`) instead of inheriting the
+base catalog's rate for the underlying model, which would have billed a free
+tier.
+
+### ZCode joins as a plan-lane provider, with a grant readout
+
+ZCode's desktop client does not call the paid Z.AI API. It calls a plan lane
+authenticated by the JWT its own login mints, metered against the grants the
+account already holds. That lane is now a bundled provider (`zcode`) rather than
+a second copy of `zai`: `zai` stays the per-token API, `zcode` is the plan lane,
+and an account can hold both.
+
+Three of that lane's properties are wire contracts, and the adapter treats them
+as such:
+
+- **The `system` field is a gate, not prose.** Exactly three blocks are
+  required — the CLI prefix verbatim, the canonical stable text byte-exact
+  (leading newline included), then the caller's own prompt — or the gateway
+  answers `405 {"code":3012}` regardless of headers or credential. The captured
+  text ships in `zcode/identity.ts`; `buildZcodeSystem()` is its only builder and
+  `prePayload` replaces the encoder's `system` array wholesale, after the
+  Messages encoder has hoisted `system`/`developer` turns out of `messages[]`.
+  A caller's words therefore cannot land in blocks 1 or 2.
+- **Signing headers must be absent.** `x-client-sig` / `x-client-pow` /
+  `x-app-id` authenticate but route the request onto the paid lane, which
+  answers `429 {"code":1113}` even with a full plan balance.
+- **The identity asset is client-version-tied.** `ZCODE_APP_VERSION` and the
+  captured blocks move together; a desktop update that starts answering 3012
+  means re-capture and bump both.
+
+`zcode/zcode-quota.ts` reads grants instead of one percentage. `billing/balance`
+answers plan definitions *and* usage and requires a UUID `x-device-mid`;
+`billing/current` carries definitions only and must be sent with bare auth
+because the control headers empty its payload. `zcodeDeviceId()` derives that
+UUID from the credential, so a restart does not present itself as a new device —
+the same determinism `qoderMachineIdFromPat` established. Each entitlement
+renders its own window, and an entitlement that is defined but unused still
+renders its grant.
+
+`ApiKeyProviderSpec` gained `streaming_usage_mode`: the shared factory injects
+an OpenAI-shaped `stream_options` into every streamed body unless told
+otherwise, which an Anthropic wire rejects. `zcode` opts out.
+
+### ZCODE gains OAuth login, a claim section, and the duplicate-account fix
+
+The plan lane had no way in from the console: its credential is a plan JWT minted by a device flow,
+and the provider row only accepted a pasted one. `zcode/zcode-oauth.ts` implements that flow — JSON
+init authenticated by a random bearer, a `GET` poll carrying the flow id in the path with the
+server's `poll_token` as the bearer, and `ready` returning the plan JWT plus the vendor OAuth pair —
+and the provider detail page now offers **Login with device code** for it.
+
+Two defects surfaced while wiring it:
+
+- **A device-only client advertised a browser flow.** `oauthFlows.browser` was computed by probing
+  for `buildAuthorizeUrl`/`exchangeCode` on the client, but every client extending the shared
+  `OAuthClient` base carries both on its prototype and throws at call time. Every device-only
+  provider (Kimi, Grok, Muse, ZCODE) therefore showed a **Login with browser** button that failed on
+  click. The computed flag now honours the client's declared `supportsBrowserCode`.
+- **A second OAuth login was refused as a duplicate.** The account identity index is
+  `(provider, tenant, credential_fingerprint)`, and the fingerprint was `hash(refresh)`. A flow that
+  returns no refresh token stored the same empty envelope for every account, so the second login
+  collided with the first and the operator could never add the account they had just authorized.
+  `oauthAccountFingerprint()` now falls back to the provider-scoped account label and then to the
+  access credential.
+
+The provider detail page gains a **Claim plan** section between Accounts and Models. It picks the
+account first (campaigns are per account), lists the union of `billing/preview` and the
+`claim_zcode_plan` buttons in `marketing/touch` deliveries, and claims one plan id. The claim is
+captcha-gated upstream — `code 3007`, verified live — which the route reports as
+`409 claim_captcha_required` rather than a generic failure, because the campaign is real, the
+credential works, and finishing it needs the desktop app. A claimed campaign invalidates the quota
+cache so the new grant appears in Quota Management.
+
+### DeepSeek V4.1 Flash on WorkBuddy is declared vision-capable
+
+The WorkBuddy catalog marked `deepseek-v4.1-flash` as text-only input, so the
+playground refused image attachments for a model whose upstream reads them
+fine. A live request with a synthetic image (red circle, blue rectangle, text
+`LIAN-42`) returned the exact text and both shapes; a second image
+(`ORBIT-7`, green circle, purple rectangle) confirmed it after the metadata
+change. The catalog row now declares `vision: true`, and the bundled seed
+updates the persisted `modalities.input` to `["text","image"]` on boot.
+
+### Quota Management has a provider-labelled check-in button
+
+The Quota cards carried one icon that ran the whole growth pass (check-in plus
+activity report), so an operator who only wanted today's credit had no direct
+action, and the card did not say which CodeBuddy billing facade it was talking
+to — `cb` (intl, IDE identity, `www.codebuddy.ai`) and `cbcn` (CN, CLI
+identity, `copilot.tencent.com`) look identical at a glance.
+
+The toolbar's **Check in all (N)** action runs `/accounts/:id/checkin` for
+every account matching the current filters — four in flight, capped at 50
+matching accounts — and reports claimed / already-claimed / other / failed
+counts, so a filtered CodeBuddy CN set can be claimed in one click without
+turning a wide filter into thousands of upstream calls. Each card carries a
+provider-id badge (CodeBuddy vs CodeBuddy CN vs WorkBuddy) so the two billing
+facades stay distinguishable, and the combined growth-pass icon remains for
+callers that want the activity report too. A first cut added a labelled
+**Check in** pill per card; it was removed because the toolbar action covers
+the same task with less clutter.
+
+### A duplicate CodeBuddy CN check-in is a success, not an error
+
+The manual check-in button posts the claim even when today is already claimed,
+because the upstream is the authority on idempotency. CodeBuddy CN answers that
+duplicate claim as HTTP 400 with `{"code":10001,"msg":"今天已签到…"}`. The
+handler judged the HTTP status before reading the envelope, so the operator saw
+"Daily check-in API error (400)" for a day that had already been credited —
+while the same account's status endpoint plainly reported `today_checked_in:
+true` and a 12-day streak.
+
+The claim path now parses the body first and treats both `1001` (intl /
+WorkBuddy) and `10001` (CN) as `already_claimed`, keeping a non-JSON or
+business-code-free rejection as a real error. The status probe is unchanged.
+
+### Model Lab gains the generation tools, with provider and model picked separately
+
+The generation surface lived only on its own page, and its picker was a single
+flat model list: two providers exposing the same model id read as one row.
+
+Model Lab's composer now carries a **Generate** button that opens the same
+generation panel the Generation page uses — image/video tabs, prompt, options,
+task polling, and the media proxy. The picker is two explicit choices
+(provider, then model), and the catalog is grouped by provider in one place
+(`lib/generation-catalog.ts`) so a provider that happens to share a model id
+with another is never merged into it. Every enabled provider/model whose
+catalog declares image or video output appears; a text-only model is still not
+offered because the upstream would reject the job.
+
+### Image and video generation have their own console surface
+
+The gateway could store model modalities but never asked what a model
+generates: discovery recorded every discovered entry as text output, and the
+console had no way to run an image or video backend even when one was
+registered. Model Lab's subtitle claimed image generation it could not do.
+
+Discovery now records the upstream's own `kind` (`image`/`video`) or
+`output_modalities` array into `modalities.output`. A new **Generation** page
+and `console/generation` domain list models whose output is image or video,
+submit through the OpenAI-style `/images/generations` (always `async`) and
+`/videos` contracts using the provider's configured account and network-pool
+egress, poll the provider's task until it settles, and stream results back
+through a bounded media proxy. Operators see image grids and a video player;
+external/signed media URLs pass through untouched.
+
+### CodeBuddy CN stops discarding long system prompts
+
+The CN adapter replaced any system turn longer than 2 KB with a neutral
+one-liner. That rule was meant to strip another vendor's CLI identity before
+the Tencent channel sees it, but length is not identity: a saved prompt
+injection and a client's own long system prompt were silently thrown away
+before the upstream ever received them, so the model answered without the
+operator's instructions.
+
+The neutralizer now keys only on the identity it was written to catch (Claude
+Code, Cursor, Windsurf, Cline, Aider, Continue, Copilot, Cody, and the other
+known agent-prompt markers). Operator and client system content of any length
+reaches the upstream unchanged; a foreign agent prompt in the same request is
+still neutralized.
+
+### A refused proxy tunnel fails over instead of failing the request
+
+Every outbound request through a network pool assumes the exit can open a
+CONNECT tunnel to the provider's host. Some exits cannot: the proxy accepts the
+TCP connection and answers the handshake with `504` for one host while other
+hosts work fine. The dispatch loop only retried the same candidate for an
+egress-keyed `429`, so a single such exit ended the request — and a model probe
+burned one entire account attempt per bad exit, then reported the proxy's
+refusal as the model's outcome (`Proxy CONNECT failed: 504 Gateway Timeout`)
+even though no upstream had seen the request.
+
+A refused handshake is now an egress fault everywhere it is observed. The
+dispatch loop retries the same candidate on another exit, bounded to the same
+two extra tries an egress-keyed `429` already allowed. A probe retries the same
+account on a fresh exit with the same bound, and reports the failed
+`(pool, provider)` pair through an injected `coolPool` port that the console
+wires to `flagPoolCooldown` — the existing five-minute cooldown, so the
+selector stops offering that exit for that provider while the account's health
+stays untouched. A candidate bound to a single pool still fails closed rather
+than silently leaving through another egress.
+
+### An injection can name the clients it must not touch
+
+Saved injections applied to every request their scope matched. Two requests
+that needed different treatment — an automated client on a fixed address, or a
+share recipient testing the route — could only be separated by disabling the
+persona entirely.
+
+Every saved entry now has **Settings**: a list of client IPs and API keys it
+skips. The lists are exclusions, not allowlists, so an entry with none behaves
+exactly as before, and the check runs at dispatch against the authenticated
+client address and key — before any failover candidate is attempted.
+
+Addresses are stored in one canonical form (lowercase, IPv4-mapped `::ffff:`
+prefix stripped), so the same client cannot be excluded under two spellings.
+The saved row reports how many IPs and keys it skips, and the editor's dirty
+state compares the lists as sets: reordering is not an edit.
+
+A stored exclusion whose key row has since disappeared stays visible in the
+dialog, so saving settings cannot silently drop it. Excluding a share template
+covers the child keys it issued: the console lists the template row, but
+requests authenticate as a child, so dispatch matches the parent id carried on
+the resolved credential as well as the exact key.
+
+### Model Lab can send as a different key
+
+The playground always sent under the console-issued gateway key. The key panel
+existed, but only a failed send surfaced it — an operator who wanted to test a
+share recipient's route had to break the default key first, and had no way back
+to it afterwards.
+
+The composer now carries a key pill beside the model: it names the credential
+the next send will use (`Gateway key`, or the prefix of a key you supplied) and
+opens the panel directly. Paste a share child key (`rk_…`) there to run the
+exact policy, allowlist, quota, and revocation that recipient gets; the pill
+turns into that prefix so the transcript is never ambiguous about who paid for
+the turn.
+
+The panel also gained **Use gateway key**, which asks the console for the
+default credential *before* discarding the pasted one. A revoked default row
+fails issuance, and clearing first would have stranded the operator with
+neither key.
+
+### A recipient's prompt history is visible where the recipient is inspected
+
+The share recipient view listed aggregate usage and bare request metadata, and
+said so — "no captured payloads". The one question an operator actually has
+about a shared key is what it is being used for, and the answer already existed
+in the capture store the tenant opts into; nothing read it.
+
+Each recipient's expanded panel now shows the prompt on the request it belongs
+to: every **Recent requests** row carries the latest user prompt captured for
+that request, under the token counters. One request, one row — a second list of
+the same requests was pure duplication. Only text parts count. An image, audio,
+file, or tool-result part carries no prompt, and a tool result must never be
+shown as something the recipient typed. Earlier turns are conversation context,
+not the message that produced the row, so the last user turn is the one
+rendered.
+
+It is a read over bounded payload capture, not a new store: with capture off
+there is nothing to attach, so the section subtitle says exactly that and points
+at Settings → Privacy instead of leaving a silent gap that reads like "this
+recipient sent nothing". `promptCaptureEnabled` on the activity response is what
+lets the view distinguish the two states.
+
+Text is redacted by the capture path before it is ever written, capped at
+4 000 characters per prompt (reported as truncated), and disappears with the
+payload retention window. Raw bodies and credentials still never cross the
+share boundary — the prompt is the only payload-derived field. It rides on an
+owner-only response type rather than the shared detail shape, because the
+public enrollment page returns that same detail to an unauthenticated caller:
+prompt text on the base type would have leaked to it the moment the loader
+changed.
+
+Reading those references also stopped re-reading a whole frame file per frame:
+`readPayloadFrames` groups by file, opens each once, and leaves a corrupt or
+expired frame as `undefined` in its own slot so one dead capture cannot blank
+the rest of the panel.
+
+### The public root serves the landing page again
+
+`GET /` rendered nothing of its own: `dashboard/src/main.tsx` redirected to
+`/console/`, the console guard bounced to `/console/login?returnTo=%2F`, and a
+signed-out visitor who then signed in was sent back to `/` — which redirected
+into the console root a second time. The root now mounts the landing document,
+so a visitor sees the product before a login form, and `/console/*` remains the
+only authenticated surface. `resolveDashboardApp` again returns `landing` for
+paths outside `/console` and `/share`; the restored `apps/landing` files are the
+same document the console-only commit deleted, re-branded to `LianRouter`.
 
 ### Provider promotions show as a console badge
 

@@ -47,6 +47,8 @@ function memoryStore(): PromptInjectionStorePort {
         turns: input.turns,
         position: input.position,
         enabled: input.enabled,
+        excludedClientIps: input.excludedClientIps ?? [],
+        excludedApiKeyIds: input.excludedApiKeyIds ?? [],
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -119,6 +121,33 @@ describe("prompt injection routes", () => {
     expect(catalog.global.content).toBe("You are a helpful assistant.");
     expect(catalog.global.preset).toBe("assistant");
     expect(catalog.global.position).toBe("prepend");
+  });
+
+  test("stores normalized exclusion lists and skips duplicates", async () => {
+    const { routes } = app(readWrite);
+    await routes.handle(
+      jsonRequest("PUT", {
+        global: {
+          mode: "prompt",
+          content: "persona",
+          excludedClientIps: ["::FFFF:203.0.113.7", "203.0.113.7", " 198.51.100.9 "],
+          excludedApiKeyIds: ["key-1", "key-1", " key-2 "],
+        },
+      }),
+    );
+    const catalog = await (await routes.handle(new Request("http://localhost/prompt-injection"))).json();
+    expect(catalog.global.excludedClientIps).toEqual(["203.0.113.7", "198.51.100.9"]);
+    expect(catalog.global.excludedApiKeyIds).toEqual(["key-1", "key-2"]);
+  });
+
+  test("rejects a non-array exclusion list", async () => {
+    const { routes } = app(readWrite);
+    const response = await routes.handle(
+      jsonRequest("PUT", {
+        global: { mode: "prompt", content: "persona", excludedClientIps: "203.0.113.7" },
+      }),
+    );
+    expect(response.status).toBe(400);
   });
 
   test("saves a per-key script and a per-model prompt", async () => {

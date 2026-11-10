@@ -7,6 +7,7 @@ import { applyDiscoveredWire, constrainWireFamily, resolveDiscoveredWire, static
 import { CLINE_MODELS } from "../../../src/providers/integrations/cline/cline";
 import { createDefaultProviderRegistry } from "../../../src/providers/default-registry";
 import { NetworkPoolSelector } from "../../../src/network/pool/selector";
+import { ProxyConnectError } from "../../../src/network/pool/agent";
 
 function probingDb(options: {
   accounts: Array<{
@@ -332,6 +333,85 @@ describe("ProviderProbingService discovery hardening", () => {
     // policy rejection into a cooldown), so this test asserts the failover
     // itself rather than that provider-specific health rule.
     expect(updates.map((row) => (row as { status?: string }).status)).toEqual(["active"]);
+  });
+
+  test("probeModel retries a refused CONNECT on another exit and cools the failed pool", async () => {
+    // A proxy that answers CONNECT with 504 never opened a tunnel, so no
+    // upstream saw the request. Treating it as the account's outcome burned
+    // one attempt per bad exit and surfaced a proxy fault as a model fault.
+    const accountRow = {
+      id: "a-egress",
+      tenantId: "tenant-1",
+      providerId: "openai",
+      status: "active",
+      cooldownUntil: null,
+      credentialKind: "api_key",
+      credentialCiphertext: encryptCredential("sk-egress"),
+      modelCooldowns: null,
+      consecutiveFailures: 0,
+    };
+    const db = {
+      select: (_columns?: unknown) => ({
+        from: (table: unknown) => ({
+          where: (_condition?: unknown) => {
+            const rows =
+              table === providers
+                ? [{ requiresAccount: true, compatibilityProfile: null }]
+                : table === providerAccounts
+                  ? [accountRow]
+                  : [];
+            return Object.assign(Promise.resolve(rows), {
+              limit: async (_n?: number) => rows,
+            });
+          },
+        }),
+      }),
+      update: (_table: unknown) => ({
+        set: (_values: unknown) => ({ where: async (_condition?: unknown) => [] }),
+      }),
+      insert: (_table: unknown) => ({ values: async (_values: unknown) => [] }),
+    };
+    const releases: string[] = [];
+    const cooled: Array<{ poolId: string; providerId: string; error: unknown }> = [];
+    const bindings = [
+      {
+        fetch: (() => Promise.reject(new ProxyConnectError("pool-a", 504, "Gateway Timeout"))) as never,
+        networkPoolId: "pool-a",
+        release: () => releases.push("pool-a"),
+      },
+      {
+        fetch: (() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: "chatcmpl-1",
+                model: "gpt-4o-mini",
+                choices: [{ message: { content: "hello" }, finish_reason: "stop" }],
+                usage: { prompt_tokens: 5, completion_tokens: 2 },
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            ),
+          )) as never,
+        networkPoolId: "pool-b",
+        release: () => releases.push("pool-b"),
+      },
+    ];
+    const probing = probingService(db, {
+      snapshotInvalidator: { invalidate: async () => true },
+      outboundFetchFor: () => bindings.shift()!,
+      coolPool: (poolId: string, providerId: string, error: unknown) => {
+        cooled.push({ poolId, providerId, error });
+      },
+    });
+    const result = await probing.probeModel("tenant-1", "openai", {
+      modelId: "gpt-4o-mini",
+      wireFamily: "chat",
+    });
+    expect(result.ok).toBe(true);
+    expect(releases).toEqual(["pool-a", "pool-b"]);
+    expect(cooled).toHaveLength(1);
+    expect(cooled[0]).toMatchObject({ poolId: "pool-a", providerId: "openai" });
+    expect(cooled[0]?.error).toBeInstanceOf(ProxyConnectError);
   });
 
   test("probeModel records networkPoolId and releases the outbound slot", async () => {
@@ -1835,5 +1915,41 @@ describe("probeModel preserves the failing status", () => {
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.httpStatus).toBe(500);
     expect(recorded[0]?.errorCategory).toBe("unknown_error");
+    expect(recorded[0]?.errorOrigin).toBe("gateway");
+  });
+});
+
+describe("probeAllAccounts fan-out", () => {
+  /** Accounts the fake DB hands back; the WHERE clause is not simulated here. */
+  const accounts = Array.from({ length: 23 }, (_, index) => ({
+    id: `acct-${index}`,
+    tenantId: "tenant-1",
+    status: "active",
+    cooldownUntil: null,
+    credentialCiphertext: encryptCredential("sk-test"),
+  }));
+
+  test("bounds concurrency and still returns one entry per account", async () => {
+    const probing = probingService(probingDb({ accounts }));
+    let inFlight = 0;
+    let peak = 0;
+    const probed: string[] = [];
+    probing.probeModel = async (_tenantId, _providerId, request) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      probed.push(request.accountId ?? "");
+      // Wide enough that every slot of a batch is filled before any settles.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { ok: true, latencyMs: 5, httpStatus: 200 };
+    };
+
+    const result = await probing.probeAllAccounts("tenant-1", "openai", { modelId: "gpt-test" });
+
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(peak).toBeGreaterThan(1);
+    expect(result.results).toHaveLength(accounts.length);
+    expect(result.results.map((entry) => entry.accountId)).toEqual(accounts.map((account) => account.id));
+    expect(new Set(probed).size).toBe(accounts.length);
   });
 });

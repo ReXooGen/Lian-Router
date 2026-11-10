@@ -33,6 +33,7 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   tokenharbor: { file: "tokenharbor", ext: "svg" },
   aihubmix: { file: "aihubmix", ext: "svg" },
   zai: { file: "zai", ext: "svg" },
+  zcode: { file: "zcode", ext: "webp" },
   zaicp: { file: "zai-coding-plan", ext: "svg" },
   "kimi-code": { file: "kimi-code", ext: "webp" },
   kimi: { file: "kimi-code", ext: "webp" },

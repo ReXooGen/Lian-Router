@@ -299,7 +299,7 @@ export function ApiKeysPanel(): ReactNode {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {key.keyPrefix ? `${key.keyPrefix}…` : `${key.id.slice(0, 12)}…`}
+                    {key.keyFingerprint ?? (key.keyPrefix ? `${key.keyPrefix}…` : `${key.id.slice(0, 12)}…`)}
                   </code>
                   <p style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "2px" }}>
                     Created {new Date(key.createdAt).toLocaleDateString()}

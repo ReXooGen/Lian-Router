@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fetchProviderQuota as collectProviderQuota } from "../../../src/providers/quota/quota-support";
 import { createDefaultProviderRegistry } from "../../../src/providers/default-registry";
+import { isQuotaExhausted } from "../../../src/providers/quota/quota-contracts";
 import { jsonResponse } from "../../helpers/sse-fixtures";
 
 const providerRegistry = createDefaultProviderRegistry();
@@ -338,5 +339,52 @@ describe("Cursor quota", () => {
     const result = await fetchProviderQuota("cursor", "token", fetcher);
     expect(result.windows).toEqual([]);
     expect(result.error).toBeNull();
+  });
+});
+
+describe("quota exhaustion", () => {
+  /**
+   * Exhaustion decides visibility: a spent plan is hidden from the claim card
+   * and from the default quota list. Every case that must NOT count as spent
+   * is a case where the balance is unknown, and treating unknown as spent would
+   * hide an account that still has capacity.
+   */
+  test("is exhausted only when every known window is at or below zero", () => {
+    const quota = (windows: readonly { usedPercent: number | null; remainingPercent: number | null }[], error: string | null = null) => ({
+      source: "zcode",
+      plan: "ZCode Start Plan",
+      windows: windows.map((window, index) => ({
+        kind: "grant",
+        label: `grant-${index}`,
+        ...window,
+        resetsAt: null,
+      })),
+      error,
+    });
+
+    expect(isQuotaExhausted(quota([{ usedPercent: 100, remainingPercent: 0 }]))).toBe(true);
+    expect(
+      isQuotaExhausted(
+        quota([
+          { usedPercent: 100, remainingPercent: 0 },
+          { usedPercent: 100, remainingPercent: 0 },
+        ]),
+      ),
+    ).toBe(true);
+    // One live grant keeps the plan usable, so the plan is not spent.
+    expect(
+      isQuotaExhausted(
+        quota([
+          { usedPercent: 100, remainingPercent: 0 },
+          { usedPercent: 99, remainingPercent: 1 },
+        ]),
+      ),
+    ).toBe(false);
+    // No grants is "empty", not "spent" — the two read differently.
+    expect(isQuotaExhausted(quota([]))).toBe(false);
+    // An unknown balance must never be treated as exhausted.
+    expect(isQuotaExhausted(quota([{ usedPercent: null, remainingPercent: null }]))).toBe(false);
+    // A refused read says nothing about the balance.
+    expect(isQuotaExhausted(quota([{ usedPercent: 100, remainingPercent: 0 }], "rate limited"))).toBe(false);
   });
 });

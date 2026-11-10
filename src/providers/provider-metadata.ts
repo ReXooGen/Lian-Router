@@ -63,6 +63,12 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "nvidia", displayName: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1" },
   { id: "gmi", displayName: "GMI Cloud", baseUrl: "https://api.gmi-serving.com/v1" },
   { id: "zai", displayName: "Z.AI", baseUrl: "https://api.z.ai/api/paas/v4" },
+  {
+    id: "zcode",
+    displayName: "ZCODE",
+    baseUrl: "https://zcode.z.ai",
+    wireFamilyDefault: "messages",
+  },
   { id: "hermes", displayName: "Nous Research", baseUrl: "https://inference-api.nousresearch.com/v1" },
   { id: "bai", displayName: "B.AI", baseUrl: "https://api.b.ai/v1" },
   { id: "browseruse", displayName: "Browser Use", baseUrl: "https://api.browser-use.com" },

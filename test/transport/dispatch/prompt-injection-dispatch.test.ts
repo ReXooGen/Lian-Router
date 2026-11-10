@@ -44,6 +44,8 @@ function injection(overrides: Partial<PromptInjection>): PromptInjection {
     turns: [],
     position: "prepend",
     enabled: true,
+    excludedClientIps: [],
+    excludedApiKeyIds: [],
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -83,8 +85,11 @@ function rows<T>(values: readonly T[]): readonly T[] & { limit: () => Promise<re
 }
 
 describe("handleProviderProxyRequest — prompt injection", () => {
-  test("applies the stored stack before the adapter encodes the request", async () => {
-    invalidatePromptInjectionCache();
+  async function dispatchWith(input: {
+    readonly stored: readonly PromptInjection[];
+    readonly authorization: ResolvedApiKey;
+    readonly clientAddress?: string;
+  }): Promise<{ status: number; captured?: CanonicalRequest }> {
     const candidate = {
       provider_id: "anthropic",
       model_id: "claude-sonnet-4-5",
@@ -95,7 +100,7 @@ describe("handleProviderProxyRequest — prompt injection", () => {
     };
     const preparedRequest: PreparedProxyRequest = {
       canonicalRequest: canonicalRequest(),
-      authorization,
+      authorization: input.authorization,
       candidate,
       eligibleRouteCandidates: [candidate],
       plan: {
@@ -120,7 +125,7 @@ describe("handleProviderProxyRequest — prompt injection", () => {
       admissionService: {
         admit: async () => ({
           reservationId: "lease-1",
-          apiKeyId: authorization.id,
+          apiKeyId: input.authorization.id,
           released: false,
           commitUsage: async () => {},
           release: async () => {},
@@ -132,30 +137,15 @@ describe("handleProviderProxyRequest — prompt injection", () => {
     const request = new Request("https://gateway.test/v1/chat/completions", { method: "POST" });
     const state = stateStore.initialize(request, Date.now(), 60_000);
     state.preparedRequest = preparedRequest;
-
-    const stored = [
-      injection({ content: "GLOBAL" }),
-      injection({
-        id: "row-2",
-        scope: "key",
-        target: authorization.id,
-        content: "KEYED",
-        position: "append",
-      }),
-      injection({
-        id: "row-3",
-        scope: "model",
-        target: "claude-sonnet-4-5",
-        content: "MODEL",
-        position: "append",
-      }),
-    ];
+    if (input.clientAddress !== undefined) {
+      state.clientIdentity = { address: input.clientAddress, source: "tcp-peer" };
+    }
 
     const db = {
       select: () => ({
         from: (table: unknown) => ({
           where: () => {
-            if (table === promptInjections) return rows(stored);
+            if (table === promptInjections) return rows(input.stored);
             if (table === consoleSettings) return rows([]);
             return rows([
               {
@@ -186,12 +176,69 @@ describe("handleProviderProxyRequest — prompt injection", () => {
     };
 
     const response = await handleProviderProxyRequest(request, deps);
-    expect(response.status).toBe(200);
-    const system = (captured?.system ?? [])
+    return captured === undefined
+      ? { status: response.status }
+      : { status: response.status, captured };
+  }
+
+  function systemTexts(captured: CanonicalRequest | undefined): string[] {
+    return (captured?.system ?? [])
       .filter((part) => part.kind === "text")
       .map((part) => (part.kind === "text" ? part.text : ""));
-    expect(system).toEqual(["GLOBAL", "KEYED", "MODEL"]);
+  }
+
+  test("applies the stored stack before the adapter encodes the request", async () => {
+    invalidatePromptInjectionCache();
+    const { status, captured } = await dispatchWith({
+      authorization,
+      stored: [
+        injection({ content: "GLOBAL" }),
+        injection({
+          id: "row-2",
+          scope: "key",
+          target: authorization.id,
+          content: "KEYED",
+          position: "append",
+        }),
+        injection({
+          id: "row-3",
+          scope: "model",
+          target: "claude-sonnet-4-5",
+          content: "MODEL",
+          position: "append",
+        }),
+      ],
+    });
+    expect(status).toBe(200);
+    expect(systemTexts(captured)).toEqual(["GLOBAL", "KEYED", "MODEL"]);
     // The script-free stack must not disturb the conversation.
     expect(captured?.messages.map((message) => message.role)).toEqual(["user"]);
+  });
+
+  test("an exclusion naming a share template also skips that template's child key", async () => {
+    invalidatePromptInjectionCache();
+    const child: ResolvedApiKey = {
+      id: "child-key",
+      tenantId,
+      scopes: [],
+      snapshot: { api_key_id: "child-key", tenant_id: tenantId },
+      parentKeyId: "parent-template",
+    };
+    const { status, captured } = await dispatchWith({
+      authorization: child,
+      stored: [injection({ content: "GLOBAL", excludedApiKeyIds: ["parent-template"] })],
+    });
+    expect(status).toBe(200);
+    expect(systemTexts(captured)).toEqual([]);
+  });
+
+  test("a client-IP exclusion reaches dispatch with the authenticated address", async () => {
+    invalidatePromptInjectionCache();
+    const { captured } = await dispatchWith({
+      authorization,
+      clientAddress: "203.0.113.7",
+      stored: [injection({ content: "GLOBAL", excludedClientIps: ["203.0.113.7"] })],
+    });
+    expect(systemTexts(captured)).toEqual([]);
   });
 });

@@ -3,7 +3,11 @@ import { createApiKeyOperations } from "../../../src/console/domains/api-keys/ro
 import { ConsoleDomainError } from "../../../src/console/shared/errors";
 import type { ApiKeyRecord, ApiKeyStore } from "../../../src/persistence/api-key-store";
 import type { ShareLinkStore, ShareLinkSummary } from "../../../src/persistence/share-store";
-import { decryptCredentialToString, setCredentialEncryptionKeyForTesting } from "../../../src/security/crypto";
+import {
+  decryptCredentialToString,
+  hashSecret,
+  setCredentialEncryptionKeyForTesting,
+} from "../../../src/security/crypto";
 import { createAccessDecision } from "../../../src/security/access-control";
 import type { ShareActivityPort } from "../../../src/console/share/share-usage";
 import type { NetworkPoolRecord } from "../../../src/console/routing/pools/contracts";
@@ -272,7 +276,7 @@ describe("api-key operations", () => {
       },
       async getSharedKeyDetail() {
         detailReads += 1;
-        return { models: [], requests: [] };
+        return { models: [], requests: [], prompts: [], promptCaptureEnabled: false };
       },
       async getPublicShareActivity() {
         throw new Error("not used");
@@ -614,5 +618,301 @@ describe("api-key egress binding", () => {
     await expect(
       operations.createKey(writer, { label: "bad", networkPoolId: "  " }),
     ).rejects.toMatchObject({ code: "invalid_network_pool", status: 400 });
+  });
+});
+
+describe("API-key rotation", () => {
+  test("mints a replacement secret on the same row and rehashes it", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup([poolRecord("pool-a", "tenant-1")]),
+    });
+    const created = await operations.createKey(writer, {
+      label: "rotating",
+      keyPrefix: "ctk_",
+      scopes: ["routing:invoke"],
+      networkPoolId: "pool-a",
+      dailyTokenLimit: 5000,
+    });
+    const oldSecret = created.secret;
+    if (oldSecret === undefined) throw new Error("personal key creation did not return a secret");
+    const oldHash = records.get(created.id)?.keyHash;
+
+    const rotated = await operations.rotateKey(writer, created.id);
+
+    if (rotated.secret === undefined) throw new Error("rotation did not return a secret");
+    // The row identity and policy survive; only the credential material moves.
+    expect(rotated.id).toBe(created.id);
+    expect(rotated.label).toBe("rotating");
+    expect(rotated.scopes).toEqual(["routing:invoke"]);
+    expect(rotated.networkPoolId).toBe("pool-a");
+    expect(rotated.dailyTokenLimit).toBe(5000);
+    expect(rotated.keyPrefix).toBe("ctk_");
+    expect(rotated.secret.startsWith("ctk_")).toBe(true);
+    expect(rotated.secret).not.toBe(oldSecret);
+
+    const row = records.get(created.id);
+    expect(row?.keyHash).toBe(hashSecret(rotated.secret));
+    expect(row?.keyHash).not.toBe(oldHash);
+    expect(row?.keyEncrypted && decryptCredentialToString(row.keyEncrypted)).toBe(rotated.secret);
+  });
+
+  test("the previous secret stops authenticating", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+    const created = await operations.createKey(writer, { label: "old-secret" });
+    const oldSecret = created.secret;
+    if (oldSecret === undefined) throw new Error("personal key creation did not return a secret");
+
+    await operations.rotateKey(writer, created.id);
+
+    expect(records.get(created.id)?.keyHash).not.toBe(hashSecret(oldSecret));
+  });
+
+  test("refuses to rotate a share template", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+    const template = await operations.createKey(writer, { label: "template", keyMode: "share" });
+
+    await expect(operations.rotateKey(writer, template.id)).rejects.toMatchObject({
+      code: "key_not_personal",
+      status: 409,
+    });
+  });
+
+  test("refuses to rotate a child key owned by a share parent", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+    const parent = await operations.createKey(writer, { label: "parent", keyMode: "share" });
+    const childId = "child-rotate";
+    records.set(childId, {
+      id: childId,
+      tenantId: "tenant-1",
+      keyHash: "stored-child-hash",
+      keyMode: "share",
+      parentKeyId: parent.id,
+      issuedClientIp: "198.51.100.5",
+      issuedClientIpKey: "v4:3325256709",
+      label: "shared child",
+      scopes: ["routing:invoke"],
+      keyPrefix: "rk_",
+      createdAt: new Date(),
+      tokensConsumed: 0,
+    });
+
+    await expect(operations.rotateKey(writer, childId)).rejects.toMatchObject({
+      code: "shared_key_managed_by_parent",
+      status: 409,
+    });
+  });
+
+  test("refuses rotation for a read-only scope", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+    const created = await operations.createKey(writer, { label: "read-only-probe" });
+
+    await expect(operations.rotateKey(reader, created.id)).rejects.toBeInstanceOf(ConsoleDomainError);
+  });
+
+  test("reports an unknown key id", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+
+    await expect(operations.rotateKey(writer, "missing")).rejects.toMatchObject({ status: 404 });
+  });
+
+  test("keeps admission state so rotation cannot reset a budget", async () => {
+    const { store } = fakeKeyStore();
+    let purges = 0;
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: { purgeKey: async () => { purges += 1; } },
+      poolLookup: fakePoolLookup(),
+    });
+    const created = await operations.createKey(writer, { label: "budget" });
+
+    await operations.rotateKey(writer, created.id);
+
+    expect(purges).toBe(0);
+  });
+
+  test("audits the rotation against the key id", async () => {
+    const { store } = fakeKeyStore();
+    const entries: Array<{ action: string; target: string }> = [];
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+      auditSink: {
+        async record(entry) {
+          entries.push({ action: entry.action, target: entry.target });
+        },
+      },
+    });
+    const created = await operations.createKey(writer, { label: "audited" });
+
+    await operations.rotateKey(writer, created.id);
+
+    expect(entries.at(-1)?.action).toBe("api_key.rotated");
+    expect(entries.at(-1)?.target).toBe(created.id);
+  });
+});
+
+describe("API-key fingerprint", () => {
+  test("createKey returns a fingerprint derived from the issued secret", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+
+    const created = await operations.createKey(writer, { label: "fingerprinted" });
+    const secret = created.secret;
+    if (secret === undefined) throw new Error("personal key creation did not return a secret");
+
+    expect(created.keyFingerprint).toMatch(/^.{8}….{4}$/);
+    expect(created.keyFingerprint).toBe(`${secret.slice(0, 8)}…${secret.slice(-4)}`);
+  });
+
+  test("listKeys derives the same fingerprint for that key", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+
+    const created = await operations.createKey(writer, { label: "listed" });
+    const listed = (await operations.listKeys(writer)).find((key) => key.id === created.id);
+
+    expect(listed?.keyFingerprint).toBeDefined();
+    expect(listed?.keyFingerprint).toBe(created.keyFingerprint);
+  });
+
+  test("two keys minted with the same prefix have different fingerprints", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+
+    const a = await operations.createKey(writer, { label: "first", keyPrefix: "rk_" });
+    const b = await operations.createKey(writer, { label: "second", keyPrefix: "rk_" });
+
+    // Regression: keyPrefix is shared by every key, so it cannot identify a row.
+    expect(a.keyPrefix).toBe(b.keyPrefix);
+    expect(a.keyFingerprint).toBeDefined();
+    expect(b.keyFingerprint).toBeDefined();
+    expect(a.keyFingerprint).not.toBe(b.keyFingerprint);
+  });
+
+  test("a share template has no fingerprint", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+
+    const template = await operations.createKey(writer, { label: "template", keyMode: "share" });
+
+    expect(template.keyFingerprint).toBeUndefined();
+  });
+
+  test("a personal key without a recoverable copy still lists, without a fingerprint", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+    const created = await operations.createKey(writer, { label: "legacy" });
+    const row = records.get(created.id);
+    if (!row) throw new Error("record missing");
+    delete (row as unknown as Record<string, unknown>).keyEncrypted;
+
+    const listed = (await operations.listKeys(writer)).find((key) => key.id === created.id);
+
+    expect(listed).toBeDefined();
+    expect(listed?.keyFingerprint).toBeUndefined();
+  });
+
+  test("an unreadable ciphertext degrades to no fingerprint instead of failing the list", async () => {
+    const { store, records } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+    const created = await operations.createKey(writer, { label: "stale-encryption-key" });
+    const row = records.get(created.id);
+    if (!row) throw new Error("record missing");
+    // Well-formed length (12 IV + 16 tag + 0 ciphertext) but sealed under a key
+    // this process does not hold: exactly what a rotated
+    // LIANROUTER_ENCRYPTION_KEY leaves behind. GCM authentication fails.
+    records.set(created.id, { ...row, keyEncrypted: Buffer.alloc(28, 0x41) });
+
+    const listed = (await operations.listKeys(writer)).find((key) => key.id === created.id);
+
+    // One unreadable row must not take the list down with it.
+    expect(listed).toBeDefined();
+    expect(listed?.keyFingerprint).toBeUndefined();
+  });
+
+  test("the fingerprint never leaks the full secret", async () => {
+    const { store } = fakeKeyStore();
+    const operations = createApiKeyOperations({
+      store,
+      accessResolver: () => writer,
+      admissionService: fakeAdmission(),
+      poolLookup: fakePoolLookup(),
+    });
+
+    const created = await operations.createKey(writer, { label: "no-leak" });
+    const secret = created.secret;
+    if (secret === undefined) throw new Error("personal key creation did not return a secret");
+
+    // The create response carries the plaintext secret exactly once by design;
+    // the list projection must never carry it.
+    const listed = (await operations.listKeys(writer)).find((key) => key.id === created.id);
+    expect(JSON.stringify(listed)).not.toContain(secret);
   });
 });

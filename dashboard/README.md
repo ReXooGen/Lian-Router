@@ -1,19 +1,32 @@
 # Dashboard
 
-`dashboard/` is the React/Vite client for the authenticated `/console` surface
-and the public `/share/:token` enrollment app. One `index.html` dispatches by
-pathname; share styling remains isolated in `src/share.css`. Production serves
-the built files from `dist/dashboard`.
+`dashboard/` is the React/Vite client for the public landing page, the
+authenticated `/console` surface, the public `/share/:token` enrollment app, and
+the public `/status` model-health page. One `index.html` dispatches by pathname;
+share styling remains isolated in `src/share.css` and the status page carries
+its own `apps/status/status.css`. Production serves the built files from
+`dist/dashboard`.
 
-This build is console-only. There is no public marketing page: `/` and
-`/index.html` redirect to `/console/`, and `resolveDashboardApp` returns
-`console` for every path outside `/share`. The console is the whole product
-surface a visitor sees.
+## Landing
+
+`src/apps/landing/page.tsx` is a static document: every section renders from a
+table in that file, with no fetching and no session, so `/` renders for a
+signed-out visitor instead of bouncing into the console login. Its styling
+lives in `src/apps/landing/landing.css` and `base.css`; `HowItWorks.tsx` keeps
+its motion there. `page.test.tsx` pins the section, cell, and readout counts.
+
+The page backdrop is `ConstellationField.tsx`: one `position: fixed` 2D canvas,
+first child of `.lr`, behind every content wrapper (`z-index: 0`,
+`pointer-events: none`). Stars link to each other and to the pointer when in
+range. It loads no 3D dependency — the hero used to mount `OrbitObject`, which
+now only serves `Login`, `Setup`, and `Settings`. The neighbour search lives in
+`constellation-model.ts` (uniform grid keyed on the link radius) and is unit
+tested there; the canvas draws one static frame under reduced motion and stops
+while the tab is hidden.
 
 ## Route map
 
-`src/main.tsx` dispatches console or share from the pathname; the root document
-redirects into the console. The
+`src/main.tsx` dispatches landing, console, share, or status from the pathname. The
 console app mounts a `BrowserRouter` with basename `/console` and lazy route
 chunks:
 
@@ -24,17 +37,21 @@ chunks:
 | `/usage` | `Usage` | `console/domains/stats` and usage contracts |
 | `/providers` | `Providers` | `console/providers/catalog` |
 | `/providers/:providerId` | `ProviderDetail` | `console/providers/detail` and catalog |
+| `/providers/:providerId/accounts/test` | `AccountProbeAll` | single-account probe (`accountId` pin) driven client-side at concurrency 4 |
 | `/combos` | `Combos` | `console/routing/model` |
 | `/quota` | `Quota` | `console/quota` |
+| `/automation` | `Automation` | `console/automation/report` |
 | `/proxy` | `Proxy` | `network/pool` and routing |
 | `/customization` | `Customization` | none (browser-local: `dashboard/src/lib/customization`) |
-| `/model-lab` | `Studio` | `console/domains/studio` |
+| `/model-lab` | `Studio` | `console/domains/studio`; the composer's **Generate** tool reuses the `console/generation` panel |
+| `/generation` | `Generation` | `console/generation` (image/video tasks and media proxy) |
 | `/cli-tools`, `/cli-tools/:toolId` | `CliTools`, `CliToolDetail` | `console/cli-tools` |
 | `/console-log` | `ConsoleLog` | `console/domains/logs` and SSE |
 | `/settings` | `Settings` | `console/settings` |
 | `/prompt-injection` | `PromptInjection` | `console/prompt-injection` |
 | `/share` | `Share` | `console/domains/api-keys` and `console/share` |
 | `/share/:token` (public root route) | `apps/share/page.tsx` | public child-key enrollment, model cards, and privacy-safe aggregate usage for every child issued by the share template via `src/console/share/share-router.ts` |
+| `/status` (public root route) | `apps/status/page.tsx` | model-health timelines from `GET /status/models` (`console/status/`): 60 buckets over 24h, plus each model's cooldown deadline. Scoped to the models a live share key publishes, so the page answers "is the shared access working" rather than exposing the operator's private catalog |
 
 Unknown protected paths redirect to `/`. Session transitions clear the shared
 query cache and navigate to `/login` or `/banned` rather than rendering stale
@@ -68,38 +85,6 @@ authority; update the mirror in the same change and keep `dashboard/src/*-parity
 - Query keys, hooks, and route components must use the existing `consoleRequest`
   API boundary instead of constructing another HTTP client or importing backend
   modules.
-
-## Update modal
-
-`src/components/UpdateModal.tsx` is mounted by `DashboardShell` next to the
-command palette, so it appears on every console page without a route of its own.
-It renders nothing unless the gateway reports an available release.
-
-It reads one endpoint and calls one:
-
-- `GET /console/api/update` → `{ launcher, current, latest, available,
-  notesUrl, publishedAt, running, progress }`. `latest`, `notesUrl` and
-  `publishedAt` may be `null`; `progress` is `null` or `{ phase, percent,
-  message, bytesReceived, bytesTotal, error }` with `percent` in `0..100` and
-  the counters and `error` nullable. `launcher: false` means the gateway was not
-  started by the `lianrouter` launcher, so the modal only points at
-  `lianrouter update` and offers no button.
-- `POST /console/api/update/start` → `202 { accepted: true }`, or an
-  `ApiErrorShape` with status 409 `update_in_progress`, 503
-  `launcher_unavailable`, or 502 `launcher_error`.
-
-`src/lib/hooks/update.ts` owns the query and mutation. The status query polls
-every 2s while `running`, otherwise every 60s, and validates the payload with
-`assertUpdateStatus` before the modal renders it. The wire types are re-exported
-from `src/lib/contracts.ts`, which mirrors `src/console/update/contracts.ts`.
-
-Dismissal is stored per version in `localStorage` under
-`lianrouter.update.dismissed`, so a newer release re-opens the modal. During an
-install the modal shows the launcher's phase and a determinate bar; an `error`
-phase renders the launcher's message with a Retry. Because the launcher restarts
-the gateway, the modal then polls `GET /health` (not `/console/api`) every 2s for
-up to 90s and reloads the page when the gateway answers. If it never answers,
-the modal says so and offers Reload.
 
 ## Browser-safe boundary
 

@@ -390,6 +390,14 @@ describe("WorkBuddy integration", () => {
     );
   });
 
+  test("DeepSeek V4.1 Flash declares image input like the upstream accepts", () => {
+    // Proven against the live WorkBuddy upstream: a request carrying an image
+    // returned the image's text ("LIAN-42") and its shapes, while the catalog
+    // claimed text-only input and the playground therefore blocked attachments.
+    const model = WORKBUDDY_MODELS.find((entry) => entry.modelId === "deepseek-v4.1-flash");
+    expect(model?.modalities.input).toContain("image");
+  });
+
   describe("OAuth device flow", () => {
     test("startDeviceAuth posts to the state endpoint and returns the auth URL", async () => {
       let seenUrl = "";

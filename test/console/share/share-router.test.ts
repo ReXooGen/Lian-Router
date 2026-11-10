@@ -115,7 +115,7 @@ const modelDb = {
 const VALID_TOKEN = "a".repeat(43);
 const noopActivity: ShareActivityPort = {
   async getSharedKeySummaries() { return []; },
-  async getSharedKeyDetail() { return { models: [], requests: [] }; },
+  async getSharedKeyDetail() { return { models: [], requests: [], prompts: [], promptCaptureEnabled: false }; },
   async getPublicShareActivity() {
     return {
       allTime: { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },

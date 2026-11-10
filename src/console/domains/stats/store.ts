@@ -591,11 +591,37 @@ export class DrizzleObservabilityStore implements ObservabilityStore {
     period: string,
     limit: number,
     httpStatus?: number,
+    shared?: boolean,
+    parentKeyId?: string,
+    childKeyId?: string,
   ): Promise<UsageRequestsResponse> {
     const scope = this.usageScope(tenantId, period);
-    const filter = httpStatus === undefined
-      ? scope
-      : and(scope, eq(effectiveHttpStatusExpression(), httpStatus));
+    // Shared access = requests admitted by a child key (parent_key_id set).
+    // One EXISTS keeps the row count untouched by the join; personal traffic
+    // is `shared=false`'s exact complement because every event carries at
+    // most one api key.
+    const sharedFilter = shared === undefined
+      ? undefined
+      : shared
+        ? sql`exists (select 1 from ${apiKeys} k where k.id = ${telemetryEvents.apiKeyId} and k.parent_key_id is not null)`
+        : sql`not exists (select 1 from ${apiKeys} k where k.id = ${telemetryEvents.apiKeyId} and k.parent_key_id is not null)`;
+    // Narrowing to one template is the same EXISTS shape as `shared`, so the
+    // limit still counts events rather than joined rows. The child filter is a
+    // direct column predicate and the most specific of the two: when both ids
+    // arrive, only the child one is applied.
+    const parentFilter = childKeyId !== undefined || parentKeyId === undefined
+      ? undefined
+      : sql`exists (select 1 from ${apiKeys} k where k.id = ${telemetryEvents.apiKeyId} and k.parent_key_id = ${parentKeyId})`;
+    const childFilter = childKeyId === undefined
+      ? undefined
+      : eq(telemetryEvents.apiKeyId, childKeyId);
+    const filter = and(
+      scope,
+      httpStatus === undefined ? undefined : eq(effectiveHttpStatusExpression(), httpStatus),
+      sharedFilter,
+      parentFilter,
+      childFilter,
+    );
     const rows = await this.db
       .select()
       .from(telemetryEvents)

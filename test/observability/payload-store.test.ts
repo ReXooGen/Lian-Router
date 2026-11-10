@@ -7,6 +7,7 @@ import {
   isPayloadFileReference,
   prunePayloadFrames,
   readPayloadFrame,
+  readPayloadFrames,
   writePayloadFrame,
 } from "../../src/observability/payload-store";
 
@@ -42,6 +43,23 @@ describe(".jsonb telemetry payload storage", () => {
     expect(extractPayloadFileReference({ _payload_ref: reference })).toEqual(reference);
     expect(extractPayloadFileReference(reference)).toEqual(reference);
     expect(extractPayloadFileReference({ request: "hello" })).toBeUndefined();
+  });
+
+  test("reads several references in one batch and keeps slots aligned", async () => {
+    directory = await mkdtemp(join(tmpdir(), "lianrouter-payload-") );
+    process.env.LIANROUTER_TELEMETRY_PAYLOAD_DIR = directory;
+    const expiresAt = new Date(Date.now() + 60_000);
+    const first = await writePayloadFrame({ request: "one" }, expiresAt);
+    const second = await writePayloadFrame({ request: "two" }, expiresAt);
+
+    // A reference whose checksum no longer matches its frame is the corrupt
+    // case: its slot is undefined and its siblings still resolve.
+    const corrupt = { ...first, checksum: "00000000" };
+    await expect(readPayloadFrames([first, corrupt, second])).resolves.toEqual([
+      { request: "one" },
+      undefined,
+      { request: "two" },
+    ]);
   });
 
   test("prunes expired framed payload files", async () => {

@@ -354,6 +354,9 @@ export function SharePage(): ReactElement {
   const [issueBusy, setIssueBusy] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [issueConflict, setIssueConflict] = useState(false);
+  // The enrollment flow names the child key: the sidecar refuses an issue
+  // without a label, so the field is required UI, not decoration.
+  const [keyName, setKeyName] = useState("");
   const [revealBusy, setRevealBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [baseCopied, setBaseCopied] = useState(false);
@@ -379,6 +382,12 @@ export function SharePage(): ReactElement {
         ? "/v1"
         : `${window.location.origin}/v1`;
 
+  // Mirrors the sidecar's `LABEL_RE` (`^[A-Za-z0-9 ._#()-]{1,40}$`) so the
+  // button state agrees with what the server will accept instead of letting a
+  // click fail with the reject message.
+  const KEY_NAME_PATTERN = /^[A-Za-z0-9 ._#()-]{1,40}$/;
+  const keyNameValid = KEY_NAME_PATTERN.test(keyName.trim());
+
   const data = state.data;
 
   useEffect(() => {
@@ -401,7 +410,7 @@ export function SharePage(): ReactElement {
       const response = await fetch(issuePath, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ deviceId: enrollmentDeviceId() }),
+        body: JSON.stringify({ deviceId: enrollmentDeviceId(), label: keyName.trim() }),
         credentials: "same-origin",
         referrerPolicy: "no-referrer",
       });
@@ -666,10 +675,32 @@ export function SharePage(): ReactElement {
                       This enrollment link is not currently accepting key requests.
                     </p>
                   ) : null}
+                  <div className="share-keyname-field">
+                    <label htmlFor="share-key-name" className="share-eyebrow">
+                      API KEY NAME
+                    </label>
+                    <input
+                      id="share-key-name"
+                      type="text"
+                      value={keyName}
+                      maxLength={40}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="mis. my-laptop-key"
+                      disabled={issueBusy || data.alreadyIssued || issueConflict}
+                      onChange={(event) => setKeyName(event.target.value)}
+                    />
+                    {!keyNameValid ? (
+                      <p className="share-note">
+                        Required · 1–40 characters: letters, numbers, space, dot, underscore, dash,
+                        hash, parentheses.
+                      </p>
+                    ) : null}
+                  </div>
                   <button
                     type="button"
                     className="share-action-primary"
-                    disabled={!data.canIssue || data.alreadyIssued || issueConflict || issueBusy}
+                    disabled={!data.canIssue || data.alreadyIssued || issueConflict || issueBusy || !keyNameValid}
                     onClick={() => void issue()}
                   >
                     {issueBusy

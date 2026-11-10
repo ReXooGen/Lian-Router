@@ -57,9 +57,10 @@
       (() => {
         const pathname = window.location.pathname;
         const isShare = pathname === "/share" || pathname.startsWith("/share/");
-        const isConsole = pathname === "/" || pathname === "/console" || pathname.startsWith("/console/");
+        const isConsole = pathname === "/console" || pathname.startsWith("/console/");
         const root = document.documentElement;
-        root.dataset.app = isShare ? "share" : isConsole ? "console" : "landing";
+        const isStatus = pathname === "/status" || pathname.startsWith("/status/");
+        root.dataset.app = isShare ? "share" : isConsole ? "console" : isStatus ? "status" : "landing";
         const themeMeta = document.querySelector('meta[name="theme-color"]');
         const colorSchemeMeta = document.createElement("meta");
         colorSchemeMeta.name = "color-scheme";
@@ -67,7 +68,11 @@
         document.head.appendChild(colorSchemeMeta);
         document.title = isShare
           ? "LianRouter — Shared access"
-          : "LianRouter Console";
+          : isConsole
+            ? "LianRouter Console"
+            : isStatus
+              ? "LianRouter — Models status"
+              : "LianRouter — One Stop OpenAI & Anthropic Proxy Router";
         if (themeMeta) themeMeta.setAttribute("content", isConsole ? "#09090b" : "#000000");
         if (!isConsole) return;
         try {

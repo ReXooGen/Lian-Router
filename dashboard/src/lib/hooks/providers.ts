@@ -81,12 +81,13 @@ export function useProbeModel() {
           body: JSON.stringify(request),
         },
       ),
-    // A probe now writes account health (cooldown on quota failure, recover
-    // on success), so the account list + health panels must refetch the
-    // moment it settles — success AND failure — instead of waiting for a
-    // manual page refresh.
-    onSettled: async (_result, _error, variables) => {
-      await invalidateProviderAccounts(queryClient, variables.providerId);
+    // A probe writes account health (cooldown on quota failure, recover on
+    // success), so the account list + health panels must refetch the moment it
+    // settles — success AND failure. Deliberately fire-and-forget: `execute()`
+    // awaits `onSettled`, so awaiting the refetch would keep the mutation's
+    // promise (and every probe slot) hostage to a full account-list refresh.
+    onSettled: (_result, _error, variables) => {
+      void invalidateProviderAccounts(queryClient, variables.providerId).catch(() => undefined);
     },
   });
 }
@@ -271,7 +272,7 @@ async function invalidateAccountHealthFamily(
  * mutations used to spell this trio out separately, so a fifth could silently
  * forget one and leave a stale list on screen.
  */
-async function invalidateProviderAccounts(
+export async function invalidateProviderAccounts(
   queryClient: QueryClient,
   providerId: string,
 ): Promise<void> {
@@ -575,6 +576,122 @@ export function useDeleteProvider() {
     },
     onError: (error) => {
       toast.error("Failed to delete provider", getErrorMessage(error));
+    },
+  });
+}
+/** One claimable campaign advertised for a start-plan account. */
+export interface ProviderClaimPlan {
+  readonly planId: string;
+  readonly name: string;
+  readonly priority: number | null;
+  readonly startsAt: string | null;
+  readonly endsAt: string | null;
+  readonly source: "preview" | "banner";
+}
+
+/** The campaign surfaces for one account, with any read failures. */
+export interface ProviderClaimListing {
+  readonly plans: ProviderClaimPlan[];
+  readonly errors: string[];
+  readonly supported?: boolean;
+}
+
+/** Reads the campaigns an account can claim. */
+export function useProviderClaims(accountId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.providers.claims(accountId),
+    queryFn: (context) =>
+      consoleRequest<ProviderClaimListing>(
+        `/accounts/${encodeURIComponent(accountId ?? "")}/claims`,
+        { signal: querySignal(context) },
+      ),
+    enabled: Boolean(accountId) && enabled,
+    ...QUERY_OPTIONS,
+  });
+}
+
+/** The Aliyun captcha the claim endpoint expects for one account. */
+export interface ProviderClaimVerificationConfig {
+  readonly enabled: boolean;
+  readonly region: string;
+  readonly prefix: string;
+  readonly sceneId: string;
+  readonly skipModelRequest: boolean;
+}
+
+/**
+ * Reads the captcha config for one account.
+ *
+ * The claim endpoint refuses a bare claim with `3007`, and the only way past it
+ * is a token produced by the Aliyun widget loaded with these values. Without
+ * this read the dashboard has nothing to render, which is why the claim used to
+ * end in "finish it in the desktop app".
+ */
+export function useProviderClaimVerification(accountId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.providers.claimVerification(accountId),
+    queryFn: (context) =>
+      consoleRequest<{ ok: boolean; config: ProviderClaimVerificationConfig }>(
+        `/accounts/${encodeURIComponent(accountId ?? "")}/claims/verification`,
+        { signal: querySignal(context) },
+      ),
+    enabled: Boolean(accountId) && enabled,
+    // A refused config read is a real state (the vendor may simply not gate
+    // this campaign); retrying it just re-reads the same answer.
+    ...QUERY_OPTIONS,
+    retry: false,
+  });
+}
+
+/**
+ * Claims one campaign.
+ *
+ * The upstream endpoint is captcha-gated for the campaigns that matter, so a
+ * `409 claim_captcha_required` is a real answer rather than a failure: the
+ * campaign exists and the credential works, and the claim has to be finished in
+ * the desktop app.
+ */
+export function useClaimProviderPlan() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { ok: boolean; status: string; planId: string; message?: string },
+    ApiErrorShape,
+    { accountId: string; planId: string; captchaParam?: string; captchaRegion?: string }
+  >({
+    mutationFn: ({ accountId, planId, captchaParam, captchaRegion }) =>
+      consoleRequest<{ ok: boolean; status: string; planId: string; message?: string }>(
+        `/accounts/${encodeURIComponent(accountId)}/claims`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            planId,
+            ...(captchaParam ? { captchaParam } : {}),
+            ...(captchaRegion ? { captchaRegion } : {}),
+          }),
+        },
+      ),
+    onSuccess: async (result, variables) => {
+      if (result.ok) toast.success("Plan claimed", variables.planId);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.providers.claims(variables.accountId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
+      ]);
+    },
+    onError: (error, variables) => {
+      // A captcha-gated campaign is a non-2xx, so it lands here rather than in
+      // onSuccess: the campaign exists and the credential works, and the claim
+      // has to be finished where a human can solve the challenge.
+      if (error.code === "claim_captcha_required") {
+        toast.error("Captcha required", "Solve the challenge, then claim again.");
+        return;
+      }
+      // The vendor throttles repeated claims. Saying "rejected" here would read
+      // as "this plan is gone", when all that expired was the rate window.
+      if (error.code === "claim_rate_limited") {
+        toast.error("Claim throttled by ZCode", "The campaign is still live — wait a moment and claim again.");
+        return;
+      }
+      toast.error("Claim rejected", `${variables.planId}: ${getErrorMessage(error)}`);
     },
   });
 }

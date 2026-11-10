@@ -6,10 +6,13 @@ import {
   resolveOpenCodeVersion,
 } from "../../../src/providers/operations/client-versions";
 import {
+  buildOpenCodeFreeHeaders,
   buildOpenCodeHeaders,
   generateOpenCodeRequestId,
   generateOpenCodeSessionId,
 } from "../../../src/providers/integrations/opencode-fingerprint";
+import { LIANROUTER_PROBE_MARKER } from "../../../src/providers/provider-registry";
+import { dispatchContext } from "../../helpers/provider-dispatch";
 import { jsonResponse } from "../../helpers/sse-fixtures";
 
 
@@ -70,5 +73,38 @@ describe("OpenCode version and fingerprinting", () => {
 
     await resolveOpenCodeVersion(fetcher);
     expect(getOpenCodeVersion()).toBe(VERSION_SOURCES.opencode.fallback);
+  });
+});
+
+describe("OpenCode Free bridge probe header", () => {
+  const BASE_URL_ENV = "LIANROUTER_OPENCODEFT_BASE_URL";
+
+  test("stamps x-bridge-probe only when a probe runs against a bridge origin", () => {
+    const previous = process.env[BASE_URL_ENV];
+    try {
+      // Bridge configured + probe context: the bridge is the only origin that
+      // can honour the marker, so it must be stamped with the literal "1".
+      process.env[BASE_URL_ENV] = "http://127.0.0.1:8910";
+      expect(
+        buildOpenCodeFreeHeaders({ ...dispatchContext("opencodeft"), probe_marker: LIANROUTER_PROBE_MARKER })[
+          "x-bridge-probe"
+        ],
+      ).toBe("1");
+
+      // Bridge absent: a direct origin must never see the header.
+      delete process.env[BASE_URL_ENV];
+      expect(
+        buildOpenCodeFreeHeaders({ ...dispatchContext("opencodeft"), probe_marker: LIANROUTER_PROBE_MARKER })[
+          "x-bridge-probe"
+        ],
+      ).toBeUndefined();
+
+      // Non-probe dispatch against a bridge: no marker in the context, no header.
+      process.env[BASE_URL_ENV] = "http://127.0.0.1:8910";
+      expect(buildOpenCodeFreeHeaders(dispatchContext("opencodeft"))["x-bridge-probe"]).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env[BASE_URL_ENV];
+      else process.env[BASE_URL_ENV] = previous;
+    }
   });
 });
