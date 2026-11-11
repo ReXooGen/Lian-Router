@@ -194,20 +194,6 @@ export function createModelCatalogOperations(config: ProviderCatalogConfig) {
         const a = requireTenantAnyScope(access, MODEL_WRITE_SCOPES);
         if (!request.modelId || request.modelId.trim().length === 0)
           throw new ConsoleDomainError("invalid_request", 400, "modelId is required");
-        // `spendQuota` means "one deliberate click, one allowance unit". This
-        // route probes every configured account for one model, so honouring the
-        // flag here would spend one unit per account from a single request —
-        // the exact multiplication the flag exists to prevent, on a provider
-        // whose allowance is keyed per source address. Refused loudly rather
-        // than silently downgraded: a caller that asked to spend must be told
-        // it did not, or it will read the catalog answer as a paid one.
-        if (request.spendQuota === true)
-          throw new ConsoleDomainError(
-            "invalid_request",
-            400,
-            "spendQuota is not supported on the all-accounts probe: it dispatches one completion per account. Probe a single model instead.",
-            { modelId: request.modelId, providerId },
-          );
         return config.store.probeAllAccounts(a.tenantId, providerId, request);
       }
       /** Toggles a specific registered model's `enabled` flag — the hard routing

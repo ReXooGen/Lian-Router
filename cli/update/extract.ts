@@ -24,6 +24,7 @@
  * feature that only needs to unpack an artifact whose checksum was already
  * verified, and every supported host already ships a hardened implementation.
  */
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 
@@ -52,18 +53,34 @@ type ArchiveKind = "zip" | "7z" | "tar" | "tgz";
 function extractionArgv(kind: ArchiveKind, archivePath: string, stagingDir: string): readonly string[] {
   const tar = Bun.which("tar");
   const unzip = Bun.which("unzip");
+  // Windows ships bsdtar in System32 and it reads zip, tar, and tgz natively.
+  // `Bun.which("tar")` usually resolves Git for Windows' GNU tar first, which
+  // cannot read zip at all and also treats `C:\...` as a remote host ("Cannot
+  // connect to C: resolve failed"). Pin the system binary by absolute path so
+  // PATH order cannot pick the wrong implementation.
+  const systemTar = process.platform === "win32" && existsSync("C:\\Windows\\System32\\tar.exe")
+    ? "C:\\Windows\\System32\\tar.exe"
+    : null;
+  const tarRealPath = tar !== null ? realpathSync(tar).toLowerCase() : "";
+  const isGitGnuTar = tarRealPath.includes("\\git") || tarRealPath.includes("/git/");
+  const resolvedTar = systemTar ?? tar;
+  const tarBase = resolvedTar === null
+    ? null
+    : systemTar === null && isGitGnuTar
+      ? [resolvedTar, "--force-local"]
+      : [resolvedTar];
 
   switch (kind) {
     case "zip": {
       const preferTar = process.platform === "win32" || unzip === null;
-      if (preferTar && tar !== null) {
-        return [tar, "-xf", archivePath, "-C", stagingDir];
+      if (preferTar && tarBase !== null) {
+        return [...tarBase, "-xf", archivePath, "-C", stagingDir];
       }
       if (unzip !== null) {
         return [unzip, "-o", "-q", archivePath, "-d", stagingDir];
       }
-      if (tar !== null) {
-        return [tar, "-xf", archivePath, "-C", stagingDir];
+      if (tarBase !== null) {
+        return [...tarBase, "-xf", archivePath, "-C", stagingDir];
       }
       throw new Error("cannot extract .zip: neither tar nor unzip is on PATH");
     }
@@ -77,12 +94,12 @@ function extractionArgv(kind: ArchiveKind, archivePath: string, stagingDir: stri
     }
     case "tar":
     case "tgz": {
-      if (tar === null) {
+      if (tarBase === null) {
         throw new Error(`cannot extract .${kind}: tar is not on PATH`);
       }
       return kind === "tgz"
-        ? [tar, "-xzf", archivePath, "-C", stagingDir]
-        : [tar, "-xf", archivePath, "-C", stagingDir];
+        ? [...tarBase, "-xzf", archivePath, "-C", stagingDir]
+        : [...tarBase, "-xf", archivePath, "-C", stagingDir];
     }
   }
 }

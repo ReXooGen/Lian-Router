@@ -1836,12 +1836,10 @@ describe("POST /providers/:providerId/models/probe", () => {
 });
 
 /**
- * The all-accounts probe fans one request out across every configured account,
- * so honouring `spendQuota` there would spend one allowance unit per account
- * from a single click. That is the multiplication the flag exists to prevent,
- * and the operator has no control that would show or stop it. It is refused
- * loudly rather than silently downgraded, because a caller that asked to spend
- * must not read a catalog answer as a paid one.
+ * The all-accounts probe fans one request out across every configured account.
+ * It dispatches once per account, which is what the route's name says; the
+ * `spendQuota` opt-in that used to be refused here is gone from the request
+ * type, because a probe now always dispatches.
  */
 describe("POST /providers/:providerId/accounts/probe", () => {
   const access: AccessDecision = {
@@ -1873,21 +1871,6 @@ describe("POST /providers/:providerId/accounts/probe", () => {
       body: JSON.stringify(body),
     });
   }
-
-  it("refuses spendQuota without dispatching a single probe", async () => {
-    const calls: number[] = [];
-    const response = await batchApp(() => calls.push(1)).handle(
-      batchRequest({ modelId: "mimo-v2.6-flash-free", spendQuota: true }),
-    );
-
-    expect(response.status).toBe(400);
-    const body = (await response.json()) as { code: string; error: string };
-    expect(body.code).toBe("invalid_request");
-    expect(body.error).toContain("one completion per account");
-    // The refusal happens before the store is touched, so no account can have
-    // been probed and no unit can have been spent.
-    expect(calls).toHaveLength(0);
-  });
 
   it("still probes every account when the flag is absent", async () => {
     const calls: number[] = [];

@@ -57,73 +57,35 @@ export interface ProbeModelRequest {
   reasoningEffort?: (typeof PROBE_REASONING_EFFORTS)[number];
   maxOutputTokens?: number;
   stream?: boolean;
-  /**
-   * Opt into a real completion for a provider whose quota is keyed on the
-   * egress address. Defaults to `false`, and every existing caller relies on
-   * that default: absent or false must keep the allowance-free catalog answer
-   * byte-identical.
-   *
-   * For such a provider the default probe answers from the published catalog
-   * because a completion costs one unit of an allowance that a spent address
-   * cannot get back. Set this only when the question is genuinely "does this
-   * model generate", and accept that the attempt may spend the exit it runs
-   * through. The attempt goes through the same lease layer live traffic uses,
-   * so a route the gateway refuses locally (`proxy_pool_unhealthy`) is reported
-   * as that refusal rather than as a provider fault.
-   *
-   * Providers whose quota is keyed on a credential ignore this field: their
-   * probe always dispatches, which is what it always did.
-   */
-  spendQuota?: boolean;
 }
 /**
- * The verdict a *dispatched* probe produced.
+ * The verdict a probe produced.
  *
- * A catalog probe emits no `kind` at all: `mode: "catalog"` already says the
- * only thing that happened was a listing, and adding a field there would have
- * changed the response of every existing caller for no new information.
- * Consumers that need one discriminator derive "listed" from
- * `mode === "catalog"`.
+ * A probe dispatches. It has no free, non-generating variant: a listing is not
+ * evidence about generation, so a state that reported one would only teach the
+ * operator to ask twice.
  */
 export type ProbeResultKind = "generated" | "refused";
 
 export interface ProbeModelResult {
   accountId?: string;
   /**
-   * Whether the probe proved what the operator asked about.
-   *
-   * Read this together with `mode`: `ok` on a `catalog` result means the model
-   * is published upstream, not that it generated. A listing must never be
-   * rendered as a successful generation.
+   * Whether the probe proved what the operator asked about: that the model
+   * generated a completion.
    */
   ok: boolean;
   /**
-   * The verdict a dispatched probe produced, as one discriminator every
-   * consumer can branch on.
+   * The verdict, as one discriminator every consumer can branch on.
    *
-   * - `generated` — a real completion came back with output. This is the only
-   *   kind that proves generation.
+   * - `generated` — a real completion came back with output.
    * - `refused` — the attempt was made and the gateway classified the failure.
    *   `code`, `errorOrigin`, and `reason` say exactly what refused it, and
    *   `allowanceSpent` says whether the attempt reached the provider at all.
    *
-   * Absent on a catalog probe (`mode: "catalog"` already says a listing was the
-   * only thing that happened) and on the early failures that answer before
-   * either question is asked (no usable account, no registered adapter).
+   * Absent on the early failures that answer before either question is asked
+   * (no usable account, no registered adapter).
    */
   kind?: ProbeResultKind;
-  /**
-   * What the probe exercised.
-   *
-   * - `dispatch` — a real completion went upstream. `kind` then says whether it
-   *   generated or was refused.
-   * - `catalog` — the provider's published model list was fetched through the
-   *   same egress binding and the requested id was looked up in it. No
-   *   completion was sent, so no allowance was spent.
-   *
-   * Absent on the early failures described above.
-   */
-  mode?: "dispatch" | "catalog";
   latencyMs: number;
   ttfbMs?: number;
   sample?: string;
@@ -231,8 +193,6 @@ export interface ProbeAllModelsResult {
   results: ReadonlyArray<{
     modelId: string;
     ok: boolean;
-    /** Same discriminator as `ProbeModelResult.mode`; absent when neither ran. */
-    mode?: "dispatch" | "catalog";
     latencyMs: number;
     error?: string;
   }>;

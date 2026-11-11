@@ -265,19 +265,22 @@ export const PROVIDER_CAPABILITIES = {
     loadModelDiscovery: openAIModelDiscovery("gmi", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
   },
   opencodeft: {
-    // Only the family this tier's catalog actually declares. The tier's sole
+    // Only the families this tier's catalog actually declares. The tier's sole
     // Messages model (`union-alpha`) is dead upstream (400 "Model is
-    // unavailable"), and its only Responses rows were the
-    // `muse-spark-*-contributor-free` ids, tombstoned (410 ModelDeprecated) — so
-    // both paths would advertise a wire nothing can be routed to. The shared
-    // factory still accepts them; the free catalog simply produces no such
-    // candidate.
+    // unavailable"), so a Messages path would advertise a wire nothing can be
+    // routed to; the shared factory still accepts it, and the free catalog
+    // simply produces no such candidate. Responses stays because the two
+    // `muse-spark-*-contributor-free` rows are served there.
+    //
+    // The prefix is `/inference`, not `/zen`: the free gate and the CLI it
+    // fingerprints live there, and `/zen` is the billed surface.
     endpointPathsByWireFamily: {
-      chat: "/zen/v1/chat/completions",
+      chat: "/inference/v1/chat/completions",
+      responses: "/inference/v1/responses",
     },
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/opencode")).OPENCODE_FREE_SPEC),
     loadModels: async () => (await import("./integrations/opencode")).OPENCODE_FREE_MODELS,
-    loadModelDiscovery: openAIModelDiscovery("opencodeft", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/zen/v1` }),
+    loadModelDiscovery: openAIModelDiscovery("opencodeft", { transformBaseUrl: (baseUrl) => `${baseUrl.replace(/\/+$/, "")}/inference/v1` }),
     modelDiscoveryRequiresCredential: false,
   },
   opencodezen: {

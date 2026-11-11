@@ -139,45 +139,35 @@ Three layers combine in `default-registry.ts: BUNDLED_PROVIDER_MODULES`, then `c
    path: a bad model id, empty content, a deadline, or a 400 says nothing about the egress and must
    not sideline a healthy pool. `recordProbeHealth` keeps owning account health separately — pools and
    accounts are different machines, and the account branch still runs for credentialed providers.
-   **A probe no longer spends an allowance unit by default.** Cooling the burned exit was only half
-   the fix: the console's Test button dispatched a real completion per click, and "Test all"
-   dispatched one per model, so the diagnostic surface itself was what emptied the address pool —
-   it repeated every time a cooldown expired. For a provider whose quota is keyed on the source
-   address (`isEgressScopedProvider`, derived from the same `EGRESS_SCOPED_PROVIDER_IDS` the 429
-   classifier reads), `probeModel` now answers from the provider's published model catalog instead:
-   the discovery route is fetched through the same outbound binding, so it still exercises the
-   egress and still reports the pool, but no completion is sent and no allowance is charged.
-   `probeAllModels` reads that catalog once for the whole batch rather than once per model. The
-   result states which question it answered: `mode: "catalog"` means the id is published upstream
-   and `ok` must not be read as "it generates"; `mode: "dispatch"` means a completion went upstream
-   and `ok` is the generation verdict. A real dispatch stays available — `spendQuota: true` on the
-   probe request, surfaced in the console as its own action — because only generation proves a model
-   works, and the operator decides when that proof is worth an exit. Providers whose quota is keyed
-   on a credential are untouched: their probe still dispatches by default, and the flag is a no-op
-   for them.
-   **The opt-in runs the shared dispatch path, not a bespoke fetch.** `spendQuota: true` on an
-   egress-scoped provider routes through `discovery/probe-dispatch.ts`, which calls
+   **One probe, one completion, one verdict.** The console's Test button used to answer from the
+   provider's published catalog for an egress-scoped provider, with a second "prove it generates"
+   action behind it. That split was wrong on its own terms: a catalog listing is not evidence about
+   generation, so the first click could only ever produce an intermediate state the console had to
+   explain, and the operator had to ask twice for one answer. `probeModel` now always dispatches —
+   `probeAllModels` likewise dials every model instead of reading the catalog once. The result
+   carries `kind: "generated" | "refused"`; there is no `mode`, because there is no second question.
+   `spendQuota` is gone from `ProbeModelRequest`, and the all-accounts route lost its refusal for it.
+   **The dispatch runs the shared path, not a bespoke fetch.** `discovery/probe-dispatch.ts` calls
    `ProxyRequestPreparer.prepare` and then `acquireAttemptLeases` — the same admission lease, pool
    slot, sibling guard, and routing reservation live traffic takes — before handing the canonical
-   request to the provider adapter. That is deliberate: the previous paid path resolved its own
-   outbound binding, so it could report a provider fault for a request the gateway refuses locally.
-   Measured 2026-10-25, a real dispatch of `opencodeft/mimo-v2.6-flash-free` answers `503
-   proxy_pool_unhealthy` with `details.reason: "candidate_pool_missing"` and origin `network` in
-   ~1.7 s without leaving the box: the requesting tenant owns no pool, while the pool-owning
-   tenant's pooled candidate is in the plan, so `acquirePoolSlot` fails closed rather than dialing
-   direct from the host address. The probe reports that verbatim — `kind: "refused"`, `code`,
-   `errorOrigin`, `reason` — and `allowanceSpent` is absent because nothing was charged. A refusal
-   that did reach the adapter (including a 429) carries `allowanceSpent: true`. One probe is one
-   candidate: no candidate failover, no retry-after-backoff, and no batch equivalent —
-   `probeAllModels` still reads the catalog once and never dispatches. The one retry is
-   same-candidate egress failover, and it exists because the first attempt produced no answer:
-   an egress-keyed 429 is refused by *that address*, the next exit has its own untouched
-   allowance, and re-leasing after `flagPoolCooldown` is what live traffic does. It is bounded by
-   `MAX_EGRESS_FAILOVERS` from the attempt loop, never re-runs for an account-scoped 429, a 5xx, a
-   transport error, or a candidate with a single exit, and `exitsTried` on the outcome reports how
-   many exits the probe actually burned. Each exit attempt gets a freshly armed deadline and
-   signal so a retry cannot inherit a consumed budget; the probe's own budget remains the outer
-   bound.
+   request to the adapter. Measured 2026-10-25, a real dispatch of `opencodeft/mimo-v2.6-flash-free`
+   answers `503 proxy_pool_unhealthy` with `details.reason: "candidate_pool_missing"` and origin
+   `network` in ~1.7 s without leaving the box: the requesting tenant owns no pool, while the
+   pool-owning tenant's pooled candidate is in the plan, so `acquirePoolSlot` fails closed rather
+   than dialing direct from the host address. The probe reports that verbatim — `kind: "refused"`,
+   `code`, `errorOrigin`, `reason` — and `allowanceSpent` is absent because nothing was charged. A
+   refusal that reached the adapter (including a 429) carries `allowanceSpent: true`. One probe is
+   one candidate: no candidate failover and no retry-after-backoff. The one retry is same-candidate
+   egress failover, and it exists because the first attempt produced no answer: an egress-keyed 429
+   is refused by *that address*, the next exit has its own untouched allowance, and re-leasing after
+   `flagPoolCooldown` is what live traffic does. It is bounded by `MAX_EGRESS_FAILOVERS` from the
+   attempt loop, never re-runs for an account-scoped 429, a 5xx, a transport error, or a candidate
+   with a single exit, and `exitsTried` on the outcome reports how many exits the probe actually
+   burned. Each exit attempt gets a freshly armed deadline and signal so a retry cannot inherit a
+   consumed budget; the probe's own budget remains the outer bound.
+   **The console renders two states, not three.** `dashboard/src/lib/probe-view.ts` maps the result
+   to `generated` or `refused` and nothing else; the per-row Prove control, its cost label, and the
+   `listed upstream` headline are gone with the state they described.
    > **Koreksi.** Two earlier readings in this doc were wrong and are retracted here. First, that
    > this was purely a per-address cap with the handle irrelevant: the handle sharing was real
    > (every caller collided on `opencode:default`) but it was not the cause of the observed 429s.

@@ -172,14 +172,15 @@ describe("provider matrix composition", () => {
     {
       const captured = await dispatchJson({
         create: fromSpec(OPENCODE_FREE_SPEC),
-        candidate: candidateFor("opencodeft", "chat", "/zen/v1/chat/completions"),
+        candidate: candidateFor("opencodeft", "chat", "/inference/v1/chat/completions"),
         context: dispatchContext("opencodeft", { credential_kind: "none" }),
       });
-      expect(captured.url).toContain("/zen/v1/chat/completions");
+      expect(captured.url).toContain("/inference/v1/chat/completions");
       expect(captured.headers["authorization"]).toBe("Bearer public");
       expect(captured.headers["x-opencode-client"]).toBe("desktop");
       expect(captured.headers["accept"]).toBe("text/event-stream");
-      expect(captured.headers["user-agent"]).toMatch(/^opencode\/\d+\.\d+\.\d+/);
+      // The CLI's own four-segment shape; the gate reads the semver from the third.
+      expect(captured.headers["user-agent"]).toMatch(/^opencode\/[A-Za-z0-9-]+\/\d+\.\d+\.\d+\/[A-Za-z0-9-]+$/);
     }
 
     // Zen: per-model wire selection across the two surfaces this factory can
@@ -221,7 +222,7 @@ describe("provider matrix composition", () => {
         candidate: candidateFor("opencodego", "chat", "/zen/go/v1/chat/completions"),
       });
       expect(captured.url).toContain("/zen/go/v1/chat/completions");
-      expect(captured.url).not.toContain("/zen/v1/chat/completions");
+      expect(captured.url).not.toContain("/inference/v1/chat/completions");
     }
   });
 

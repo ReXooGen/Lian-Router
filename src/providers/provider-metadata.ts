@@ -265,9 +265,13 @@ export const PROVIDER_COMPATIBILITY_PROFILES: Record<string, CompatibilityProfil
     model_wire_families: [{ pattern: "^claude-", wire_family: "messages" }],
   },
   opencodeft: {
+    // The free tier is served from the `/inference` prefix. `/zen/v1` still
+    // answers for billed accounts, but the free gate and the CLI it fingerprints
+    // both live on `/inference`, and dispatching a free id at the Zen prefix
+    // routes it through the paid surface.
     endpoint_paths_by_wire_family: {
-      chat: "/zen/v1/chat/completions",
-      responses: "/zen/v1/responses",
+      chat: "/inference/v1/chat/completions",
+      responses: "/inference/v1/responses",
     },
     model_wire_families: [{ pattern: "^muse-spark", wire_family: "responses" }],
   },

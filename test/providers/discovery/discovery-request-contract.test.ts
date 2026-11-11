@@ -5,6 +5,7 @@ import {
   VERSION_SOURCES,
   _resetCodexVersion,
   getCodexVersion,
+  _resetQoderVersion,
 } from "../../../src/providers/operations/client-versions";
 
 /**
@@ -84,7 +85,7 @@ const EXPECTED: Readonly<Record<string, ExpectedDiscovery>> = {
     headers: { "x-api-version": "1.0.0" },
   },
   kimi: { url: "https://api.kimi.com/coding/v1/models", authHeader: "authorization" },
-  opencodeft: { url: "https://opencode.ai/zen/v1/models", authHeader: "none" },
+  opencodeft: { url: "https://opencode.ai/inference/v1/models", authHeader: "none" },
   opencodezen: { url: "https://opencode.ai/zen/v1/models", authHeader: "authorization" },
   opencodego: { url: "https://opencode.ai/zen/go/v1/models", authHeader: "authorization" },
   cerebras: { url: "https://api.cerebras.ai/v1/models", authHeader: "authorization" },
@@ -201,6 +202,14 @@ const EXPECTED: Readonly<Record<string, ExpectedDiscovery>> = {
     authHeader: "authorization",
     method: "POST",
   },
+  // Qoder's roster is COSY-signed and credential-bound: discovery exchanges
+  // the PAT for a session (`POST …/user/jobToken`), and that exchange itself
+  // authenticates through the COSY signature headers, not a bearer credential.
+  qoder: {
+    url: "https://center.qoder.sh/algo/api/v3/user/jobToken?Encode=1",
+    authHeader: "none",
+    method: "POST",
+  },
 };
 
 interface RecordedRequest {
@@ -261,6 +270,17 @@ function catalogBody(providerId: string): string {
       },
     });
   }
+  if (providerId === "qoder") {
+    // The first request is the PAT→session exchange; its response is the
+    // credential the (asserted) roster read is signed with.
+    return JSON.stringify({
+      id: "user-1",
+      name: "operator",
+      userType: "personal_standard",
+      securityOauthToken: "oauth-session-token",
+      refreshToken: "refresh-token",
+    });
+  }
   return JSON.stringify({ data: [{ id: "discovered-model" }] });
 }
 
@@ -313,6 +333,9 @@ describe("every wired provider's discovery builds its documented request", () =>
       // cannot race another suite that constructs a codex adapter, while the
       // assertion below still proves the URL is read from the resolver.
       if (providerId === "codex") _resetCodexVersion(SEEDED_CODEX_VERSION);
+      // Qoder's COSY headers embed a client version with the same runtime
+      // resolution, so the same seeding applies.
+      if (providerId === "qoder") _resetQoderVersion(VERSION_SOURCES.qoder.fallback);
       const expectedUrl = expected.deriveUrl?.() ?? expected.url;
       const requests = await recordDiscoveryRequests(providerId);
       expect(requests.length).toBeGreaterThan(0);

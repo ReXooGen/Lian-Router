@@ -92,7 +92,6 @@ export function AddModelModal({
   );
   const [testState, setTestState] = useState<"idle" | "testing" | "passed" | "failed">("idle");
   const [testError, setTestError] = useState("");
-  const [testMode, setTestMode] = useState<"dispatch" | "catalog" | undefined>(undefined);
 
   const trimmed = modelId.trim();
   // Accept a pasted qualified id (`cline/cline-free/…`): the provider is
@@ -108,12 +107,10 @@ export function AddModelModal({
     if (!normalized) return;
     setTestState("testing");
     setTestError("");
-    setTestMode(undefined);
     probe.mutate(
       { providerId, request: { modelId: normalized, wireFamily } },
       {
         onSuccess: (result) => {
-          setTestMode(result.mode);
           if (result.ok) {
             setTestState("passed");
           } else {
@@ -160,8 +157,7 @@ export function AddModelModal({
               setModelId(event.target.value);
               setTestState("idle");
               setTestError("");
-              setTestMode(undefined);
-            }}
+                      }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && normalized.length > 0) runTest();
             }}
@@ -199,8 +195,7 @@ export function AddModelModal({
               setWireFamily(value);
               setTestState("idle");
               setTestError("");
-              setTestMode(undefined);
-            }}
+                      }}
             options={(selectableWires ?? ["chat", "responses", "messages", "embeddings", "native"]).map(
               (value) => ({ value, label: wireLabel(value) }),
             )}
@@ -217,9 +212,7 @@ export function AddModelModal({
               color: "var(--green)",
             }}
           >
-            {testMode === "catalog"
-              ? "Model is listed in the provider's published catalog — ready to add. No completion was sent, so this does not prove it generates."
-              : "Model test passed — ready to add."}
+            Model test passed — ready to add.
           </div>
         )}
         {testState === "failed" && (
@@ -275,14 +268,13 @@ function ModelCard({
   const scheduleCopyReset = useTrackedTimeout();
 
 
-  const runProbe = (spendQuota: boolean) => {
+  const runProbe = () => {
     probe.mutate(
       {
         providerId,
         request: {
           modelId: model.modelId,
           route: model.route,
-          ...(spendQuota ? { spendQuota: true } : {}),
         },
       },
       {
@@ -291,7 +283,6 @@ function ModelCard({
             ok: result.ok,
             latencyMs: result.latencyMs,
             ...(result.kind ? { kind: result.kind } : {}),
-            ...(result.mode ? { mode: result.mode } : {}),
             ...(result.poolHost ? { poolHost: result.poolHost } : {}),
             ...(result.sample ? { sample: result.sample } : {}),
             ...(result.code ? { code: result.code } : {}),
@@ -305,21 +296,6 @@ function ModelCard({
           // to see which pool answered instead of reading the result as a
           // provider-wide verdict.
           const via = result.poolHost ? `via ${result.poolHost}` : "direct";
-          // A catalog hit says the model is published upstream, not that it
-          // generates. Reporting it as a pass would be the misleading green
-          // tick this probe exists to avoid, so it gets its own wording and the
-          // row carries the control that answers the real question.
-          if (result.mode === "catalog") {
-            if (!result.ok) {
-              toast.error(`${model.modelId} not in the published catalog · ${via}`, result.error ?? "Unknown error");
-              return;
-            }
-            toast.success(
-              `${model.modelId} · listed upstream · ${via}`,
-              "No completion was sent, so no allowance was spent.",
-            );
-            return;
-          }
           if (!result.ok) {
             // The code and the sub-reason are the actionable part: a
             // `proxy_pool_unhealthy` refusal is a routing fault the operator
@@ -632,32 +608,6 @@ function ModelCard({
                 )}
               </div>
             </div>
-            {probeView.canProve ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={probe.isPending}
-                onClick={() => runProbe(true)}
-                aria-label={`Prove ${model.modelId} generates — spends one allowance unit`}
-                title="Send one real completion through the gateway's own dispatch path. Costs one allowance unit on an address-keyed provider."
-                style={{
-                  flex: "1 1 auto",
-                  minWidth: 0,
-                  maxWidth: "100%",
-                  whiteSpace: "normal",
-                  padding: "2px 6px",
-                }}
-                icon={
-                  probe.isPending ? (
-                    <Loader2 size={11} className="animate-spin" />
-                  ) : (
-                    <FlaskConical size={11} />
-                  )
-                }
-              >
-                {probeView.proveLabel}
-              </Button>
-            ) : null}
           </div>
         )}
 
@@ -667,20 +617,16 @@ function ModelCard({
             variant="secondary"
             size="sm"
             disabled={probe.isPending}
-            onClick={() => runProbe(false)}
+            onClick={() => runProbe()}
             aria-label={`Test ${model.modelId}`}
             title={
               probe.isPending
                 ? `Probing ${model.modelId}…`
-                : probeResult?.mode === "catalog"
-                  ? probeResult.ok
-                    ? `Listed upstream in ${formatProbeDuration(probeResult.latencyMs)} — catalog check, no allowance spent`
-                    : "Not in the published catalog — click to re-check"
-                  : probeResult?.ok
-                    ? `Last probe OK in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
-                    : probeResult
-                      ? "Last probe failed — click to retry"
-                      : `Test ${model.modelId}`
+                : probeResult?.ok
+                  ? `Last probe generated in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
+                  : probeResult
+                    ? "Last probe was refused — click to retry"
+                    : `Test ${model.modelId}`
             }
             style={{ flex: 1, justifyContent: "center" }}
             icon={
@@ -688,15 +634,9 @@ function ModelCard({
                 <Loader2 size={12} className="animate-spin" />
               ) : probeResult ? (
                 probeResult.ok ? (
-                  probeResult.mode === "catalog" ? (
-                    <span style={{ display: "inline-flex", color: "var(--text-secondary)" }}>
-                      <Check size={12} />
-                    </span>
-                  ) : (
-                    <span style={{ display: "inline-flex", color: "var(--green)" }}>
-                      <CheckCircle2 size={12} />
-                    </span>
-                  )
+                  <span style={{ display: "inline-flex", color: "var(--green)" }}>
+                    <CheckCircle2 size={12} />
+                  </span>
                 ) : (
                   <span style={{ display: "inline-flex", color: "var(--red)" }}>
                     <AlertTriangle size={12} />
@@ -709,15 +649,11 @@ function ModelCard({
           >
             {probe.isPending
               ? "Thinking…"
-              : probeResult?.mode === "catalog"
-                ? probeResult.ok
-                  ? "Listed"
-                  : "Absent"
-                : probeResult?.ok
-                  ? formatProbeDuration(probeResult.latencyMs)
-                  : probeResult
-                    ? "Fail"
-                    : "Test"}
+              : probeResult?.ok
+                ? formatProbeDuration(probeResult.latencyMs)
+                : probeResult
+                  ? "Fail"
+                  : "Test"}
           </Button>
           <Button
             variant="ghost"

@@ -730,7 +730,6 @@ describe("ProviderProbingService discovery hardening", () => {
 
     await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
 
     const cooldown = await selector.isProviderCooldown("pool-burned", "opencodeft");
@@ -751,7 +750,6 @@ describe("ProviderProbingService discovery hardening", () => {
       const { probing, selector } = pooledProbe(failure);
       await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
       const cooldown = await selector.isProviderCooldown("pool-burned", "opencodeft");
       expect(cooldown.inCooldown).toBe(false);
@@ -770,123 +768,10 @@ describe("ProviderProbingService discovery hardening", () => {
 
     const result = await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
 
     expect(result.ok).toBe(true);
     expect((await selector.isProviderCooldown("pool-burned", "opencodeft")).inCooldown).toBe(false);
-  });
-
-  /**
-   * Fixture for the catalog path: one `opencodeft` provider row, a pool that
-   * reports its identity, and a fetch that records every URL it is handed so a
-   * test can prove the completion endpoint was never dialed.
-   */
-  function catalogProbe(options: { catalogIds: readonly string[]; status?: number }) {
-    const dialed: string[] = [];
-    const db = {
-      select: (_columns?: unknown) => ({
-        from: (table: unknown) => ({
-          where: (_condition?: unknown) => {
-            const rows =
-              table === providers
-                ? [{ requiresAccount: false, compatibilityProfile: null, baseUrl: null }]
-                : table === providerAccounts
-                  ? []
-                  : [];
-            return Object.assign(Promise.resolve(rows), {
-              limit: async (_n?: number) => rows,
-            });
-          },
-        }),
-      }),
-      update: (_table: unknown) => ({
-        set: (_values: unknown) => ({ where: async (_condition?: unknown) => [] }),
-      }),
-      insert: (_table: unknown) => ({ values: async (_values: unknown) => [] }),
-    };
-    const probing = probingService(db, {
-      outboundFetchFor: () => ({
-        fetch: (async (input: RequestInfo | URL) => {
-          const url = String(input);
-          dialed.push(url);
-          return new Response(
-            JSON.stringify({
-              data: options.catalogIds.map((id) => ({
-                id,
-                context_length: 200_000,
-                max_output_tokens: 8_192,
-              })),
-            }),
-            { status: options.status ?? 200, headers: { "content-type": "application/json" } },
-          );
-        }) as unknown as typeof fetch,
-        networkPoolId: "pool-catalog",
-        release: () => {},
-      }),
-    });
-    return { probing, dialed };
-  }
-
-  test("an egress-scoped probe answers from the catalog without dispatching", async () => {
-    const { probing, dialed } = catalogProbe({ catalogIds: ["mimo-v2.6-flash-free"] });
-
-    const result = await probing.probeModel("tenant-1", "opencodeft", {
-      modelId: "mimo-v2.6-flash-free",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.mode).toBe("catalog");
-    // The exit is still reported: the operator is watching rotation, and a
-    // catalog read goes through the same pool a dispatch would.
-    expect(result.networkPoolId).toBe("pool-catalog");
-    // The negative assertion this whole change exists for: a spent allowance
-    // must not be charged for a question the published catalog answers.
-    expect(dialed).toHaveLength(1);
-    expect(dialed[0]).toBe("https://opencode.ai/zen/v1/models");
-    expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
-    // No dispatch was attempted, so nothing may claim a unit was spent and no
-    // generation verdict may be present.
-    expect(result.allowanceSpent).toBeUndefined();
-    expect(result.kind).toBeUndefined();
-  });
-
-  test("an explicit false is byte-identical to an absent flag", async () => {
-    // The default is the whole safety property: every existing caller omits the
-    // field, and a caller that passes `false` explicitly must not get a
-    // different probe. Both are asserted against the dispatch double, which
-    // must record zero calls.
-    const absent = paidProbe({ kind: "generated" });
-    const explicit = paidProbe({ kind: "generated" });
-
-    const absentResult = await absent.probing.probeModel("tenant-1", "opencodeft", {
-      modelId: "mimo-v2.6-flash-free",
-    });
-    const explicitResult = await explicit.probing.probeModel("tenant-1", "opencodeft", {
-      modelId: "mimo-v2.6-flash-free",
-      spendQuota: false,
-    });
-
-    expect(absent.calls).toHaveLength(0);
-    expect(explicit.calls).toHaveLength(0);
-    // Same shape, same verdicts: the payload must not gain a field that only
-    // one of the two carries.
-    expect(Object.keys(absentResult).sort()).toEqual(Object.keys(explicitResult).sort());
-    expect(absentResult.mode).toBe("catalog");
-    expect(explicitResult.mode).toBe("catalog");
-    expect(absentResult.ok).toBe(explicitResult.ok);
-  });
-
-  test("an egress-scoped probe reports an unlisted model as absent, not as a failure to generate", async () => {
-    const { probing, dialed } = catalogProbe({ catalogIds: ["mimo-v2.6-flash-free"] });
-
-    const result = await probing.probeModel("tenant-1", "opencodeft", { modelId: "not-listed" });
-
-    expect(result.ok).toBe(false);
-    expect(result.mode).toBe("catalog");
-    expect(result.httpStatus).toBe(404);
-    expect(result.code).toBe("model_not_found");
-    expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
   });
 
   /**
@@ -975,12 +860,10 @@ describe("ProviderProbingService discovery hardening", () => {
 
     const result = await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
 
     expect(result.ok).toBe(true);
     expect(result.kind).toBe("generated");
-    expect(result.mode).toBe("dispatch");
     // The whole point of the opt-in: one completion, never a batch, never a
     // retry. A second call would spend a second allowance unit.
     expect(calls).toHaveLength(1);
@@ -1010,7 +893,6 @@ describe("ProviderProbingService discovery hardening", () => {
 
     const result = await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
 
     expect(calls).toHaveLength(1);
@@ -1040,7 +922,6 @@ describe("ProviderProbingService discovery hardening", () => {
     const single = paidProbe({ kind: "refused", error: refused, reachedUpstream: true });
     const singleResult = await single.probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
     expect(singleResult.exitsTried).toBeUndefined();
 
@@ -1052,7 +933,6 @@ describe("ProviderProbingService discovery hardening", () => {
     });
     const rotatedResult = await rotated.probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
     expect(rotatedResult.exitsTried).toBe(9);
   });
@@ -1071,7 +951,6 @@ describe("ProviderProbingService discovery hardening", () => {
 
     const result = await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
 
     expect(calls).toHaveLength(1);
@@ -1133,7 +1012,6 @@ describe("ProviderProbingService discovery hardening", () => {
 
     const result = await probing.probeModel("tenant-1", "opencodeft", {
       modelId: "mimo-v2.6-flash-free",
-      spendQuota: true,
     });
 
     expect(calls).toHaveLength(1);
@@ -1170,11 +1048,9 @@ describe("ProviderProbingService discovery hardening", () => {
     const result = await probing.probeModel("tenant-1", "openai", {
       modelId: "gpt-4o-mini",
       wireFamily: "chat",
-      spendQuota: true,
     });
 
     expect(result.ok).toBe(true);
-    expect(result.mode).toBe("dispatch");
     expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(true);
     expect(calls).toHaveLength(0);
   });
@@ -1201,51 +1077,9 @@ describe("ProviderProbingService discovery hardening", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.mode).toBe("dispatch");
     expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(true);
   });
 
-  test("test all reads the catalog once for the whole egress-scoped batch", async () => {
-    const { probing, dialed } = catalogProbe({
-      catalogIds: ["mimo-v2.6-flash-free", "big-pickle"],
-    });
-
-    const batch = await probing.probeAllModels("tenant-1", "opencodeft", [
-      "mimo-v2.6-flash-free",
-      "big-pickle",
-      "not-listed",
-    ]);
-
-    // One catalog request for three models: the batch must not multiply the
-    // allowance cost the way per-model dispatches did.
-    expect(dialed).toHaveLength(1);
-    expect(dialed[0]).toBe("https://opencode.ai/zen/v1/models");
-    expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
-    expect(batch.results.map((entry) => entry.mode)).toEqual(["catalog", "catalog", "catalog"]);
-    expect(batch.results.map((entry) => entry.ok)).toEqual([true, true, false]);
-  });
-
-  test("the paid flag cannot reach the batch: test all never dispatches", async () => {
-    // `probeAllModels` takes no request body, but the guarantee must be
-    // asserted rather than assumed: the batch is the one place a per-model
-    // spend would multiply, so it must stay a single catalog read even when a
-    // caller arrives asking for paid probes.
-    const { probing, dialed } = catalogProbe({
-      catalogIds: ["mimo-v2.6-flash-free", "big-pickle"],
-    });
-
-    const batch = await probing.probeAllModels("tenant-1", "opencodeft", [
-      "mimo-v2.6-flash-free",
-      "big-pickle",
-    ]);
-
-    expect(dialed).toHaveLength(1);
-    expect(dialed[0]).toBe("https://opencode.ai/zen/v1/models");
-    expect(dialed.some((url) => url.includes("/chat/completions"))).toBe(false);
-    // Every entry is a listing, and none claims an allowance was charged.
-    expect(batch.results.every((entry) => entry.mode === "catalog")).toBe(true);
-    expect(batch.results.some((entry) => entry.ok === false)).toBe(false);
-  });
 
   test("registry exposes discovery capabilities for wired providers", async () => {
     const registry = createDefaultProviderRegistry();

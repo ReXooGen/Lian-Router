@@ -37,6 +37,7 @@ import {
  * (`x-opencode-*` correlation IDs, `user-agent: opencode`). Go is
  * intentionally API-key-only.
  */
+const INFERENCE_PATH_PREFIX = "/inference/v1";
 const ZEN_PATH_PREFIX = "/zen/v1";
 const GO_PATH_PREFIX = "/zen/go/v1";
 
@@ -207,19 +208,25 @@ export const OPENCODE_GO_SPEC: ApiKeyProviderSpec = opencodeSpec("opencodego");
 // of a same-named model from another reseller. Only rows the snapshot predates
 // (a model newer than the snapshot) keep explicit `ctx`/`out`.
 //
-// The free tier rotates, and only one signal proves a row is alive: it
-// generates. `403 FreeTierError` means the gate *accepted* the id — it says
-// nothing about whether the model still exists — while `410 ModelDeprecated`
-// is the tombstone. `GET /zen/v1/models` is the published roster and is
-// unauthenticated, but presence in it is not proof of life either: it lags the
-// serving path in both directions. Roster below measured 2026-10-25 by
-// generating once per id through the real `opencode.exe` 1.18.34, not by
-// probing the gate.
-const sharedZenChat: readonly ModelDefinition[] = [
-  defineModel({ id: "big-pickle", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, vision: true, reasoning: true }),
-  // Live on the shared `/zen/v1` base for both tiers. Not in the snapshot yet,
-  // so its limits stay explicit (authoritative models.dev row: 200k/32k, free)
-  // and `free` pins the cost rather than leaving it unresolved. Tenant aliases
+// The free roster rotates constantly. `GET /inference/v1/models` publishes ~49
+// `-free` ids, but presence in that list is not proof of life: it lags the
+// serving path in both directions. The only signal that proves a row is alive is
+// that it generates, so the roster below is the set that answered a real
+// completion — 429 `FreeUsageLimitError` (the gate accepted the request and the
+// id exists; only the address is spent) or a streamed 200. Ids that answered
+// `400 Model is unavailable` were dropped: they are tombstones the catalog still
+// advertises, and dispatching them returns a dead request indistinguishable from
+// an outage.
+//
+// Measured 2026-11-11 against `https://opencode.ai/inference/v1/chat/completions`
+// with the CLI fingerprint. Re-measure with the same one-completion-per-id pass
+// when the roster turns over; the alive set is what the gate answers, not what
+// the catalog prints.
+/** The paid and free tiers serve the same ids from different base prefixes. */
+function sharedChatRows(prefix: string): readonly ModelDefinition[] {
+  return [
+  defineModel({ id: "big-pickle", providerId: "opencode", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, vision: true, reasoning: true }),
+  // mimo-v2.6-flash-free: 200k/32k, text+image+audio+video in. Tenant aliases
   // and fallback combos target this id by name, so dropping the row silently
   // breaks them: `seedBundledModels` prunes any `builtin` row the catalog no
   // longer declares, and routing then reports `model_not_found` for the alias.
@@ -227,43 +234,47 @@ const sharedZenChat: readonly ModelDefinition[] = [
   // allowance is per source address on a rolling daily window, so the same row
   // serves again from another egress pool or after the reset, and the 429 is
   // reported as the gate it is (`classifyRateLimitScope` → `network`).
-  defineModel({ id: "mimo-v2.6-flash-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 200000, out: 32000, vision: true, document: true, audio: true, reasoning: true, free: true }),
+  defineModel({ id: "mimo-v2.6-flash-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 200000, out: 32000, vision: true, audio: true, reasoning: true, free: true }),
   // beam-free: 1M/128k, text-only MoE reasoning.
-  defineModel({ id: "beam-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1048576, out: 131072, reasoning: true, free: true }),
-  // flint-40b-free: 256k/64k, text-only. Generates on the chat wire (measured
-  // 2026-10-25); the limits are models.dev's published row for the id, not a
-  // probe result. Absent from the committed snapshot, so they stay explicit
-  // rather than inheriting the generic default.
-  defineModel({ id: "flint-40b-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 262144, out: 65536, reasoning: true, free: true }),
+  defineModel({ id: "beam-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 1048576, out: 131072, reasoning: true, free: true }),
+  // flint-40b-free: 256k/64k, text-only.
+  defineModel({ id: "flint-40b-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 262144, out: 65536, reasoning: true, free: true }),
   // deepseek-v4.1-flash-free / glm-5.3-flash-free: the `-free` ids are the free
-  // tier's current serving of the V4.1-Flash / GLM-5.3-Flash families (200k/32k
-  // each, per models.dev). The bare `deepseek-v4.1-flash` / `glm-5.3-flash` ids
-  // remain Zen/paid-tier rows on the same base and are NOT served to the free
-  // tier - dispatching them from this catalog answered `502 Unexpected server
-  // error` upstream, a dead request indistinguishable from an outage.
-  defineModel({ id: "deepseek-v4.1-flash-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 200000, out: 32000, vision: true, reasoning: true, free: true }),
-  defineModel({ id: "glm-5.3-flash-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 200000, out: 32000, vision: true, document: true, audio: true, reasoning: true, free: true }),
-  // nemotron-3.5-super-vl-free: 1M/128k, text+image (snapshot predates it).
-  defineModel({ id: "nemotron-3.5-super-vl-free", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, ctx: 1048576, out: 131072, vision: true, reasoning: true, free: true }),
+  // tier's current serving of the V4.1-Flash / GLM-5.3-Flash families. The bare
+  // `deepseek-v4.1-flash` / `glm-5.3-flash` ids remain Zen/paid-tier rows on the
+  // same base and are NOT served to the free tier — dispatching them from this
+  // catalog answered `502 Unexpected server error` upstream.
+  defineModel({ id: "deepseek-v4.1-flash-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 200000, out: 32000, vision: true, reasoning: true, free: true }),
+  defineModel({ id: "glm-5.3-flash-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 200000, out: 32000, vision: true, reasoning: true, free: true }),
+  // iceman-free: 256k/128k, text-only reasoning.
+  defineModel({ id: "iceman-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 262144, out: 131072, reasoning: true, free: true }),
+  // inkling-2-small-free: 1M/128k, text+image.
+  defineModel({ id: "inkling-2-small-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 1048576, out: 131072, vision: true, reasoning: true, free: true }),
+  // longcat-2.5-free: 1M/256k, text+image.
+  defineModel({ id: "longcat-2.5-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 1000000, out: 262144, vision: true, reasoning: true, free: true }),
+  // minimax-m3.1-flash-free: 1M/512k, text+image+video.
+  defineModel({ id: "minimax-m3.1-flash-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 1000000, out: 512000, vision: true, reasoning: true, free: true }),
+  // nemotron-3.5-super-vl-free: 1M/128k, text+image.
+  defineModel({ id: "nemotron-3.5-super-vl-free", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 1048576, out: 131072, vision: true, reasoning: true, free: true }),
   // nemotron-3.5-lightning-free: 256k/256k, text-only (snapshot-covered).
-  defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true, free: true }),
+  defineModel({ id: "nemotron-3.5-lightning-free", providerId: "opencode", wireFamily: "chat", endpoint: `${prefix}/chat/completions`, ctx: 262144, out: 262144, reasoning: true, free: true }),
 ];
+}
 
 const MUSE_SPARK_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 export const OPENCODE_FREE_MODELS: readonly ModelDefinition[] = [
-  ...sharedZenChat,
-  // 1M/128k, text-only; snapshot-covered (`opencode` row). Absent from the
-  // current `/zen/v1/models` list but still answering 200 on
-  // `/zen/v1/chat/completions` (verified 2026-10-24), so the row stays: the
-  // list endpoint lags what the serving path accepts.
-  defineModel({ id: "nemotron-3-ultra-free", providerId: "opencode", wireFamily: "chat", endpoint: `${ZEN_PATH_PREFIX}/chat/completions`, reasoning: true }),
-  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
-  defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${ZEN_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
+  ...sharedChatRows(INFERENCE_PATH_PREFIX),
+  // The two `muse-spark-*-contributor-free` ids stay even though the chat probe
+  // can only report `Model is unavailable` for them: they are Responses-wire
+  // rows, never chat rows, and the Responses endpoint is what serves them. A
+  // chat probe against a Responses id is not evidence about the id.
+  defineModel({ id: "muse-spark-1.2-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${INFERENCE_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
+  defineModel({ id: "muse-spark-1.3-contributor-free", providerId: "opencode", wireFamily: "responses", endpoint: `${INFERENCE_PATH_PREFIX}/responses`, vision: true, reasoning: true, reasoningEfforts: MUSE_SPARK_REASONING_EFFORTS }),
 ];
 
 export const OPENCODE_ZEN_MODELS: readonly ModelDefinition[] = [
-  ...sharedZenChat,
+  ...sharedChatRows(ZEN_PATH_PREFIX),
   // Paid-tier serving of the same families: snapshot-covered rows, no explicit
   // limits. The free tier must not claim these ids - see the note on
   // `deepseek-v4.1-flash-free` above.

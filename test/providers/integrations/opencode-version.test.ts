@@ -51,7 +51,13 @@ describe("OpenCode version and fingerprinting", () => {
     expect(headers["x-opencode-session"]?.startsWith("ses_")).toBe(true);
     expect(headers["x-opencode-session"]?.length).toBe(30);
     expect(headers["x-opencode-request"]?.startsWith("msg_")).toBe(true);
-    expect(headers["user-agent"]).toBe(`opencode/${VERSION_SOURCES.opencode.fallback}`);
+    // The CLI's four-segment shape: opencode/<channel>/<version>/<name>.
+    expect(headers["user-agent"]).toBe(
+      `opencode/latest/${VERSION_SOURCES.opencode.fallback}/cli`,
+    );
+    // The session identity travels under every alias the gate reads.
+    expect(headers["x-session-affinity"]).toBe(headers["x-opencode-session"]);
+    expect(headers["x-opencode-session-id"]).toBe(headers["x-opencode-session"]);
   });
 
   test("resolves version from npm registry", async () => {
@@ -63,7 +69,7 @@ describe("OpenCode version and fingerprinting", () => {
     await resolveOpenCodeVersion(fetcher);
     expect(getOpenCodeVersion()).toBe("1.19.0");
     const headers = buildOpenCodeHeaders();
-    expect(headers["user-agent"]).toBe("opencode/1.19.0");
+    expect(headers["user-agent"]).toBe("opencode/latest/1.19.0/cli");
   });
 
   test("keeps fallback on network failure", async () => {

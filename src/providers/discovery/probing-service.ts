@@ -106,27 +106,6 @@ export interface ProbeOutboundBinding {
   readonly release?: () => void;
 }
 
-/**
- * Outcome of one credential-free catalog read, before a model id is looked up
- * in it. Kept separate from `ProbeModelResult` because the batch path reuses a
- * single read across every model it reports on.
- */
-type PublishedCatalog =
-  | {
-      readonly ok: true;
-      readonly models: readonly ModelDefinition[];
-      readonly latencyMs: number;
-      readonly networkPoolId?: string;
-    }
-  | {
-      readonly ok: false;
-      readonly latencyMs: number;
-      readonly httpStatus: number;
-      readonly code: string;
-      readonly error: string;
-      readonly networkPoolId?: string;
-    };
-
 export type ProbeOutboundResolver = (
   tenantId: string,
   providerId?: string,
@@ -228,62 +207,6 @@ function asOutboundBinding(
   return typeof resolved === "function" ? { fetch: resolved } : resolved;
 }
 
-/**
- * Turns one catalog read into a probe result for one model id.
- *
- * Lives outside the service because the batch path reuses a single read across
- * every model it reports on, and both paths must produce the identical verdict
- * for the identical evidence.
- *
- * The exit label is part of the answer in both modes: an operator comparing
- * probes across a rotating pool needs to know which address answered, and a
- * failed label lookup must not discard a verdict that was already measured.
- */
-async function catalogProbeVerdict(
-  db: LianRouterDatabase,
-  catalog: PublishedCatalog,
-  providerId: string,
-  modelId: string,
-): Promise<ProbeModelResult> {
-  const poolHost =
-    catalog.networkPoolId === undefined
-      ? undefined
-      : await loadPoolEgressHost(db, catalog.networkPoolId).catch(() => undefined);
-  const poolFields = {
-    ...(catalog.networkPoolId === undefined ? {} : { networkPoolId: catalog.networkPoolId }),
-    ...(poolHost === undefined ? {} : { poolHost }),
-  };
-  if (!catalog.ok) {
-    return {
-      ok: false,
-      mode: "catalog",
-      latencyMs: catalog.latencyMs,
-      httpStatus: catalog.httpStatus,
-      code: catalog.code,
-      error: catalog.error,
-      ...poolFields,
-    };
-  }
-  if (!catalog.models.some((entry) => entry.modelId === modelId)) {
-    return {
-      ok: false,
-      mode: "catalog",
-      latencyMs: catalog.latencyMs,
-      httpStatus: 404,
-      code: "model_not_found",
-      error: `${modelId} is not in the published ${providerId} catalog. No completion was sent, so no allowance was spent.`,
-      ...poolFields,
-    };
-  }
-  return {
-    ok: true,
-    mode: "catalog",
-    latencyMs: catalog.latencyMs,
-    httpStatus: 200,
-    ...poolFields,
-  };
-}
-
 export class ProviderProbingService {
   private readonly db: LianRouterDatabase;
   private readonly telemetryBuffer: TelemetryBatchBuffer | undefined;
@@ -342,116 +265,6 @@ export class ProviderProbingService {
     return staticEndpointForWire(this.bundledModelCatalog, providerId, wireFamily);
   }
 
-  /**
-   * Reads the provider's published model catalog through the same outbound
-   * binding a dispatch would use.
-   *
-   * Why this exists: an egress-scoped provider's allowance is keyed on the
-   * source address, so a probe that dispatches a completion spends one unit of
-   * a quota the operator cannot get back — a spent `opencodeft` address answers
-   * `429 FreeUsageLimitError` with a `Retry-After` measured in hours, and the
-   * console's Test button spent one unit per click and one per model on "Test
-   * all" until every recorded pool had never succeeded. The catalog route is
-   * unauthenticated and answers from a spent address, so it can answer the
-   * narrower question — "is this model published upstream?" — for free.
-   *
-   * The binding is still acquired from `outboundFetchFor`, so a catalog probe
-   * exercises the same egress and reports the same pool the operator would see
-   * on a dispatch; what it does not do is send a completion.
-   */
-  private async loadPublishedCatalog(
-    tenantId: string,
-    providerId: string,
-    providerWireRow: ProbeProviderRow | undefined,
-  ): Promise<PublishedCatalog> {
-    const startedAt = Date.now();
-    const outbound = asOutboundBinding(await this.outboundFetchFor(tenantId, providerId));
-    const networkPoolId = outbound.networkPoolId;
-    // A catalog failure proves nothing about the exit's allowance, so this path
-    // deliberately does not cool the pool: only a real upstream 429 on a
-    // completion says the address is spent, and that verdict belongs to the
-    // dispatch path.
-    try {
-      const resolver = await this.providerRegistry.resolveModelDiscovery(providerId);
-      if (!resolver) {
-        return {
-          ok: false,
-          latencyMs: Date.now() - startedAt,
-          httpStatus: 500,
-          code: "internal_error",
-          error:
-            `Provider ${providerId} has no model-discovery route, so a probe cannot answer without spending an allowance unit. ` +
-            `Opt into a real dispatch to probe it anyway.`,
-          ...(networkPoolId === undefined ? {} : { networkPoolId }),
-        };
-      }
-      const requiresCredential = this.providerRegistry.modelDiscoveryRequiresCredential(providerId);
-      const secret = requiresCredential ? await this.usableAccountSecret(tenantId, providerId) : "";
-      if (requiresCredential && secret === undefined) {
-        return {
-          ok: false,
-          latencyMs: Date.now() - startedAt,
-          httpStatus: 503,
-          code: "accounts_unavailable",
-          error: `Model discovery needs a usable (active, non-cooldown) ${providerId} account first`,
-          ...(networkPoolId === undefined ? {} : { networkPoolId }),
-        };
-      }
-      const effectiveBaseUrl = providerWireRow?.baseUrl ?? providerBaseUrl(providerId) ?? "";
-      let discovered: readonly ModelDefinition[] | null;
-      try {
-        discovered = await resolver({
-          baseUrl: effectiveBaseUrl,
-          credential: secret ?? "",
-          fetcher: asFetchLike(outbound.fetch),
-        });
-      } catch (error) {
-        return {
-          ok: false,
-          latencyMs: Date.now() - startedAt,
-          httpStatus: 502,
-          code: "transport_unavailable",
-          error: `Model catalog unavailable for ${providerId}: ${error instanceof Error ? error.message : "unknown error"}`,
-          ...(networkPoolId === undefined ? {} : { networkPoolId }),
-        };
-      }
-      if (!discovered) {
-        return {
-          ok: false,
-          latencyMs: Date.now() - startedAt,
-          httpStatus: 502,
-          code: "transport_unavailable",
-          error: `Model catalog unavailable for ${providerId}: the catalog route returned no usable models`,
-          ...(networkPoolId === undefined ? {} : { networkPoolId }),
-        };
-      }
-      return {
-        ok: true,
-        models: discovered,
-        latencyMs: Date.now() - startedAt,
-        ...(networkPoolId === undefined ? {} : { networkPoolId }),
-      };
-    } finally {
-      outbound.release?.();
-    }
-  }
-
-  /**
-   * Answers one probe from the published catalog.
-   *
-   * `ok` here means the model is published upstream. It does not mean the model
-   * generates, and the result carries `mode: "catalog"` so no caller can render
-   * this as a successful generation.
-   */
-  private async probePublishedCatalog(
-    tenantId: string,
-    providerId: string,
-    modelId: string,
-    providerWireRow: ProbeProviderRow | undefined,
-  ): Promise<ProbeModelResult> {
-    const catalog = await this.loadPublishedCatalog(tenantId, providerId, providerWireRow);
-    return await catalogProbeVerdict(this.db, catalog, providerId, modelId);
-  }
 
   /**
    * The opted-in path: one real completion, and the honest verdict it yields.
@@ -563,7 +376,6 @@ export class ProviderProbingService {
       // allowance was charged.
       return {
         ok: false,
-        mode: "dispatch",
         kind: "refused",
         latencyMs: Date.now() - startedAt,
         httpStatus: 502,
@@ -659,7 +471,6 @@ export class ProviderProbingService {
       ...(account.accountId ? { accountId: account.accountId } : {}),
       ok,
       kind,
-      mode: "dispatch",
       latencyMs: Date.now() - startedAt,
       httpStatus,
       ...(allowanceSpent ? { allowanceSpent: true as const } : {}),
@@ -697,25 +508,18 @@ export class ProviderProbingService {
     const providerWireRow = await this.loadProviderWireRow(providerId);
     const requiresAccount = providerWireRow?.requiresAccount ?? true;
 
-    // An egress-scoped provider's allowance is keyed on the source address, so a
-    // completion here costs one unit of a quota the operator cannot buy back.
-    // Answer from the published catalog instead unless the caller explicitly
-    // opted into spending that unit. The catalog route costs no allowance, which
-    // is what stops the console's diagnostic surface from being the thing that
-    // empties the address pool.
-    if (isEgressScopedProvider(providerId) && request.spendQuota !== true) {
-      return await this.probePublishedCatalog(tenantId, providerId, modelId, providerWireRow);
-    }
-
-    // The operator asked the only question the catalog cannot answer. Take the
-    // paid path: one minimal completion through the shared lease layer, no
-    // candidate failover, and no retry-after-backoff. An egress-keyed 429 is the
-    // one exception — that attempt produced no answer and the next exit has its
-    // own allowance, so the dispatcher re-leases the same candidate. `spendQuota`
-    // is a no-op for a credential-keyed provider — it already dispatches below,
-    // and routing it through this branch too would change the account selection
-    // and failover behaviour its probes have always had.
-    if (request.spendQuota === true && isEgressScopedProvider(providerId)) {
+    // A probe answers one question — does this model generate — and only a real
+    // completion answers it. A catalog lookup was offered here as a free
+    // substitute for an egress-scoped provider, but a listing is not evidence
+    // about generation: it produced an intermediate state the console had to
+    // explain, and the operator had to click a second button to get the answer
+    // they asked for. The probe now always dispatches.
+    //
+    // Egress-scoped providers get the leaner single-candidate dispatch: their
+    // allowance is keyed on the source address, so one attempt is one honest
+    // answer. Credential-keyed providers keep the account failover path below,
+    // which is the behaviour their probes have always had.
+    if (isEgressScopedProvider(providerId)) {
       return await this.probeByGeneration(
         tenantId,
         providerId,
@@ -1013,11 +817,9 @@ export class ProviderProbingService {
       ...(accountId ? { accountId } : {}),
       ok,
       // Reaching here means a completion was dispatched, so `ok` is the
-      // generation verdict. The mode is stated rather than implied so no
-      // consumer can confuse this with a catalog hit. No `kind` here: this
-      // path's payload is what credential-keyed providers have always returned,
-      // and the opt-in flag must be a no-op for them.
-      mode: "dispatch",
+      // generation verdict. No `kind` on this path: its payload is what
+      // credential-keyed providers have always returned, and this route's
+      // callers read `ok` directly.
       latencyMs,
       httpStatus,
       ...(code === undefined ? {} : { code }),
@@ -1382,33 +1184,16 @@ export class ProviderProbingService {
     const [firstModelId, ...restModelIds] = modelIds;
     if (firstModelId === undefined) return { providerId, results };
 
-    // "Test all" on an egress-scoped provider used to dispatch one completion
-    // per model, so a nine-model catalog spent nine exits per click. The catalog
-    // answers the same question for the whole batch, so read it once here and
-    // look every id up in that single response — one allowance-free request
-    // instead of N paid ones.
-    if (isEgressScopedProvider(providerId)) {
-      const providerWireRow = await this.loadProviderWireRow(providerId);
-      const catalog = await this.loadPublishedCatalog(tenantId, providerId, providerWireRow);
-      for (const modelId of modelIds) {
-        const outcome = await catalogProbeVerdict(this.db, catalog, providerId, modelId);
-        results.push({
-          modelId,
-          ok: outcome.ok,
-          mode: "catalog",
-          latencyMs: outcome.latencyMs,
-          ...(outcome.error ? { error: outcome.error } : {}),
-        });
-      }
-      return { providerId, results };
-    }
-
+    // Every model is dialed for real, including on an egress-scoped provider.
+    // The old shortcut read the published catalog once and reported a listing
+    // for the whole batch, which answered a different question than the button
+    // asks and left the console rendering a state that was not "generated" or
+    // "refused". One model, one completion, one verdict.
     const runOne = async (modelId: string): Promise<void> => {
       const outcome = await this.probeModel(tenantId, providerId, { modelId });
       results.push({
         modelId,
         ok: outcome.ok,
-        ...(outcome.mode ? { mode: outcome.mode } : {}),
         latencyMs: outcome.latencyMs,
         ...(outcome.error ? { error: outcome.error } : {}),
       });

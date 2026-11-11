@@ -107,7 +107,6 @@ const probeModelBody = t.Object({
   reasoningEffort: t.Optional(literalUnion(PROBE_REASONING_EFFORTS)),
   maxOutputTokens: t.Optional(t.Integer({ minimum: 1, maximum: 131072 })),
   stream: t.Optional(t.Boolean()),
-  spendQuota: t.Optional(t.Boolean()),
 });
 const byokConnectionTestBody = t.Object({
   baseUrl: t.String(),

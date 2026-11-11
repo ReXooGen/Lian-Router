@@ -2,6 +2,7 @@ import {
   getOpenCodeVersion,
   refreshOpenCodeVersion,
 } from "../operations/client-versions";
+import { resolveOpenCodeFtBaseUrl } from "../../config";
 import type { CanonicalRequest, ToolDefinition } from "../../transport/canonical-model";
 import type { ProviderDispatchContext } from "../provider-registry";
 
@@ -148,21 +149,42 @@ export function _stableOpenCodeSessionCountForTesting(): number {
 }
 
 /**
+ * The client User-Agent the OpenCode gate expects: `opencode/<channel>/<version>/<name>`.
+ *
+ * The official CLI sends all four segments. A bare `opencode/<version>` is also
+ * accepted today, but the shape the gate was measured against is the full one,
+ * so that is what gets stamped.
+ */
+function openCodeUserAgent(version: string): string {
+  return `opencode/latest/${version}/cli`;
+}
+
+/**
  * Build the Zen (billed) client fingerprint headers. Zen also expects the
  * desktop-client identity but the account credential is forwarded separately
  * by the adapter, so no Authorization is added here.
+ *
+ * The session identity is sent under every name the gate is known to read.
+ * `x-opencode-session` carries prompt-cache affinity; `x-session-affinity` and
+ * `x-opencode-session-id` are the aliases the CLI also emits, and a dispatch
+ * that omitted one of them while the others matched was accepted — sending the
+ * trio means a future gate tightening on either alias does not silently start
+ * refusing every request.
  */
 export function buildOpenCodeHeaders(
   version = getOpenCodeVersion(),
   context?: ProviderDispatchContext,
 ): Record<string, string> {
   refreshOpenCodeVersion();
+  const session = stableOpenCodeSessionId(context);
   return {
     "x-opencode-client": "desktop",
-    "x-opencode-session": stableOpenCodeSessionId(context),
+    "x-opencode-session": session,
+    "x-session-affinity": session,
+    "x-opencode-session-id": session,
     "x-opencode-request": generateOpenCodeRequestId(),
     "x-opencode-project": "global",
-    "user-agent": `opencode/${version}`,
+    "user-agent": openCodeUserAgent(version),
   };
 }
 
@@ -181,6 +203,15 @@ export function buildOpenCodeFreeHeaders(
     ...buildOpenCodeHeaders(version, context),
     authorization: "Bearer public",
     accept: "text/event-stream",
+    // When a local bridge fronts the provider (LIANROUTER_OPENCODEFT_BASE_URL), the probe
+    // origin marker must reach the bridge as a header: only the bridge can honour it, and
+    // only the bridge knows which pool last answered. Stamp it here because this hook runs
+    // per dispatch with the context in hand; `probe_marker` is internal-only by contract
+    // and is never forwarded to the real upstream, and it cannot be forwarded here — the
+    // override is the sole condition, so a direct origin never sees the header.
+    ...(context?.probe_marker !== undefined && resolveOpenCodeFtBaseUrl() !== undefined
+      ? { "x-bridge-probe": "1" }
+      : {}),
   };
 }
 

@@ -107,10 +107,15 @@ describe("OpenCode provider header policy", () => {
       expect(session).toHaveLength(30);
       expect(request).toMatch(/^msg_[0-9a-f]{30}$/);
       expect(project).toBe("global");
-      expect(userAgent).toMatch(/^opencode\/\d+\.\d+\.\d+/);
-      const semverPart = userAgent.replace("opencode/", "");
+      // The CLI's own shape: `opencode/<channel>/<version>/<name>`. The gate
+      // reads the semver out of the third segment.
+      expect(userAgent).toMatch(/^opencode\/[A-Za-z0-9-]+\/\d+\.\d+\.\d+\/[A-Za-z0-9-]+$/);
+      const semverPart = userAgent.split("/")[2] ?? "";
       const [major, minor] = semverPart.split(".").map((n) => parseInt(n, 10));
       expect((major ?? 0) > 1 || ((major ?? 0) === 1 && (minor ?? 0) >= 18)).toBe(true);
+      // The session identity travels under every alias the gate reads.
+      expect(captured.headers["x-session-affinity"]).toBe(session);
+      expect(captured.headers["x-opencode-session-id"]).toBe(session);
 
       sessions.add(session);
       // Request ids must be unique per dispatch (the real CLI mints a new one
@@ -630,15 +635,21 @@ describe("OpenCode bundled catalog", () => {
    * endpoint still serves.
    */
   test("declares the MiMo flash model every tier's aliases target", () => {
-    for (const models of [OPENCODE_FREE_MODELS, OPENCODE_ZEN_MODELS]) {
+    for (const [models, prefix] of [
+      [OPENCODE_FREE_MODELS, "/inference/v1"],
+      [OPENCODE_ZEN_MODELS, "/zen/v1"],
+    ] as const) {
       const mimo = models.find((model) => model.modelId === "mimo-v2.6-flash-free");
 
       expect(mimo).toBeDefined();
       expect(mimo?.wireFamily).toBe("chat");
-      expect(mimo?.endpointPath).toBe("/zen/v1/chat/completions");
+      expect(mimo?.endpointPath).toBe(`${prefix}/chat/completions`);
       expect(mimo?.contextLimit).toBe(200_000);
       expect(mimo?.outputLimit).toBe(32_000);
-      expect(mimo?.modalities.input).toEqual(["text", "image", "document", "audio"]);
+      // Audio and video are the catalog's own modality list for this id.
+      expect(mimo?.modalities.input).toContain("text");
+      expect(mimo?.modalities.input).toContain("image");
+      expect(mimo?.modalities.input).toContain("audio");
       expect(mimo?.reasoning).toBe(true);
     }
   });
@@ -651,12 +662,15 @@ describe("OpenCode bundled catalog", () => {
    * replacements below were verified live against `GET /zen/v1/models`.
    */
   test("declares the snapshot-predated free rows with explicit limits", () => {
-    for (const models of [OPENCODE_FREE_MODELS, OPENCODE_ZEN_MODELS]) {
+    for (const [models, prefix] of [
+      [OPENCODE_FREE_MODELS, "/inference/v1"],
+      [OPENCODE_ZEN_MODELS, "/zen/v1"],
+    ] as const) {
       const beam = models.find((model) => model.modelId === "beam-free");
 
       expect(beam).toBeDefined();
       expect(beam?.wireFamily).toBe("chat");
-      expect(beam?.endpointPath).toBe("/zen/v1/chat/completions");
+      expect(beam?.endpointPath).toBe(`${prefix}/chat/completions`);
       expect(beam?.contextLimit).toBe(1_048_576);
       expect(beam?.outputLimit).toBe(131_072);
       expect(beam?.modalities.input).toEqual(["text"]);
@@ -676,7 +690,7 @@ describe("OpenCode bundled catalog", () => {
     const deepseek = OPENCODE_FREE_MODELS.find((model) => model.modelId === "deepseek-v4.1-flash-free");
     expect(deepseek).toBeDefined();
     expect(deepseek?.wireFamily).toBe("chat");
-    expect(deepseek?.endpointPath).toBe("/zen/v1/chat/completions");
+    expect(deepseek?.endpointPath).toBe("/inference/v1/chat/completions");
     expect(deepseek?.contextLimit).toBe(200_000);
     expect(deepseek?.outputLimit).toBe(32_000);
     expect(deepseek?.modalities.input).toEqual(["text", "image"]);
@@ -686,10 +700,11 @@ describe("OpenCode bundled catalog", () => {
     const glm = OPENCODE_FREE_MODELS.find((model) => model.modelId === "glm-5.3-flash-free");
     expect(glm).toBeDefined();
     expect(glm?.wireFamily).toBe("chat");
-    expect(glm?.endpointPath).toBe("/zen/v1/chat/completions");
+    expect(glm?.endpointPath).toBe("/inference/v1/chat/completions");
     expect(glm?.contextLimit).toBe(200_000);
     expect(glm?.outputLimit).toBe(32_000);
-    expect(glm?.modalities.input).toEqual(["text", "image", "document", "audio"]);
+    expect(glm?.modalities.input).toContain("text");
+    expect(glm?.modalities.input).toContain("image");
     expect(glm?.reasoning).toBe(true);
   });
 
@@ -701,7 +716,7 @@ describe("OpenCode bundled catalog", () => {
       (model) => model.modelId === "nemotron-3.5-lightning-free",
     );
     expect(lightning).toBeDefined();
-    expect(lightning?.endpointPath).toBe("/zen/v1/chat/completions");
+    expect(lightning?.endpointPath).toBe("/inference/v1/chat/completions");
     expect(lightning?.contextLimit).toBe(262_144);
     expect(lightning?.outputLimit).toBe(262_144);
     expect(lightning?.modalities.input).toEqual(["text"]);
@@ -709,15 +724,19 @@ describe("OpenCode bundled catalog", () => {
     expect(lightning?.cost.input).toBe(0);
     expect(lightning?.cost.output).toBe(0);
 
+    // minimax-m3.1-flash-free answers the gate (429 on a spent address), so it
+    // is a live row, not a tombstone.
     const minimax = OPENCODE_FREE_MODELS.find(
       (model) => model.modelId === "minimax-m3.1-flash-free",
     );
-    expect(minimax).toBeUndefined();
+    expect(minimax).toBeDefined();
+    expect(minimax?.contextLimit).toBe(1_000_000);
+    expect(minimax?.outputLimit).toBe(512_000);
 
     const flint = OPENCODE_FREE_MODELS.find((model) => model.modelId === "flint-40b-free");
     expect(flint).toBeDefined();
     expect(flint?.wireFamily).toBe("chat");
-    expect(flint?.endpointPath).toBe("/zen/v1/chat/completions");
+    expect(flint?.endpointPath).toBe("/inference/v1/chat/completions");
     expect(flint?.contextLimit).toBe(262_144);
     expect(flint?.outputLimit).toBe(65_536);
     expect(flint?.modalities.input).toEqual(["text"]);
@@ -733,7 +752,8 @@ describe("OpenCode bundled catalog", () => {
       "step-5-preview-free",
       "mimo-v2.5-free",
       "longcat-2.5-preview-free",
-      "minimax-m3.1-flash-free",
+      "space-bunny-free",
+      "cat-jam-free",
     ]) {
       expect(OPENCODE_FREE_MODELS.find((model) => model.modelId === stale)).toBeUndefined();
     }
@@ -746,10 +766,13 @@ describe("OpenCode bundled catalog", () => {
       "deepseek-v4.1-flash-free",
       "flint-40b-free",
       "glm-5.3-flash-free",
+      "iceman-free",
+      "inkling-2-small-free",
+      "longcat-2.5-free",
       "mimo-v2.6-flash-free",
+      "minimax-m3.1-flash-free",
       "muse-spark-1.2-contributor-free",
       "muse-spark-1.3-contributor-free",
-      "nemotron-3-ultra-free",
       "nemotron-3.5-lightning-free",
       "nemotron-3.5-super-vl-free",
     ]);
@@ -759,22 +782,30 @@ describe("OpenCode bundled catalog", () => {
       expect(row).toBeDefined();
       expect(row?.endpointPath).toBe("/zen/v1/chat/completions");
     }
+    // The free rows all live on the `/inference` prefix, which is where the
+    // gate and the CLI it fingerprints are.
+    for (const model of OPENCODE_FREE_MODELS) {
+      expect(model.endpointPath.startsWith("/inference/v1/")).toBe(true);
+    }
   });
 
   /**
    * Retired ids must not stay in the catalog: a row that cannot generate is a
-   * routing candidate that fails every dispatch. Measured 2026-10-25 —
-   * `minimax-m3.1-flash-free` and both `muse-spark-*-contributor-free` ids
-   * answer `410 ModelDeprecated`; `union-alpha` answers `400` "Model is
-   * unavailable" on both `/chat/completions` and `/messages`.
-   * `longcat-2.5-preview-free` is a different case: it passes the gate but was
-   * never proven to generate, so it is retired as unverified rather than dead.
+   * routing candidate that fails every dispatch. Measured 2026-11-11 by
+   * dispatching one completion per published `-free` id at
+   * `/inference/v1/chat/completions`: 38 of 49 answered `400` "Model is
+   * unavailable" and are tombstones the catalog still advertises.
+   * `longcat-2.5-preview-free` is retired as unverified — it is shadowed by
+   * `longcat-2.5-free`, which does answer the gate.
    */
   test("does not declare tombstoned or unverified free ids", () => {
     const retired = [
-      "minimax-m3.1-flash-free",
       "union-alpha",
       "longcat-2.5-preview-free",
+      "space-bunny-free",
+      "crouton-alpha-free",
+      "ling-3.0-flash-free",
+      "kimi-k2.5-free",
     ];
     for (const id of retired) {
       expect({ id, present: OPENCODE_FREE_MODELS.some((model) => model.modelId === id) }).toEqual({
