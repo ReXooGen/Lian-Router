@@ -27,6 +27,7 @@
  * installed by anyone.
  */
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
@@ -302,7 +303,16 @@ export function resolveZipCommand(
   archivePath: string,
 ): readonly string[] {
   const zip = Bun.which("zip");
-  const tar = Bun.which("tar");
+  // Windows ships bsdtar in System32, but `Bun.which("tar")` usually resolves
+  // Git for Windows' GNU tar first. GNU tar cannot write a zip at all (`-a`
+  // with a `.zip` target), and it also reads `C:\...` as a remote host, so it
+  // fails with "Cannot connect to C: resolve failed" before writing anything.
+  // Pin the system binary by absolute path.
+  const systemTar =
+    platform === "win32" && existsSync("C:\\Windows\\System32\\tar.exe")
+      ? "C:\\Windows\\System32\\tar.exe"
+      : null;
+  const tar = systemTar ?? Bun.which("tar");
 
   if (platform !== "win32" && zip !== null) {
     return [zip, "-r", "-q", archivePath, ...entries];
