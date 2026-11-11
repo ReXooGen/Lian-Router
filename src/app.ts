@@ -1,7 +1,6 @@
 import { Elysia } from "elysia";
-import { resolveAutomationUpstream, resolveDashboardDist, resolveElysiaPrecompile } from "./config";
+import { resolveDashboardDist, resolveElysiaPrecompile } from "./config";
 import { createConsoleRouter, type ConsoleApiCompositionDeps } from "./console/console-router";
-import { createAutomationProxy } from "./console/automation/proxy";
 import { createStaticHandler } from "./console/dashboard-assets";
 import { createShareRouter } from "./console/share/share-router";
 import { createShareUsagePort } from "./console/share/share-usage";
@@ -21,7 +20,6 @@ import { getRedisOrUndefined } from "./persistence/redis";
 import type { LianRouterDatabase } from "./persistence/postgres";
 import type { ProviderAdapter } from "./providers/provider-registry";
 import type { OAuthTokenRefresher, OAuthRefreshService } from "./providers/authentication/oauth-refresh-service";
-import { ConsoleSessionService, defaultSessionCookiePolicy } from "./console/auth/service";
 import { withTimeout } from "./runtime/timeout";
 import type { ByokUpstreamHost } from "./providers/operations/provider-catalog-service";
 import type { NetworkPoolSelector } from "./network/pool/selector";
@@ -451,21 +449,6 @@ export function createGatewayApp(deps: GatewayAppDeps) {
         },
       }),
     );
-
-    // Automation control-plane proxy: only mounted when the operator deployed
-    // the loopback GrokFarm service and pointed the env at it. Owns its
-    // session service (same policy as the console router) because the console
-    // middleware scope does not reach root paths.
-    const automationUpstream = resolveAutomationUpstream();
-    if (automationUpstream !== undefined) {
-      app.use(
-        createAutomationProxy({
-          db: deps.db,
-          sessionService: new ConsoleSessionService(deps.db, defaultSessionCookiePolicy),
-          upstream: automationUpstream,
-        }),
-      );
-    }
   }
 
   app.all("/", serveDashboard);

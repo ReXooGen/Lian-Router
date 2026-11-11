@@ -1,5 +1,4 @@
 import { Elysia } from "elysia";
-import { recoverAccount } from "../providers/operations/account-health-service";
 import { createCliToolsRoutes } from "./cli-tools/routes";
 import { createAccountQuotaRoutes } from "./quota/account-quota";
 import { createApiKeyRoutes } from "./domains/api-keys/routes";
@@ -28,8 +27,6 @@ import { createTunnelRoutes } from "./tunnel/contracts";
 import { getTunnelService } from "./tunnel/service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
 import { createPromptInjectionRoutes } from "./prompt-injection/routes";
-import { createAppealRoutes } from "./automation/appeal/routes";
-import { DrizzleAppealStore } from "./automation/appeal/store";
 import { DrizzlePromptInjectionStore } from "../persistence/prompt-injection-store";
 import { createObservabilityRoutes } from "./domains/stats/contracts";
 import { DrizzleObservabilityStore } from "./domains/stats/store";
@@ -220,32 +217,6 @@ export function registerConsoleDomains(
       store: new DrizzlePromptInjectionStore(ctx.db),
       accessResolver: ctx.accessResolver,
       auditSink: ctx.auditRecorder,
-    }),
-  );
-  console.use(
-    createAppealRoutes({
-      store: new DrizzleAppealStore(ctx.db),
-      accessResolver: ctx.accessResolver,
-      auditSink: ctx.auditRecorder,
-      resolveCredential,
-      // The recheck judges an appeal by whether the account works again, so it
-      // must ask the same question live traffic asks: the catalog store's
-      // probeModel runs the real adapter, identity headers and health recorder.
-      probeAccount: async ({ tenantId, providerId, accountId, modelId }) => {
-        const result = await providerCatalogStore.probeModel(tenantId, providerId, {
-          modelId,
-          accountId,
-        });
-        return {
-          ok: result.ok,
-          ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
-          ...(result.error === undefined ? {} : { error: result.error }),
-        };
-      },
-      // An accepted appeal is the operator-visible proof that the ban is gone.
-      recoverAccount: async (accountId) => {
-        await recoverAccount(ctx.db, accountId, "appeal_accepted");
-      },
     }),
   );
   console.use(

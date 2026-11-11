@@ -52,8 +52,6 @@ const Combos = lazyWithRetry(() => import("./routes/Combos"), "combos");
 const Quota = lazyWithRetry(() => import("./routes/Quota"), "quota");
 const Proxy = lazyWithRetry(() => import("./routes/Proxy"), "proxy");
 const Settings = lazyWithRetry(() => import("./routes/Settings"), "settings");
-const Automation = lazyWithRetry(() => import("./routes/Automation"), "automation");
-const Appeal = lazyWithRetry(() => import("./routes/Appeal"), "appeal");
 const CliTools = lazyWithRetry(() => import("./routes/CliTools"), "cli-tools");
 const CliToolDetail = lazyWithRetry(() => import("./routes/CliToolDetail"), "cli-tool-detail");
 const ConsoleLog = lazyWithRetry(() => import("./routes/ConsoleLog"), "console-log");
@@ -202,8 +200,6 @@ function ProtectedRoutes(): ReactNode {
           <Route path="/cli-tools/:toolId" element={<CliToolDetail />} />
           <Route path="/console-log" element={<ConsoleLog />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/automation" element={<Automation />} />
-          <Route path="/automation/appeal" element={<Appeal />} />
           <Route path="/share" element={<Share />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -111,22 +111,6 @@ export const queryKeys = {
     list: (filters: { action?: string; actor?: string; cursor?: string; limit?: number }) =>
       ["console", "audit", "list", filters] as const,
   },
-  automation: {
-    all: ["console", "automation"] as const,
-    // Status is part of the key because the server filters the list; each
-    // filter gets its own cache entry instead of overwriting the last one.
-    reportAccounts: (providerId: string, status: string) =>
-      ["console", "automation", "report", "accounts", providerId, status] as const,
-    // Prefix for invalidating every filtered account list at once.
-    reportAccountsAll: (providerId: string) =>
-      ["console", "automation", "report", "accounts", providerId] as const,
-    reportSchedule: (providerId: string) =>
-      ["console", "automation", "report", "schedule", providerId] as const,
-    appealAccounts: (providerId: string, status: string) =>
-      ["console", "automation", "appeal", "accounts", providerId, status] as const,
-    appealAccountsAll: (providerId: string) =>
-      ["console", "automation", "appeal", "accounts", providerId] as const,
-  },
   quota: {
     all: ["console", "quota"] as const,
     account: (accountId: string) => ["console", "quota", "account", accountId] as const,

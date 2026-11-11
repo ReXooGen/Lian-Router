@@ -186,14 +186,6 @@ export const CONFIG_SPEC = {
   LIANROUTER_KIMI_QUOTA_BASE_URL: { kind: "text", default: DEFAULT_KIMI_QUOTA_BASE_URL },
 
   /**
-   * Base URL of the local automation control plane (GrokFarm WebUI) proxied at
-   * `/automation`. Unset (or empty) keeps the route disabled: the proxy handler
-   * answers 404 and the dashboard hides the navigation entry. The service binds
-   * to loopback only, so console auth is the only thing that reaches it.
-   */
-  LIANROUTER_AUTOMATION_UPSTREAM: { kind: "optional-text" },
-
-  /**
    * `cloudflared` executable used by the console's Tunnel mode. A bare name is
    * resolved on PATH; an absolute path is used as-is, which is how a Windows
    * install outside PATH is pointed at without editing the machine PATH.
@@ -632,38 +624,6 @@ export function resolveKimiQuotaBaseUrl(): string {
     "LIANROUTER_KIMI_QUOTA_BASE_URL",
     CONFIG_SPEC.LIANROUTER_KIMI_QUOTA_BASE_URL,
   );
-}
-
-/**
- * Resolves the automation control-plane base URL, or `undefined` when the
- * integration is not deployed. Only http(s) loopback hosts are accepted: the
- * upstream is expected to be an unauthenticated local service whose only
- * exposure is this authenticated proxy.
- */
-export function resolveAutomationUpstream(): string | undefined {
-  const raw = readOptionalText(
-    "LIANROUTER_AUTOMATION_UPSTREAM",
-    CONFIG_SPEC.LIANROUTER_AUTOMATION_UPSTREAM,
-  );
-  if (raw === undefined) return undefined;
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error("LIANROUTER_AUTOMATION_UPSTREAM must be an absolute http(s) URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("LIANROUTER_AUTOMATION_UPSTREAM must use http or https");
-  }
-  const host = parsed.hostname;
-  const loopback =
-    host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
-  if (!loopback) {
-    throw new Error(
-      "LIANROUTER_AUTOMATION_UPSTREAM must point at a loopback host (127.0.0.1, localhost, ::1)",
-    );
-  }
-  return parsed.toString().replace(/\/$/, "");
 }
 
 /** Metadata-only telemetry retention window; payload frames have their own short TTL. */
