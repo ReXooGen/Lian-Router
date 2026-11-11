@@ -4,7 +4,7 @@
   "description": "LianRouter launcher: install, run and control the gateway from one command",
   "type": "module",
   "bin": {
-    "lianrouter": "./dist/cli.js"
+    "lianrouter": "dist/cli.js"
   },
   "engines": {
     "bun": ">=1.4.2"
