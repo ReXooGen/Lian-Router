@@ -1,6 +1,19 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * This module's own directory.
+ *
+ * `import.meta.dir` is a Bun-only extension: under Node it evaluates to
+ * `undefined`, and every `join()` that consumes it throws
+ * `The "paths[0]" argument must be of type string. Received undefined`. The
+ * launcher is installed through npm, so it runs on whichever runtime the shim
+ * finds — Node on a machine without Bun — which makes the portable form the only
+ * safe one. `import.meta.dirname` is not enough either: it needs Node 20.11+.
+ */
+export const moduleDir: string = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Filesystem layout for the launcher.
@@ -175,7 +188,7 @@ export function ensureStateDirs(installRoot: string = resolveInstallRoot()): voi
  * A global install has no such ancestor and returns `undefined`, which is what
  * sends the caller to the install root.
  */
-export function resolveDevRepoRoot(startDir: string = import.meta.dir): string | undefined {
+export function resolveDevRepoRoot(startDir: string = moduleDir): string | undefined {
   let current = resolve(startDir);
   for (;;) {
     if (isRepoRoot(current)) {

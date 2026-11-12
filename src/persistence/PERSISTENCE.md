@@ -109,16 +109,31 @@ ciphertext.
   `closeDb()`; `setPoolForTesting()` mirrors `setRedisForTesting()` for the
   capacity check.
 - `redis.ts`: `requireRedisUrl()` (explicit host + port); `getRedis()`
-  singleton (`maxRetriesPerRequest: 2`, error logged without crashing);
+  singleton (`maxRetriesPerRequest: 2`, error logged without crashing) — the
+  one factory that decides where the client comes from, returning the
+  in-process client for `REDIS_MODE=embedded` and a server connection
+  otherwise, so no consumer above it branches on the mode;
   `getRedisOrUndefined()` for metrics/readiness paths that must not throw;
   `closeRedis()` (QUIT raced with a bounded timeout, `disconnect()` fallback);
   `redisEvalNumber()` — static-script atomic eval with a finite-number guard
   so a garbled result throws instead of reading as a bogus counter.
+- `embedded-redis.ts`: `createEmbeddedRedis()` — the in-process client used by
+  `REDIS_MODE=embedded`. It implements the command surface, Lua `EVAL`
+  included, which is the reason it is viable at all: every atomic decision in
+  `security/` and `network/pool/` is a script, so a store that stubbed `EVAL`
+  would silently turn atomic operations into races. State lives in the module's
+  shared store, so it is visible to every client in the process and gone when
+  the process exits. `test/persistence/embedded-redis.test.ts` drives the real
+  `RedisAdmissionCounterStore`, `RedisIpAbuseStore`, `RedisModelAbuseStore`, and
+  `NetworkPoolSelector` against it.
 - `readiness.ts`: `checkReadiness(db, redis, redisMode, timeoutMs = 5000)`
   memoized for 5s keyed on the full probe identity (db instance, redis
   client, mode, timeout). Order: `SELECT 1` → migration ledger `applied` →
-  `redis.ping() === "PONG"` (skipped in `single_instance_local`). Exports
-  `RedisMode` + `resolveRedisMode()` which validates `REDIS_MODE`.
+  `redis.ping() === "PONG"` (skipped in `single_instance_local`; checked in
+  both `normal` and `embedded`, because the embedded client has to answer PING
+  like any other). Exports `RedisMode` (`normal` | `embedded` |
+  `single_instance_local`) + `resolveRedisMode()` which validates
+  `REDIS_MODE`.
 
 ## Table stores and helpers
 

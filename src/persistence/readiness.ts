@@ -136,9 +136,14 @@ async function runReadinessChecks(
   }
 
   // 3. Check Redis (unless in single_instance_local mode)
+  //
+  // `embedded` is checked like `normal` on purpose: it has a client and that
+  // client answers PING. What differs is where the client lives, not whether
+  // it works, so the probe stays identical and a broken embedded client still
+  // reports not-ready instead of passing on its own optimism.
   let redisOk = redisMode === "single_instance_local";
 
-  if (redisMode === "normal" && redis) {
+  if (redisMode !== "single_instance_local" && redis) {
     try {
       const result = await withTimeoutCheck(() => redis.ping(), "Redis connectivity check");
       if (result !== "timeout" && result === "PONG") {
@@ -149,7 +154,7 @@ async function runReadinessChecks(
     }
   }
 
-  if (!redisOk && redisMode === "normal") {
+  if (!redisOk && redisMode !== "single_instance_local") {
     return {
       status: "not_ready",
       db: "connected",
@@ -193,14 +198,24 @@ export async function checkReadiness(
 
 /**
  * Redis coordination mode selector for {@link checkReadiness}.
+ *
+ * - `normal` — a Redis server is required at `REDIS_URL`; state is shared
+ *   across processes and survives restarts.
+ * - `embedded` — an in-process client implements the same command surface.
+ *   No server, no `REDIS_URL`. State belongs to one process and dies with it.
+ * - `single_instance_local` — no Redis client at all. Consumers fall back to
+ *   their own in-memory stores where they have one, and the console is not
+ *   mounted, because its OAuth-flow and quota paths have no fallback.
  */
 
-export type RedisMode = "normal" | "single_instance_local";
+export type RedisMode = "normal" | "embedded" | "single_instance_local";
 
 export function resolveRedisMode(env: NodeJS.ProcessEnv = process.env): RedisMode {
   const mode = env.REDIS_MODE ?? "normal";
-  if (mode !== "normal" && mode !== "single_instance_local") {
-    throw new Error(`REDIS_MODE must be normal or single_instance_local (got "${mode}")`);
+  if (mode !== "normal" && mode !== "embedded" && mode !== "single_instance_local") {
+    throw new Error(
+      `REDIS_MODE must be normal, embedded, or single_instance_local (got "${mode}")`,
+    );
   }
   return mode;
 }

@@ -6,17 +6,21 @@ if (rootElement === null) {
   throw new Error("Dashboard root element is missing");
 }
 
-// The root document is the public entry: `/` renders the landing page, `/console/*`
-// the authenticated console, `/share/*` the enrollment app. The landing never
-// bounces a visitor into a login form they cannot yet satisfy.
-const app = resolveDashboardApp(window.location.pathname);
-
-if (app === "console") {
-  void import("./apps/console/entry").then(({ mountConsole }) => mountConsole(rootElement));
-} else if (app === "share") {
-  void import("./apps/share/entry").then(() => undefined);
-} else if (app === "status") {
-  void import("./apps/status/entry").then(({ mountStatus }) => mountStatus(rootElement));
+// Console-only distribution: nothing serves a public landing page, so the root
+// document hands the visitor to the authenticated console surface instead. The
+// `/console/` route then decides between the password gate, the sign-in form and
+// the first-boot setup wizard, which is the only place that knows which one the
+// gateway is configured for.
+const pathname = window.location.pathname;
+if (pathname === "/" || pathname === "/index.html") {
+  window.location.replace("/console/");
 } else {
-  void import("./apps/landing/entry").then(({ mountLanding }) => mountLanding(rootElement));
+  const app = resolveDashboardApp(pathname);
+  if (app === "console") {
+    void import("./apps/console/entry").then(({ mountConsole }) => mountConsole(rootElement));
+  } else if (app === "status") {
+    void import("./apps/status/entry").then(({ mountStatus }) => mountStatus(rootElement));
+  } else {
+    void import("./apps/share/entry").then(() => undefined);
+  }
 }

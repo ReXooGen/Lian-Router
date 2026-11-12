@@ -48,6 +48,7 @@ const NON_SRC_ENV_KEYS = new Set([
   "LIANROUTER_TEST_DATABASE_URL", // test/helpers/db-gate.ts + CI shards
   "VITE_BACKEND_URL", // dashboard/Vite dev server
   "LIANROUTER_SETUP_MODE", // scripts/ops-setup.ts
+  "LIANROUTER_LOCAL_DB_PORT", // scripts/ops-local-db.ts, scripts/ops-local-stack.ts
   "BUN_OPTIONS", // Bun runtime
   "BUN_GARBAGE_COLLECTOR_LEVEL", // Bun runtime
   "LIANROUTER_HOME", // cli/src/paths.ts — launcher install root

@@ -125,19 +125,24 @@ async function doctor(): Promise<void> {
 
   // Step 2: Check required environment variables
   const envVars = await readEnvFile(config.envPath);
-  const localMode =
-    resolveRedisMode({ ...process.env, ...envVars }) === "single_instance_local";
-  const required = localMode
-    ? ["DATABASE_URL", "LIANROUTER_ENCRYPTION_KEY"]
-    : [
-        "DATABASE_URL",
-        "REDIS_URL",
-        "LIANROUTER_ENCRYPTION_KEY",
-      ];
+  // Exported variables win over the file, which is the rule `readEnvFile`
+  // documents and the rule the gateway itself follows at boot. Merging the
+  // other way round made `REDIS_MODE=embedded bun run doctor` report the
+  // `.env` value and probe a server the operator had just switched off.
+  const effectiveEnv: NodeJS.ProcessEnv = { ...envVars, ...process.env };
+  const redisMode = resolveRedisMode(effectiveEnv);
+  // `embedded` needs no `REDIS_URL` — the gateway builds an in-process client —
+  // and `single_instance_local` has no client at all. Only `normal` reads the
+  // URL, so requiring it in the other two modes would fail a valid config.
+  const localMode = redisMode === "single_instance_local";
+  const required =
+    redisMode === "normal"
+      ? ["DATABASE_URL", "REDIS_URL", "LIANROUTER_ENCRYPTION_KEY"]
+      : ["DATABASE_URL", "LIANROUTER_ENCRYPTION_KEY"];
   const missing: string[] = [];
 
   for (const key of required) {
-    const value = envVars[key] ?? process.env[key];
+    const value = effectiveEnv[key];
     if (!value) {
       missing.push(key);
       console.log(`  ✗ ${key} is not set`);
@@ -158,7 +163,7 @@ async function doctor(): Promise<void> {
   console.log();
 
   // Step 3: Check database connectivity
-  const dbUrl = envVars.DATABASE_URL ?? process.env.DATABASE_URL;
+  const dbUrl = effectiveEnv.DATABASE_URL;
   const dbParsed = parseServiceUrl(dbUrl ?? "");
 
   if (!dbParsed) {
@@ -180,8 +185,10 @@ async function doctor(): Promise<void> {
 
   // Step 4: Check Redis connectivity.
   console.log("🔴 Redis");
-  const redisUrl = envVars.REDIS_URL ?? process.env.REDIS_URL;
-  if (localMode) {
+  const redisUrl = effectiveEnv.REDIS_URL;
+  if (redisMode === "embedded") {
+    console.log("  ✓ embedded mode; the gateway runs an in-process client (single-instance)");
+  } else if (localMode) {
     if (redisUrl) {
       console.log("  ✗ REDIS_MODE=single_instance_local forbids REDIS_URL");
       process.exit(1);
@@ -213,7 +220,7 @@ async function doctor(): Promise<void> {
   // Step 5: Check application readiness
   console.log("🏥 Application Readiness");
   // Use the same explicit PORT resolution as the application.
-  const port = Number(envVars.PORT ?? process.env.PORT ?? "12800");
+  const port = Number(effectiveEnv.PORT ?? "12800");
   console.log(`  Checking http://localhost:${port}/health/ready...`);
 
   const readinessResult = await probeReadiness(port, config.probeTimeoutMs);

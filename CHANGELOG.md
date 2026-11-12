@@ -2,6 +2,108 @@
 
 ## Unreleased
 
+### The root document no longer advertises a landing page
+
+`/` mounted the public landing app, so a console-only install opened on marketing
+copy and needed a second click to reach the thing it actually serves. The
+distribution is console-only: `main.tsx` now redirects `/` and `/index.html` to
+`/console/` and mounts the console, status, or share app for every other path. The
+route in `/console/` is the only place that knows whether the console wants a
+password alone, a username, or the first-boot wizard — the root document should
+not guess on its behalf.
+
+The landing app's modules still exist under `dashboard/src/apps/landing/` but
+nothing imports them, so they no longer reach the bundle.
+
+### `lianrouter tray` worked under Bun and crashed under Node
+
+`cli/src/paths.ts` and `cli/tray/host.ts` resolved their own directory through
+`import.meta.dir`, which is a Bun extension: under Node it evaluates to
+`undefined`, so the first `join()` that consumed it threw
+`The "paths[0]" argument must be of type string. Received undefined`. The launcher
+is installed through npm and runs on whichever runtime the shim finds, which on a
+machine without Bun is Node — the one place the tray has to work.
+
+Both modules now derive their directory from
+`dirname(fileURLToPath(import.meta.url))`, which is portable across both runtimes
+and does not need the Node 20.11 floor that `import.meta.dirname` requires. The
+tray still requires Bun at runtime because it drives `Shell_NotifyIconW` through
+`bun:ffi`; only the resolution that preceded it was runtime-specific.
+
+### The local stack runs with no Docker and no Redis server
+
+Running this on a laptop meant arranging two external services before the
+gateway would boot: PostgreSQL, which the README described as external in every
+mode, and Redis, which `REDIS_MODE=normal` requires. `bun run dev:local` now
+starts neither dependency as an external process.
+
+`scripts/ops-local-stack.ts` owns a real PostgreSQL cluster built from the
+platform's own server binaries (`embedded-postgres`, data in `pgdata/`, port
+55433 — deliberately not 5432 so a real server on the default port is never
+shadowed, and deliberately not 55432 because the project's Compose helper already
+binds that one), then spawns the backend and the dashboard with `DATABASE_URL` and
+`REDIS_MODE=embedded` in their environment. The cluster is a child of that
+process, so one Ctrl-C unwinds the children and then the postmaster. `bun run
+db:local` starts only the cluster and prints the URL for a separately started
+backend.
+
+`REDIS_MODE=embedded` is new rather than a reuse of `single_instance_local`,
+because the two answer different questions. `single_instance_local` has no
+Redis client at all, so the console — whose OAuth-flow state and quota cache are
+Redis-backed — is not mounted. `embedded` supplies `ioredis-mock` as a real
+`RedisClient`: it implements the command surface including Lua `EVAL`, which is
+what every atomic decision here runs on (admission compare-and-increment, the
+IP-abuse sliding window, model-strike graduation, pool in-flight accounting,
+scripted release). `getRedis()` remains the single factory and resolves the mode
+there, so no consumer branches on it. The trade is stated in the code and the
+README: the client is single-process, so its state does not survive a restart and
+cannot coordinate a second gateway process.
+
+`test/persistence/embedded-redis.test.ts` drives the production
+`RedisAdmissionCounterStore`, `RedisIpAbuseStore`, `RedisModelAbuseStore`, and
+`NetworkPoolSelector` against the embedded client — not copies of their scripts —
+so a gap in the mock fails a test instead of a request. Verified end to end with
+Docker stopped: `/health/ready` returns `ready` with `db: connected`,
+`lianrouter_redis_up` reads 1, `/console/api/*` is mounted (401, not 404), and
+`bun run doctor` reports all systems operational.
+
+`ops-setup` and `ops-doctor` learned the mode: neither requires `REDIS_URL`
+outside `normal`, and the doctor now reads exported variables ahead of `.env`,
+which is the precedence `readEnvFile` documents and the gateway follows — the
+inverted merge made `REDIS_MODE=embedded bun run doctor` probe a server the
+operator had just switched off.
+
+### A failed setup probe no longer renders a login form
+
+`GET /auth/first-boot` is the only thing that knows whether the console wants a
+password alone or a username too. When it failed — a stopped database is enough,
+the gateway still answers `/health` with 200 — the probe fell through to the
+default and the screen drew the username form. The console was in password-gate
+mode, so the server rejected a username it never asked for, and the operator read
+that as a wrong credential while the real cause was an unreachable database.
+
+The screen now has three states, and the third one is the fix: `checking`,
+`form`, and `unavailable`. A rejected probe is never silently a known shape; it
+renders the console as unavailable, carries the transport's own message, and
+offers a retry. The state machine lives in `dashboard/src/routes/login-state.ts`
+so the decision is testable without a DOM, and the login body is built from the
+same state — password-gate mode sends the password alone, because sending a
+username implies the screen asked for one.
+
+### The launcher hides the console only once the tray proves it survived
+
+`startTray` reports a *spawn*, not a running host. The host can exit a moment
+later — a dead or unreadable handshake, a pid file naming a live rival, a failed
+pump — and the launcher hid the console the instant the spawn came back. The
+operator then saw a window that vanished with no icon to bring it back, which is
+indistinguishable from a crash.
+
+`startTrayHost` now waits out a startup window through `traySurvivedStartup`
+before hiding anything, and reports a tray that died in that window as the
+failure it is, with the console left visible. The gate polls rather than
+sleeping once, so a tray that dies fast is reported fast instead of after the
+full window.
+
 ### Public model-status page over the shared (bansos) catalog
 
 `/status` renders a service-health timeline for the models the shared links hand

@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { callRecovering, callWithReconnect, isProcessAlive, resolveControlConnection } from "./connection";
 import { OPEN_CONSOLE_GUARD_MS, createCommandGuard } from "./command-guard";
 import { resolveInstallRoot } from "./paths";
+import { moduleDir } from "../src/paths";
 import { startTrayPump } from "./pump";
 import type { TrayPumpHandle } from "./pump";
 import { TRAY_COMMANDS } from "./protocol";
@@ -301,7 +302,7 @@ async function main(): Promise<number> {
     if (command === TRAY_COMMANDS.exit) {
       const result = await callRecovering({
         installRoot,
-        startDir: import.meta.dir,
+        startDir: moduleDir,
         deps: recoveryDeps,
         ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
         call: (client) => client.shutdown(),
@@ -321,7 +322,7 @@ async function main(): Promise<number> {
       await openConsoleGuard.run(command, async () => {
         const result = await callRecovering({
           installRoot,
-          startDir: import.meta.dir,
+          startDir: moduleDir,
           deps: recoveryDeps,
           ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
           call: (client) => client.openWeb(),
@@ -341,7 +342,7 @@ async function main(): Promise<number> {
     if (command === TRAY_COMMANDS.checkUpdate) {
       const accepted = await callRecovering({
         installRoot,
-        startDir: import.meta.dir,
+        startDir: moduleDir,
         deps: recoveryDeps,
         ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
         call: (client) => client.startUpdate(),
@@ -357,7 +358,7 @@ async function main(): Promise<number> {
 
     const result = await callRecovering({
       installRoot,
-      startDir: import.meta.dir,
+      startDir: moduleDir,
       deps: recoveryDeps,
       ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
       call: (client) => (command === TRAY_COMMANDS.restart ? client.restart() : client.stop()),

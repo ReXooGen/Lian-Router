@@ -180,6 +180,42 @@ PostgreSQL is external in native and Docker setups. Redis is optional when using
 `REDIS_MODE=single_instance_local`, which is the simplest setup for a single
 machine.
 
+### Running with no external services
+
+`bun run dev:local` runs the whole stack with **no Docker and no Redis server**.
+It starts a real PostgreSQL cluster from the platform's own server binaries
+(`embedded-postgres`, in `pgdata/`, on port 55433 — deliberately not 5432, so a
+real server on the default port is never shadowed, and not 55432 either, because
+a Compose helper for this project already binds that one), then boots the backend
+and the dashboard with `REDIS_MODE=embedded`.
+
+```bash
+bun install
+cp .env.example .env        # set LIANROUTER_ENCRYPTION_KEY and the console password
+bun run dev:local
+```
+
+`DATABASE_URL` is supplied to the child processes, not written to `.env` — it
+stays the single source of the connection string, and nothing below the boot
+path learns that the cluster happens to be local. To run the cluster on its own
+(for example against a separately started backend), use `bun run db:local`,
+which prints the URL to put in `.env`.
+
+Both substitutes are single-process, and that is the whole trade:
+
+- the PostgreSQL cluster is a child of the process that started it and stops
+  with it, so it belongs to one gateway process;
+- the embedded Redis client keeps its state in memory, so it does not survive a
+  restart and cannot coordinate a second gateway process.
+
+`REDIS_MODE=embedded` exists for that reason rather than reusing
+`single_instance_local`: the latter has no Redis client at all, so the console is
+not mounted. `embedded` has a client that answers every command the console,
+quota cache, admission counters, and OAuth flows use — including the Lua scripts
+their atomic decisions depend on — which is why the console works in this mode.
+Anything that needs shared state or durability across processes wants
+`REDIS_MODE=normal` and a real Redis.
+
 ## Run it locally
 
 The whole path from a clone to a working console:
@@ -460,6 +496,8 @@ bun test test/config-env-drift.test.ts
 
 ```bash
 bun run dev
+bun run dev:local
+bun run db:local
 bun run dev:backend
 bun run dashboard:dev
 bun run setup
@@ -474,6 +512,10 @@ bun run build:cli
 bun run build:release
 bun run cli:dev
 ```
+
+`bun run dev:local` is the Docker-free path: it starts an embedded PostgreSQL
+cluster and boots the backend and dashboard with `REDIS_MODE=embedded`.
+`bun run db:local` starts only the cluster and prints the `DATABASE_URL` to use.
 
 `bun run build` produces the standalone binary in three steps: build the
 dashboard assets, run the Elysia AOT precompile into `dist/main.js`, then

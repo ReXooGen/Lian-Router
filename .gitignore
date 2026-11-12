@@ -43,6 +43,12 @@ coverage/
 # repo with megabytes of transient request bodies.
 data/
 
+# Embedded PostgreSQL cluster started by `bun run dev:local` / `bun run db:local`.
+# A live data directory holds the operator's accounts, API-key hashes, and
+# telemetry, plus thousands of server-managed files that churn on every write.
+# Never project code, and never committable.
+pgdata/
+
 # Agent working state: per-session worktrees under `.claude/worktrees/` are full
 # repository checkouts created by tooling, plus local settings that differ per
 # machine. Never project code, and `git add -A` would otherwise stage entire

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ControlHandshake } from "./control-server";
-import { ensureStateDirs, resolveTrayPidFile } from "./paths";
+import { ensureStateDirs, moduleDir, resolveTrayPidFile } from "./paths";
 
 /**
  * Starts and hides the tray host.
@@ -21,7 +21,7 @@ export interface TrayLaunchOptions {
   readonly control: ControlHandshake;
   /** Repository root when running from a checkout; undefined for a packaged install. */
   readonly devRepoRoot?: string;
-  /** Overrides the launcher bundle directory; defaults to `import.meta.dir`. */
+  /** Overrides the launcher bundle directory; defaults to the launcher's own module directory. */
   readonly bundleDir?: string;
   /** Overrides the tray command; tests pass a plain runtime. */
   readonly command?: readonly string[];
@@ -33,8 +33,8 @@ export interface TrayEntryOptions {
   readonly devRepoRoot?: string;
   /**
    * Directory holding the launcher's own bundle, which is where a packaged
-   * install keeps `tray.js`. Defaults to `import.meta.dir`; tests inject a temp
-   * directory.
+   * install keeps `tray.js`. Defaults to the launcher's own module directory;
+   * tests inject a temp directory.
    */
   readonly bundleDir?: string;
 }
@@ -50,13 +50,13 @@ export type TrayStartResult = { readonly ok: true; readonly pid: number } | { re
  * 1. `<devRepoRoot>/cli/dist/tray.js` — the bundle `bun run build:cli` writes
  *    from a source checkout. First so `bun run cli:dev` runs the freshly built
  *    tray rather than whatever copy sits beside the executing launcher.
- * 2. `<bundleDir>/tray.js`, where `bundleDir` defaults to `import.meta.dir` —
- *    the directory of the launcher that is executing. The published package
- *    ships `dist/cli.js` and `dist/tray.js` side by side, so this is the only
- *    candidate that exists for an install from npm. It is also the correct
- *    anchor for version locking: the tray speaks the launcher's control
- *    protocol, so resolving it from the gateway install root would let a tray
- *    left over from an older launcher outlive an upgrade.
+ * 2. `<bundleDir>/tray.js`, where `bundleDir` defaults to the launcher's own
+ *    module directory — the directory of the launcher that is executing. The
+ *    published package ships `dist/cli.js` and `dist/tray.js` side by side, so
+ *    this is the only candidate that exists for an install from npm. It is also
+ *    the correct anchor for version locking: the tray speaks the launcher's
+ *    control protocol, so resolving it from the gateway install root would let a
+ *    tray left over from an older launcher outlive an upgrade.
  *
  * There is deliberately no `<installRoot>/dist/tray.js` candidate. The release
  * archive (`releaseEntries` in `scripts/build-release.ts`) contains exactly the
@@ -81,7 +81,7 @@ export function resolveTrayEntry(options: TrayEntryOptions): string | undefined 
  * path the resolver never tried or omitting one it did.
  */
 export function trayEntryCandidates(options: TrayEntryOptions): readonly string[] {
-  const bundleDir = options.bundleDir ?? import.meta.dir;
+  const bundleDir = options.bundleDir ?? moduleDir;
   const candidates: string[] = [];
   if (options.devRepoRoot !== undefined) {
     candidates.push(join(options.devRepoRoot, "cli", "dist", "tray.js"));

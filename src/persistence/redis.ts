@@ -1,6 +1,8 @@
 import Redis from "ioredis";
 import { log } from "../observability/logger";
 import { timeoutAfter } from "../runtime/timeout";
+import { resolveRedisMode } from "./readiness";
+import { createEmbeddedRedis } from "./embedded-redis";
 
 export type RedisClient = InstanceType<typeof Redis>;
 
@@ -35,11 +37,18 @@ declare global {
 
 export function getRedis(): RedisClient {
   if (globalThis.__lianrouterRedis) return globalThis.__lianrouterRedis;
-  const c = new Redis(requireRedisUrl(), {
-    maxRetriesPerRequest: 2,
-    enableReadyCheck: true,
-    lazyConnect: false,
-  });
+  // One client factory, one place that decides where the client comes from.
+  // `embedded` returns an in-process implementation of the same command
+  // surface, so every consumer above this line keeps its Redis-shaped code and
+  // no consumer needs to know which mode it is running under.
+  const c =
+    resolveRedisMode() === "embedded"
+      ? createEmbeddedRedis()
+      : new Redis(requireRedisUrl(), {
+          maxRetriesPerRequest: 2,
+          enableReadyCheck: true,
+          lazyConnect: false,
+        });
   c.on("error", (err) => {
     // Visible but does not crash the process; health checks surface the state.
     log.error("[redis] connection error", err);

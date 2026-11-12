@@ -93,6 +93,10 @@ export interface ProductionDeps {
 export async function buildProductionDeps(): Promise<ProductionDeps> {
   const db = getDb();
   const redisMode = resolveRedisMode();
+  // Three modes, three different answers to "where does coordination state
+  // live": a server (`normal`), this process (`embedded`), or per-consumer
+  // in-memory stores (`single_instance_local`, which has no client at all and
+  // therefore does not mount the console).
   const redis = redisMode === "single_instance_local" ? undefined : getRedis();
   const ssrfPolicy = resolveSsrfPolicy();
   await ensureMigrated();

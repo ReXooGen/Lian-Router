@@ -25,8 +25,15 @@ src/runtime/
 
 `buildProductionDeps()` runs in a strict order:
 
-1. `getDb()`, `resolveRedisMode()`, `getRedis()` (skipped for
+1. `getDb()`, `resolveRedisMode()`, `getRedis()` (skipped only for
    `single_instance_local`), `resolveSsrfPolicy()`.
+
+   `getRedis()` is the single factory that resolves the mode: `normal` opens a
+   server connection at `REDIS_URL`, `embedded` returns the in-process client
+   from `persistence/embedded-redis.ts`. Both produce a `RedisClient`, so every
+   construction below is written once and no consumer branches on the mode.
+   `single_instance_local` is the only mode with no client at all, and that is
+   what keeps the console unmounted there.
 2. `ensureMigrated()` then `seedBundledProviders()`.
 3. `createDefaultProviderRegistry()`, `liveProviderUpstreamHosts()`,
    `registerByokProviders()`, `bundledModelCatalog()`, `seedBundledModels()`.

@@ -182,15 +182,23 @@ async function setup(): Promise<void> {
     redisReachable = redisResult.success;
   }
 
-  const localModeEnabled = resolveRedisMode() === "single_instance_local";
-  if (redisReachable) {
+  const redisMode = resolveRedisMode();
+  // `embedded` needs no server: the gateway supplies an in-process client, so
+  // there is nothing to probe and nothing to start. `single_instance_local` has
+  // no client at all. Both are complete answers to "where does coordination
+  // state live", which is why neither can fail this probe.
+  if (redisMode !== "normal") {
+    console.log(
+      redisMode === "embedded"
+        ? "✓ Redis is embedded (in-process client; no server needed)\n"
+        : "⚠️  Redis is not used; single-instance local mode is enabled\n",
+    );
+  } else if (redisReachable) {
     console.log("✓ Redis is reachable\n");
-  } else if (localModeEnabled) {
-    console.warn("⚠️  Redis is not reachable; single-instance local mode is enabled\n");
   } else {
     console.log("✗ Redis is not reachable");
     for (const hint of getOsHints("redis")) console.log(`  ${hint}`);
-    throw new Error("Redis is required unless REDIS_MODE=single_instance_local");
+    throw new Error("Redis is required unless REDIS_MODE=embedded or REDIS_MODE=single_instance_local");
   }
 
   // Step 6: Run migrations
