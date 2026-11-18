@@ -290,25 +290,45 @@ gateway accepts.
 lianrouter init
 ```
 
-Writes a starter `<installRoot>/.env` with the required keys present and
-commented guidance, and generates a random 32-byte key encoded as base64 so the
-first start cannot fail on key shape. `DATABASE_URL` and `REDIS_URL` are written
-as comments: the launcher does not invent a connection string, and you uncomment
-each line after replacing the placeholder. `REDIS_MODE=normal` is written
-uncommented, matching the gateway default.
+Writes a starter `<installRoot>/.env` that starts on the first run:
+`DATABASE_MODE=embedded`, `REDIS_MODE=embedded`, and a random 32-byte key encoded
+as base64. The launcher starts a private PostgreSQL for that install and an
+in-process Redis, so nothing needs to be installed or uncommented. To use your
+own servers instead, delete the `DATABASE_MODE` line and set `DATABASE_URL`.
 
-The command refuses to overwrite an existing file and says which path it left
-alone, so it is safe to run on a machine that is already configured. It does not
-install the gateway, start it, or contact the network.
+On an existing file the command **migrates** rather than refusing. A file written
+by an earlier release — whose only database line was a commented placeholder, and
+which carried `REDIS_MODE=normal` with no server behind it — cannot boot, so it is
+exactly the file `init` exists to fix:
+
+| Existing state | Result |
+|---|---|
+| no file | created |
+| `DATABASE_MODE` absent, no `DATABASE_URL` | `DATABASE_MODE=embedded` appended |
+| `REDIS_MODE=normal`, no `REDIS_URL` | replaced with `REDIS_MODE=embedded` |
+| key absent or blank | a fresh key is generated |
+| key present | preserved; a new key cannot decrypt stored credentials |
+| `DATABASE_URL` set | untouched — that server is used, no embedded mode added |
+| file already starts | left byte-identical |
+
+A file that changes is backed up as `.env.bak-<timestamp>` first, so the previous
+contents survive the migration. The command does not install the gateway, start
+it, or contact the network.
 
 ### Failing before the spawn
 
-Before spawning an installed copy, the launcher resolves the configuration and
-fails immediately when a required value is missing from both the shell and the
-file. The message names the config path it looked for, the exact missing
-variables, and the two ways to fix it. This replaces the older behavior, where
-the only signal was a health timeout after the spawn — accurate, because it
-quoted the gateway's own error, but slow and silent about where the file lives.
+Before spawning an installed copy, the launcher resolves the configuration. When
+a required value is missing it runs the same migration `init` does, re-reads the
+file, and only then reports. That is why `lianrouter` works on an install that was
+never `init`-ed, and why an install made by an older release repairs itself on the
+next start instead of demanding a hand-edited file.
+
+If the configuration is still incomplete after the repair — an unsupported
+platform, or an operator file that names a server that is not listening — the
+message names the config path it read, the exact missing variables, and the ways
+to fix it. This replaces the older behavior, where the only signal was a health
+timeout after the spawn: accurate, because it quoted the gateway's own error, but
+slow and silent about where the file lives.
 
 Failures that are not configuration problems still come from
 `describeFailure()`: a port conflict, a missing `migrations/` directory, or a
@@ -347,6 +367,42 @@ Ownership is one-directional and worth stating plainly:
 `bun run <repo>/src/main.ts`; from an install it is the compiled binary in the
 install root. Getting that wrong is a confusing "file not found" at the first
 start, so the decision is made once, at the top of the run.
+
+### Detachment from the launcher's console
+
+Closing a console window is not a polite request: Windows sends `CTRL_CLOSE_EVENT`
+to every process attached to that console, and every one of them dies. A tray
+session therefore cannot keep the gateway inside the launcher's console
+attachment, or the operator's ordinary act of closing the window takes the whole
+stack down while the icon is still on the taskbar.
+
+Two surfaces enforce this, and they have to agree:
+
+- **`Bun.spawn(..., { detached: true })` for the gateway, the tray host, and a
+  resurrected launcher.** On Windows this reaches the runtime as
+  `DETACHED_PROCESS`, so the child inherits no console and receives no close
+  event. `detached` changes only the console attachment — it does not release
+  the parent's handle — so `Supervisor.detach()` and `child.unref()` remain the
+  explicit "let it outlive me" call.
+- **`hideConsoleWindow()` calls `GetConsoleWindow`/`ShowWindow` over `bun:ffi`
+  in its own process.** `GetConsoleWindow` answers for the *calling* process's
+  console, so the call must be made where the window is. A helper is not
+  automatically wrong — one that inherits stdio is attached to the same console
+  and gets the same handle — but the launcher spawns helpers with
+  `stdio: "ignore"`, and that combination turns the call into a silent no-op.
+  In-process removes the inheritance dependency and the PowerShell round-trip.
+  The return value is read back with `IsWindowVisible`, because `ShowWindow`
+  reports the *previous* visibility rather than success.
+
+Hiding the window is cosmetic; detachment is the lifecycle guarantee. Both are
+needed: the first is what the operator asked for, the second is what makes it
+safe.
+
+One limit worth recording: under Windows Terminal the handle is a
+`PseudoConsoleWindow` owned by the attaching client and already invisible, so
+hiding it does not close the tab. `FreeConsole` is what actually tears that
+console down. The tray session survives either way, because the gateway is
+detached from the console, not hidden with it.
 
 ### Supervisor invariants
 
@@ -408,7 +464,7 @@ tray already reports.
 | `POST` | `/server/stop` | Graceful stop, return status |
 | `POST` | `/server/restart` | Stop then start, return status |
 | `POST` | `/open-web` | Open the console URL in the default browser |
-| `POST` | `/tray/hide` | Hide the console window |
+| `POST` | `/tray/hide` | Hide the console window (calls `GetConsoleWindow`/`ShowWindow` in-process) |
 | `POST` | `/update/start` | Start the update flow; `202`, progress arrives on `/events` |
 | `POST` | `/shutdown` | Graceful launcher exit |
 

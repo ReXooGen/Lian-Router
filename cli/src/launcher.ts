@@ -266,9 +266,14 @@ export async function run(argv: readonly string[]): Promise<number> {
   const runtime = resolveRuntime();
   if (options.command === "init") {
     // No install and no gateway: the point of this command is to make the
-    // first start possible, so it must work on a root with nothing in it.
-    const path = writeStarterConfig(runtime.installRoot);
-    console.log(`Wrote ${path}`);
+    // first start possible, so it must work on a root with nothing in it — and
+    // on a root whose file was written by an older launcher, which is the case
+    // that made this command look broken. `writeStarterConfig` reports which of
+    // the two it did so the message can stop claiming a fresh write.
+    const config = writeStarterConfig(runtime.installRoot);
+    console.log(
+      config.kind === "created" ? `Wrote ${config.path}` : `Updated ${config.path} (previous file kept beside it)`,
+    );
     console.log(
       "It starts a private PostgreSQL for this install (DATABASE_MODE=embedded) and an " +
         "in-process Redis, so `lianrouter` works as-is. Point DATABASE_URL at your own " +
@@ -291,10 +296,29 @@ export async function run(argv: readonly string[]): Promise<number> {
     options.command === "start" ||
     options.command === "tray" ||
     options.command === "tui";
-  const gatewayConfig =
+  //
+  // A start also repairs: an install that cannot boot is exactly the state this
+  // check exists to catch, and refusing to start is not a better answer than
+  // making it start. `writeStarterConfig` migrates a file written by an older
+  // launcher — the released `2.3.3` wrote a config whose database line was a
+  // comment, so `init` and the run then disagreed forever — and never replaces
+  // an operator's own connection string. That is why the file is corrected
+  // before the assertion instead of the assertion being relaxed.
+  let gatewayConfig =
     runtime.command === undefined && startsGateway
       ? resolveGatewayConfig(runtime.installRoot)
       : undefined;
+  if (gatewayConfig !== undefined && gatewayConfig.missing.length > 0) {
+    const prepared = writeStarterConfig(runtime.installRoot);
+    if (prepared.kind !== "unchanged") {
+      console.log(
+        prepared.kind === "created"
+          ? `Wrote ${prepared.path}`
+          : `Updated ${prepared.path} so the gateway can start (previous file kept beside it)`,
+      );
+    }
+    gatewayConfig = resolveGatewayConfig(runtime.installRoot);
+  }
   if (gatewayConfig !== undefined) {
     assertGatewayConfigured(gatewayConfig);
   }

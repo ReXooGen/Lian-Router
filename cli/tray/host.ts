@@ -256,6 +256,11 @@ async function main(): Promise<number> {
           stdin: "ignore",
           stdout: "ignore",
           stderr: "ignore",
+          // A resurrected launcher outlives whoever asked for it. Sharing the
+          // tray's console attachment would tie its lifetime to a window the
+          // tray does not own, and a headless launcher has nothing to print
+          // anyway.
+          detached: true,
         });
         child.unref();
         return child.pid;

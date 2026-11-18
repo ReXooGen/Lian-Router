@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -161,10 +161,11 @@ describe("missing-config failure", () => {
 describe("writeStarterConfig", () => {
   it("writes a key that decodes to exactly 32 bytes", async () => {
     const root = await tempRoot();
-    const path = writeStarterConfig(root);
-    expect(path).toBe(resolveConfigFile(root));
+    const result = writeStarterConfig(root);
+    expect(result.kind).toBe("created");
+    expect(result.path).toBe(resolveConfigFile(root));
 
-    const text = await readFile(path, "utf8");
+    const text = await readFile(result.path, "utf8");
     const parsed = parseEnvFile(text);
     const key = parsed["LIANROUTER_ENCRYPTION_KEY"];
     expect(key).toBeDefined();
@@ -183,12 +184,78 @@ describe("writeStarterConfig", () => {
     expect(parsed["DATABASE_URL"]).toBeUndefined();
   });
 
-  it("refuses to overwrite an existing config file", async () => {
+  it("leaves a config that already starts byte-identical", async () => {
     const root = await tempRoot();
-    const path = writeStarterConfig(root);
-    const original = await readFile(path, "utf8");
+    const first = writeStarterConfig(root);
+    const original = await readFile(first.path, "utf8");
 
-    expect(() => writeStarterConfig(root)).toThrow(/refusing to overwrite/);
-    expect(await readFile(path, "utf8")).toBe(original);
+    const second = writeStarterConfig(root);
+    expect(second.kind).toBe("unchanged");
+    expect(await readFile(second.path, "utf8")).toBe(original);
+  });
+
+  it("makes a file from an older launcher startable", async () => {
+    // The exact shape an older release wrote: a commented placeholder for the
+    // connection string and `REDIS_MODE=normal` with no server behind it. This
+    // file cannot boot, and re-running `init` used to refuse to touch it.
+    const root = await tempRoot();
+    const path = resolveConfigFile(root);
+    const legacy = [
+      "# LianRouter gateway configuration.",
+      "",
+      "# Database. Required.",
+      "# DATABASE_URL=postgres://user:password@localhost:5432/lianrouter",
+      "",
+      `LIANROUTER_ENCRYPTION_KEY=${VALID_KEY}`,
+      "",
+      "REDIS_MODE=normal",
+      "# REDIS_URL=redis://localhost:6379",
+      "",
+    ].join("\n");
+    await writeFile(path, legacy, "utf8");
+
+    const result = writeStarterConfig(root);
+    expect(result.kind).toBe("migrated");
+
+    const text = await readFile(path, "utf8");
+    const parsed = parseEnvFile(text);
+    expect(parsed["DATABASE_MODE"]).toBe("embedded");
+    expect(parsed["REDIS_MODE"]).toBe("embedded");
+    // The operator's key must survive: a new one cannot decrypt stored secrets.
+    expect(parsed["LIANROUTER_ENCRYPTION_KEY"]).toBe(VALID_KEY);
+    // And the result must actually pass the check that blocked the gateway.
+    expect(() => assertGatewayConfigured(resolveGatewayConfig(root, {}))).not.toThrow();
+  });
+
+  it("keeps an operator's own connection string and never adds embedded mode", async () => {
+    const root = await tempRoot();
+    const path = resolveConfigFile(root);
+    await writeFile(
+      path,
+      `DATABASE_URL=postgres://real@db:5432/mine\nLIANROUTER_ENCRYPTION_KEY=${VALID_KEY}\nREDIS_URL=redis://real:6379\n`,
+      "utf8",
+    );
+
+    const result = writeStarterConfig(root);
+    const parsed = parseEnvFile(await readFile(path, "utf8"));
+    expect(result.kind).toBe("unchanged");
+    expect(parsed["DATABASE_MODE"]).toBeUndefined();
+    expect(parsed["REDIS_MODE"]).toBeUndefined();
+    expect(parsed["DATABASE_URL"]).toBe("postgres://real@db:5432/mine");
+  });
+
+  it("fills in a missing encryption key and leaves a backup of the old file", async () => {
+    const root = await tempRoot();
+    const path = resolveConfigFile(root);
+    await writeFile(path, "REDIS_MODE=normal\n", "utf8");
+
+    const result = writeStarterConfig(root);
+    expect(result.kind).toBe("migrated");
+    const parsed = parseEnvFile(await readFile(path, "utf8"));
+    expect(parsed["LIANROUTER_ENCRYPTION_KEY"]).toBeDefined();
+
+    const backups = (await readdir(root)).filter((name) => name.startsWith(".env.bak-"));
+    expect(backups.length).toBe(1);
+    expect(await readFile(`${root}/${backups[0]}`, "utf8")).toBe("REDIS_MODE=normal\n");
   });
 });

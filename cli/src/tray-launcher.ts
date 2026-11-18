@@ -3,6 +3,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ControlHandshake } from "./control-server";
 import { ensureStateDirs, moduleDir, resolveTrayPidFile } from "./paths";
+import { SW_HIDE, getWin32, toHandle } from "../tray/win32";
 
 /**
  * Starts and hides the tray host.
@@ -147,6 +148,11 @@ export async function startTray(options: TrayLaunchOptions): Promise<TrayStartRe
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      // The tray is the surface that proves the console is not needed, so it
+      // must not share the console's lifetime: without this the icon vanishes
+      // with the window that spawned it, which is the exact failure the tray
+      // exists to prevent.
+      detached: true,
     });
     child.unref();
     pid = child.pid;
@@ -210,31 +216,41 @@ export async function stopTray(installRoot: string): Promise<boolean> {
 /**
  * Hides the console window that owns this process, on Windows only.
  *
- * `ShowWindow(GetConsoleWindow(), 0)` through `Add-Type` is the supported way to
- * hide a console from the process that owns it — there is no Win32 export the
- * Bun runtime exposes, and launching a second hidden host would detach the
- * launcher from its own window. On POSIX there is no window to hide, so this is
- * a no-op that reports `false`.
+ * `ShowWindow` runs in *this* process because `GetConsoleWindow` answers for the
+ * calling process's console. Routing it through a helper (`powershell
+ * -Command`) still works when the helper inherits stdio — it is attached to the
+ * same console and gets the same handle — but it stops working the moment the
+ * helper is spawned with `stdio: "ignore"`, which is a reasonable thing for a
+ * helper to do and silently turns the call into a no-op. Calling it in-process
+ * removes the dependency on inheritance entirely, and removes a PowerShell
+ * round-trip from a menu action.
+ *
+ * The return is whether the window is *not visible afterwards*, read back with
+ * `IsWindowVisible`. `ShowWindow` reports the previous visibility, not success,
+ * so a second call on an already-hidden window returns `0` while doing exactly
+ * the right thing — reporting that as failure would be wrong.
+ *
+ * On Windows Terminal (ConPTY) this hides the pseudo console window, which is
+ * already invisible, so the tab the operator sees stays open. The lifecycle
+ * guarantee is the `detached` spawn, not this call: a detached child has no
+ * console to receive a close event from. On POSIX there is no window at all, so
+ * this is a no-op that reports `false`.
  */
 export function hideConsoleWindow(): boolean {
   if (process.platform !== "win32") {
     return false;
   }
-  const script = [
-    "Add-Type -Name Win -Namespace Native -MemberDefinition",
-    "'[DllImport(\"kernel32.dll\")] public static extern IntPtr GetConsoleWindow();",
-    "[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);';",
-    "[void][Native.Win]::ShowWindow([Native.Win]::GetConsoleWindow(), 0)",
-  ].join(" ");
   try {
-    const result = Bun.spawnSync(
-      ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
-      { stdout: "ignore", stderr: "ignore", stdin: "ignore" },
-    );
-    return result.exitCode === 0;
+    const { kernel32, user32 } = getWin32();
+    const window = toHandle(kernel32.GetConsoleWindow());
+    // A GUI-subsystem build, or a detached console, has no window to hide. That
+    // is not a failure: there is nothing the operator can see.
+    if (window === undefined) return false;
+    user32.ShowWindow(window, SW_HIDE);
+    return user32.IsWindowVisible(window) === 0;
   } catch {
-    // No PowerShell on the image (Nano Server, stripped container): the console
-    // stays visible, which is a cosmetic failure, not a functional one.
+    // A stripped image without user32 (Nano Server) leaves the console visible,
+    // which is cosmetic as long as shutdown still stops the gateway by pid.
     return false;
   }
 }

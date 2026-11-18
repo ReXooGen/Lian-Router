@@ -387,6 +387,16 @@ export class GatewaySupervisor {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
+        // Closing a console window signals every process attached to it, so a
+        // gateway that shares the launcher's console dies the moment the
+        // operator closes that window — even though the tray is still up and
+        // the operator's only intent was to get the window out of the way.
+        // `detached` reaches Windows as `DETACHED_PROCESS`, which gives the
+        // child no console to inherit and therefore no console-close signal to
+        // receive. The supervisor still holds the handle, because `detached`
+        // only changes the console attachment; `unref` is what releases it and
+        // that stays explicit in `detach()`.
+        detached: true,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

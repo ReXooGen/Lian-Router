@@ -223,22 +223,121 @@ REDIS_MODE=embedded
 }
 
 /**
- * Writes a starter config, refusing to touch an existing one.
+ * Removes one active `KEY=` line, leaving comments untouched.
  *
- * `wx` makes the refusal atomic: two concurrent `init` runs cannot both pass an
- * existence check and then clobber each other.
+ * The upgrade path replaces a value rather than appending a second line for the
+ * same name: `parseEnvFile` keeps the last occurrence, so an appended line would
+ * win by accident of ordering instead of by policy, and a reader of the file
+ * would see two answers to one question.
  */
-export function writeStarterConfig(installRoot: string): string {
+function withoutActiveKey(text: string, key: string): string {
+  const pattern = new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m");
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !pattern.test(line))
+    .join("\n");
+}
+
+/** True when the text carries an active (non-comment) assignment for `key`. */
+function hasActiveKey(text: string, key: string): boolean {
+  return new RegExp(`^[ \\t]*${key}[ \\t]*=`, "m").test(text);
+}
+
+/** Appends one `KEY=value` line with a blank separator, preserving the tail newline. */
+function appendEntry(text: string, key: string, value: string): string {
+  const body = text.endsWith("\n") ? text : `${text}\n`;
+  return `${body}\n${key}=${value}\n`;
+}
+
+/**
+ * Brings an existing config file up to what this launcher can start with.
+ *
+ * The failure this exists for is a version seam, not a typo. A launcher released
+ * before `DATABASE_MODE=embedded` wrote a starter file whose only database line
+ * was a *commented* `DATABASE_URL` placeholder, and `lianrouter init` refused to
+ * touch it because the file already existed. The operator then upgraded, ran
+ * `init` again as instructed, got `refusing to overwrite` on a file they never
+ * edited, and the gateway stayed unstartable — the release that removed the
+ * requirement could not reach the file that encoded it.
+ *
+ * Migrating is the correct answer because the file is the launcher's own
+ * artifact: every line in it was generated here, so there is no operator prose
+ * to lose. The rules are deliberately narrow:
+ *
+ * - An operator's own connection string is never replaced. If `DATABASE_URL` is
+ *   set, that install talks to that server and `DATABASE_MODE=embedded` is not
+ *   added on top of it.
+ * - `REDIS_MODE=normal` with no usable `REDIS_URL` is the unstartable pair the
+ *   old starter file produced, so it becomes `embedded`. A mode the operator
+ *   cannot boot is not a preference worth preserving.
+ * - A missing or unparsable encryption key is filled in, because nothing else
+ *   can produce one and the gateway refuses to start without it.
+ */
+export function upgradeStarterConfig(text: string, encryptionKey: string): string {
+  let next = text;
+
+  const hasDatabaseUrl = hasActiveKey(next, "DATABASE_URL");
+  if (!hasActiveKey(next, "DATABASE_MODE") && !hasDatabaseUrl) {
+    next = appendEntry(next, "DATABASE_MODE", "embedded");
+  }
+
+  const redisMode = /^[ \t]*REDIS_MODE[ \t]*=[ \t]*(\S*)/m.exec(next)?.[1]?.replace(/^["']|["']$/g, "");
+  const hasRedisUrl = hasActiveKey(next, "REDIS_URL");
+  if (!hasActiveKey(next, "REDIS_MODE") && !hasRedisUrl) {
+    next = appendEntry(next, "REDIS_MODE", "embedded");
+  } else if (redisMode === "normal" && !hasRedisUrl) {
+    next = withoutActiveKey(next, "REDIS_MODE");
+    next = appendEntry(next, "REDIS_MODE", "embedded");
+  }
+
+  const existingKey = parseEnvFile(next).LIANROUTER_ENCRYPTION_KEY;
+  if (existingKey === undefined || existingKey.trim() === "") {
+    next = appendEntry(next, "LIANROUTER_ENCRYPTION_KEY", encryptionKey);
+  }
+
+  return next;
+}
+
+/**
+ * Outcome of {@link writeStarterConfig}: which file, and whether it was made or
+ * repaired. The caller prints this, so the distinction has to survive the return.
+ */
+export interface StarterConfigResult {
+  readonly path: string;
+  readonly kind: "created" | "migrated" | "unchanged";
+}
+
+/**
+ * Writes the starter config, or migrates the one that is already there.
+ *
+ * `init` used to refuse an existing file outright, which made it useless in
+ * exactly the situation it is advertised for: an install that cannot start.
+ * Refusing protects nothing — the file is generated, not authored — so an
+ * existing file is backed up and rewritten in place, and an existing file that
+ * already starts is left byte-identical.
+ */
+export function writeStarterConfig(installRoot: string): StarterConfigResult {
   const path = resolveConfigFile(installRoot);
   mkdirSync(installRoot, { recursive: true });
   const encryptionKey = randomBytes(32).toString("base64");
-  try {
-    writeFileSync(path, starterConfigText(encryptionKey), { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(`refusing to overwrite the existing config file at ${path}`);
+
+  if (existsSync(path)) {
+    // Keep the operator's key stable across the migration: a fresh key cannot
+    // decrypt credentials the old one encrypted, so regenerating it here would
+    // silently invalidate every stored provider secret.
+    const current = readFileSync(path, "utf8");
+    const preserved = parseEnvFile(current).LIANROUTER_ENCRYPTION_KEY;
+    const key = preserved !== undefined && preserved.trim() !== "" ? preserved : encryptionKey;
+    const migrated = upgradeStarterConfig(current, key);
+    if (migrated === current) {
+      return { path, kind: "unchanged" };
     }
-    throw error;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    writeFileSync(`${path}.bak-${stamp}`, current, { encoding: "utf8" });
+    writeFileSync(path, migrated, { encoding: "utf8" });
+    return { path, kind: "migrated" };
   }
-  return path;
+
+  writeFileSync(path, starterConfigText(encryptionKey), { encoding: "utf8", flag: "wx" });
+  return { path, kind: "created" };
 }

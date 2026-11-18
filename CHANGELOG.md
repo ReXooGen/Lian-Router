@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+### `init` repairs the config instead of refusing it, and startup repairs it too
+
+An install made by an older launcher could not be brought up by the command that
+advertises exactly that. `lianrouter init` wrote its file once and then refused
+every later run with `refusing to overwrite the existing config file`, and a
+config written before `DATABASE_MODE=embedded` existed contains a *commented*
+`DATABASE_URL` placeholder plus `REDIS_MODE=normal` with no server — a
+combination that cannot boot. The operator's only exit was to edit the file by
+hand, which is the step the release was supposed to remove.
+
+`writeStarterConfig` now migrates. An existing file is upgraded in place: a
+missing `DATABASE_MODE` becomes `embedded` when no `DATABASE_URL` is set,
+`REDIS_MODE=normal` without a `REDIS_URL` becomes `embedded`, and a missing
+encryption key is generated. The previous file is kept as `.env.bak-<timestamp>`
+and a key that is already present is never regenerated — a new key cannot
+decrypt credentials encrypted with the old one. An operator's own connection
+string is left exactly as written: `DATABASE_URL` set means that server is used,
+and `DATABASE_MODE=embedded` is not added on top of it. A file that already
+starts is left byte-identical.
+
+Starting the gateway does the same repair, so `lianrouter` works on an install
+that was never `init`-ed at all. `init` remains for the case of wanting a file
+without starting anything, and now reports whether it created or updated one.
+
+Verified end to end on Windows against an install packed from this tree: a fresh
+root reaches `200 {"status":"ready","db":"connected"}` with `pgdata/` created and
+the embedded Redis answering; a root carrying the exact `.env` an earlier release
+wrote self-repairs on a plain `lianrouter` run, keeps its key, and writes one
+backup; a root configured against the operator's own PostgreSQL is untouched,
+byte for byte, and fails only on the server that is not listening.
+
+### Closing the console no longer stops a tray session
+
+Choosing **Hide to Tray** left the console window on screen, and closing that
+window killed the gateway. The two halves have different causes and only one of
+them was what the old code assumed.
+
+**Lifecycle.** The gateway child, the tray host, and a resurrected launcher are
+now spawned with `detached: true`, which Windows receives as `DETACHED_PROCESS`.
+Measured: a plain child inherits the parent's console handle and shares its
+process list; a detached child reports `GetConsoleWindow() == NULL` and an empty
+console process list, so it has no console to receive `CTRL_CLOSE_EVENT` from and
+cannot be killed by the operator closing the window. `detached` changes only the
+console attachment — the supervisor still holds the handle — and
+`Supervisor.detach()` / `child.unref()` remain the explicit release.
+
+**Hiding.** `hideConsoleWindow()` now calls `GetConsoleWindow`/`ShowWindow` over
+`bun:ffi` inside the launcher instead of spawning a PowerShell helper. The helper
+form is not inherently broken — measured, a helper that inherits stdio is attached
+to the same console and gets the same handle, and the legacy command did hide the
+window in that case — but it is broken by the spawn options the launcher used
+(`stdin`/`stdout`/`stderr: "ignore"`), and it reported the helper's exit code
+rather than the window's state. In-process removes both failure modes and the
+PowerShell round-trip.
+
+The return value is now the window's state read back with `IsWindowVisible`, not
+`ShowWindow`'s return, which reports the *previous* visibility: a second call on
+an already-hidden window returns `0` while having done the right thing.
+
+**Limit.** Under Windows Terminal the handle is a `PseudoConsoleWindow` owned by
+the attaching client and already invisible, so hiding it cannot close the tab the
+operator sees. `FreeConsole` measured as the only call that actually tears that
+console down. The tray session survives regardless, because detachment is what
+protects it.
+
+Verified on Windows: a detached child reports no console and stays alive after its
+parent is killed, while a plain child reports the shared handle and dies;
+`hideConsoleWindow()` hides a visible console window and reports `true`.
+`bun test cli/test` → 324 pass, 0 fail; both typechecks clean.
+
 ### `lianrouter init` now produces an install that starts
 
 A clean install printed a config error on the first run and told the operator to

@@ -203,23 +203,27 @@ which prints the URL to put in `.env`.
 
 ### Installing with no external services
 
-An installed copy can have the same shape. `lianrouter init` writes a config with
-`DATABASE_MODE=embedded` and `REDIS_MODE=embedded`, and the launcher then starts a
+An installed copy can have the same shape. A plain `lianrouter` run writes a
+config with `DATABASE_MODE=embedded` and `REDIS_MODE=embedded` when the file is
+missing or was written by an older release, and the launcher then starts a
 PostgreSQL cluster under `<installRoot>/pgdata` on port 55433 and an in-process
 Redis for the gateway it supervises:
 
 ```bash
 npm i -g lianrouter
-lianrouter init
-lianrouter tray
+lianrouter          # first run: installs the gateway, writes the config, starts
 ```
+
+Nothing to configure, nothing to uncomment. `lianrouter init` performs the same
+write or migration without starting anything, and `lianrouter tray` is the same
+run with a notification-area icon instead of a console.
 
 No PostgreSQL install, no Redis server, no Docker. The cluster is a child of the
 launcher, so it lives exactly as long as the launcher does; `--background` is
 refused in this mode because it would return and take the database with it. To
-point the install at a database you already run instead, delete `DATABASE_MODE`
-from `~/.config`-equivalent `.env` (Windows: `%LOCALAPPDATA%\LianRouter\.env`) and
-set `DATABASE_URL`.
+point the install at a database you already run instead, set `DATABASE_URL` and
+delete `DATABASE_MODE` from the file (Windows:
+`%LOCALAPPDATA%\LianRouter\.env`); that choice is never overwritten.
 
 Both substitutes are single-process, and that is the whole trade:
 
@@ -358,20 +362,32 @@ failing at spawn. Nothing is downloaded during `bun add -g` / `npm i -g` — the
 install stays offline, and `status`, `stop`, `--version`, and `--help` never reach
 the network at all. Later runs find the binary and start offline.
 
-Installing the gateway is not the same as configuring it: it still needs
-`DATABASE_URL` and `LIANROUTER_ENCRYPTION_KEY` (and `REDIS_URL` when
-`REDIS_MODE=normal`) before `/health` can answer. An installed copy reads them
-from `<installRoot>/.env` — on Windows, `%LOCALAPPDATA%\LianRouter\.env`. The
-error message names the resolved path on your machine. A variable already
-exported in your shell wins over the file.
+Installing the gateway is not the same as configuring it, and a fresh install is
+configured for you: a plain `lianrouter` run writes `<installRoot>/.env` when it
+is missing, starting a private PostgreSQL for the install and an in-process Redis
+so the first start needs no external service and no hand-edited file. The file
+lives at `%LOCALAPPDATA%\LianRouter\.env` on Windows, and the error message names
+the resolved path when something still cannot boot.
 
 ```bash
-lianrouter init    # writes a starter .env with a generated 32-byte key
+npm i -g lianrouter
+lianrouter          # first run installs the gateway and configures the file
 ```
 
-Then open that file and uncomment `DATABASE_URL`, replacing the placeholder with
-your PostgreSQL connection string. `lianrouter init` refuses to overwrite a file
-that already exists.
+To use your own PostgreSQL instead, set `DATABASE_URL` — in the file or in your
+shell, which wins over the file — and remove the `DATABASE_MODE` line. An install
+made by an older release repairs its config on the next start: a commented
+`DATABASE_URL` placeholder and `REDIS_MODE=normal` without a server become
+`DATABASE_MODE=embedded` / `REDIS_MODE=embedded`, with the previous file kept as
+`.env.bak-<timestamp>` and the encryption key preserved. `lianrouter init` does
+the same migration explicitly without starting anything:
+
+```bash
+lianrouter init    # writes or migrates the starter .env
+```
+
+An operator's own `DATABASE_URL` is never replaced, and a file that already
+starts is left byte-identical.
 
 A missing value fails before the gateway is spawned, naming the file and the
 variables; see [cli/CLI.md](cli/CLI.md#configuring-an-installed-copy) for

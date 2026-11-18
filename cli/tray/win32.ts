@@ -41,6 +41,9 @@ const LR_LOADFROMFILE = 0x0010;
 const MB_OK = 0x00000000;
 const MB_ICONERROR = 0x00000010;
 
+/** `SW_HIDE`: the `nCmdShow` value that hides a window without destroying it. */
+export const SW_HIDE = 0;
+
 /** `SM_CXSMICON`: the notification-area icon width for the current DPI. */
 const SM_CXSMICON = 49;
 
@@ -93,6 +96,8 @@ function openUser32() {
     GetDC: { args: ["ptr"], returns: "ptr" },
     ReleaseDC: { args: ["ptr", "ptr"], returns: "i32" },
     GetSystemMetrics: { args: ["i32"], returns: "i32" },
+    IsWindowVisible: { args: ["ptr"], returns: "i32" },
+    ShowWindow: { args: ["ptr", "i32"], returns: "i32" },
     MessageBoxW: { args: ["ptr", "ptr", "ptr", "u32"], returns: "i32" },
   } as const);
 }
@@ -107,6 +112,7 @@ function openKernel32() {
   return dlopen("kernel32.dll", {
     GetModuleHandleW: { args: ["ptr"], returns: "ptr" },
     GetLastError: { args: [], returns: "u32" },
+    GetConsoleWindow: { args: [], returns: "ptr" },
   } as const);
 }
 
@@ -171,6 +177,8 @@ export interface User32Api {
   GetDC(window: PtrArg): PtrReturn;
   ReleaseDC(window: PtrArg, deviceContext: PtrArg): number;
   GetSystemMetrics(index: number): number;
+  IsWindowVisible(window: PtrArg): number;
+  ShowWindow(window: PtrArg, cmdShow: number): number;
   MessageBoxW(window: PtrArg, text: PtrArg, caption: PtrArg, type: number): number;
 }
 
@@ -181,6 +189,7 @@ export interface Shell32Api {
 export interface Kernel32Api {
   GetModuleHandleW(moduleName: PtrArg): PtrReturn;
   GetLastError(): number;
+  GetConsoleWindow(): PtrReturn;
 }
 
 export interface Gdi32Api {
