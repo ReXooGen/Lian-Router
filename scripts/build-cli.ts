@@ -120,6 +120,12 @@ async function bundle(
     // Both entries read their environment (install root, control file, package
     // version) at runtime, so nothing may be inlined at build time.
     sourcemap: "none",
+    // `embedded-postgres` resolves its server binaries through a platform
+    // `import()` it performs itself. Bundling those would either inline a
+    // 100 MB package or fail on every platform but the build host, so the
+    // launcher keeps them as runtime resolution: the published package declares
+    // the dependency and the operator's install supplies the matching binaries.
+    external: ["embedded-postgres", "@embedded-postgres/*"],
   });
   if (!result.success) {
     const details = result.logs.map((entry) => String(entry)).join("\n");

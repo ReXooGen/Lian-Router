@@ -16,6 +16,8 @@ import {
   resolveBinaryName,
   resolveBinaryPath,
 } from "./paths";
+import { startEmbeddedDatabase } from "./embedded-database";
+import type { EmbeddedDatabase } from "./embedded-database";
 import { installShutdownHandlers, shutdownSessionFiles } from "./shutdown";
 import { GatewaySupervisor, type ServerStatus } from "./supervisor";
 import { assertGatewayConfigured, resolveGatewayConfig, writeStarterConfig } from "./install-config";
@@ -24,6 +26,7 @@ import { renderUpdateNotices } from "./update-notice";
 import { checkLauncherVersion, updateCheckDisabled } from "../update/npm-source";
 import { hideConsoleWindow, isTrayRunning, startTray, stopTray } from "./tray-launcher";
 import type { TrayStartResult } from "./tray-launcher";
+import { isProcessAlive } from "../tray/connection";
 
 /**
  * Wiring: argv → supervisor → control server → menu → action.
@@ -266,7 +269,11 @@ export async function run(argv: readonly string[]): Promise<number> {
     // first start possible, so it must work on a root with nothing in it.
     const path = writeStarterConfig(runtime.installRoot);
     console.log(`Wrote ${path}`);
-    console.log("Set DATABASE_URL in that file (uncomment the line), then run lianrouter.");
+    console.log(
+      "It starts a private PostgreSQL for this install (DATABASE_MODE=embedded) and an " +
+        "in-process Redis, so `lianrouter` works as-is. Point DATABASE_URL at your own " +
+        "server instead if you prefer.",
+    );
     return 0;
   }
 
@@ -292,6 +299,29 @@ export async function run(argv: readonly string[]): Promise<number> {
     assertGatewayConfigured(gatewayConfig);
   }
 
+  // `DATABASE_MODE=embedded` means this process owns the database too, not just
+  // the gateway: the cluster it starts is a child of this launcher, so the
+  // connection string only exists while the launcher does. Started before the
+  // supervisor so the child inherits a URL that already answers.
+  const embeddedDatabase =
+    gatewayConfig?.databaseMode === "embedded" && startsGateway
+      ? await startEmbeddedDatabase({ installRoot: runtime.installRoot })
+      : undefined;
+  // `--background` unrefs the gateway child and returns, which is the shape a
+  // launcher that supervises a pre-existing database can offer. It cannot offer
+  // it here: the embedded cluster is a child of this process, so returning would
+  // take the database down with the launcher and leave a gateway that cannot
+  // reach its own `DATABASE_URL`. Refusing says that plainly instead of letting
+  // the first `/health` fail with `ECONNREFUSED`.
+  if (embeddedDatabase !== undefined && options.background) {
+    await embeddedDatabase.stop();
+    throw new Error(
+      "DATABASE_MODE=embedded keeps PostgreSQL inside this process, so --background " +
+        "cannot return and leave it running. Use `lianrouter tray` for a background " +
+        "install with an icon, or set DATABASE_URL to a server that outlives the launcher.",
+    );
+  }
+
   // Commands that answer a question must not install anything: `status` and
   // `stop` on a machine that never ran the gateway have to report that fact
   // offline, not reach for the release feed.
@@ -311,6 +341,9 @@ export async function run(argv: readonly string[]): Promise<number> {
     env: {
       LIANROUTER_LAUNCHER_HOME: runtime.installRoot,
       ...(gatewayConfig?.env ?? {}),
+      // Last so a cluster this launcher started wins over a stale value in the
+      // file: the URL it names is the only one that answers.
+      ...(embeddedDatabase === undefined ? {} : { DATABASE_URL: embeddedDatabase.url }),
     },
     ...(runtime.command === undefined ? {} : { command: runtime.command }),
   });
@@ -321,15 +354,35 @@ export async function run(argv: readonly string[]): Promise<number> {
     case "stop":
       return await stopServer(supervisor);
     case "start":
-      return await withShutdownHandlers(supervisor, runtime, () => runInteractive(supervisor, options, runtime));
+      return await withShutdownHandlers(
+        supervisor,
+        runtime,
+        () => runInteractive(supervisor, options, runtime),
+        embeddedDatabase,
+      );
     case "tray":
-      return await withShutdownHandlers(supervisor, runtime, () => enterTrayMode(supervisor, options, runtime));
+      return await withShutdownHandlers(
+        supervisor,
+        runtime,
+        () => enterTrayMode(supervisor, options, runtime),
+        embeddedDatabase,
+      );
     case "tui":
-      return await withShutdownHandlers(supervisor, runtime, () => runTui(supervisor, options, runtime));
+      return await withShutdownHandlers(
+        supervisor,
+        runtime,
+        () => runTui(supervisor, options, runtime),
+        embeddedDatabase,
+      );
     case "update":
       return await runUpdateFlow(supervisor, runtime);
     case undefined:
-      return await withShutdownHandlers(supervisor, runtime, () => runInteractive(supervisor, options, runtime));
+      return await withShutdownHandlers(
+        supervisor,
+        runtime,
+        () => runInteractive(supervisor, options, runtime),
+        embeddedDatabase,
+      );
     default:
       // `parseArgs` rejects anything outside KNOWN_COMMANDS, so no argv reaches
       // this arm; it exists because `command` is a plain `string | undefined`.
@@ -364,6 +417,7 @@ async function withShutdownHandlers(
   supervisor: GatewaySupervisor,
   runtime: Runtime,
   command: () => Promise<number>,
+  embeddedDatabase?: EmbeddedDatabase,
 ): Promise<number> {
   const registration = installShutdownHandlers(
     () =>
@@ -377,6 +431,10 @@ async function withShutdownHandlers(
         stopGateway: async () => {
           await supervisor.stop();
           await supervisor.dispose();
+          // After the gateway: the child is the only reader of this cluster, so
+          // stopping the postmaster first would make every in-flight pool
+          // checkout fail during a shutdown the operator did not ask to be loud.
+          await embeddedDatabase?.stop();
         },
       }),
     (code) => process.exit(code),
@@ -727,6 +785,15 @@ async function runUpdateWithProgress(
  * Returns the spawn outcome instead of swallowing it: the caller must not hide
  * the console or block on a pid file that was never written, because that is a
  * silent hang with no icon and no way to reach the gateway.
+ *
+ * A successful spawn is not a successful tray. `startTray` only reports that a
+ * process was created; the host can still die a moment later — a dead or
+ * unreadable handshake, a pid file naming a live rival, or a failed pump — and
+ * that failure happens *after* the console would have been hidden. The operator
+ * then sees a window that vanished and no icon to bring it back, which is
+ * indistinguishable from a crash. So the console is hidden only once the tray
+ * has survived its own startup, and a tray that dies in that window is reported
+ * as the failure it is.
  */
 async function startTrayHost(
   supervisor: GatewaySupervisor,
@@ -739,10 +806,50 @@ async function startTrayHost(
       ? { installRoot: runtime.installRoot, control: session.handshake }
       : { installRoot: runtime.installRoot, control: session.handshake, devRepoRoot: runtime.devRepoRoot },
   );
-  if (result.ok) {
-    hideConsoleWindow();
+  if (!result.ok) {
+    return result;
   }
+  if (!(await traySurvivedStartup(result.pid))) {
+    return {
+      ok: false,
+      error:
+        "The tray host exited while starting, so the console was left visible. " +
+        "Run `lianrouter tray` from a terminal to see why.",
+    };
+  }
+  hideConsoleWindow();
   return result;
+}
+
+/** How long a spawned tray must stay alive before the console is hidden. */
+export const TRAY_STARTUP_GRACE_MS = 3_000;
+/** Poll interval inside the grace window. */
+const TRAY_STARTUP_POLL_MS = 150;
+
+/**
+ * True when the tray process is still alive after its startup window.
+ *
+ * Polls rather than sleeps once, so a tray that dies fast is caught fast: the
+ * common failure (bad handshake, rival pid) exits in well under a second, and
+ * waiting the full grace period before reporting it would just delay the same
+ * message.
+ *
+ * Exported, and with an injectable window, because the decision it makes is the
+ * one that used to be missing: `startTray` reports a *spawn*, and a test that
+ * cannot call this cannot tell "the tray is up" from "the tray was created".
+ */
+export async function traySurvivedStartup(
+  pid: number,
+  graceMs: number = TRAY_STARTUP_GRACE_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return false;
+    }
+    await Bun.sleep(TRAY_STARTUP_POLL_MS);
+  }
+  return isProcessAlive(pid);
 }
 
 /**

@@ -201,6 +201,26 @@ path learns that the cluster happens to be local. To run the cluster on its own
 (for example against a separately started backend), use `bun run db:local`,
 which prints the URL to put in `.env`.
 
+### Installing with no external services
+
+An installed copy can have the same shape. `lianrouter init` writes a config with
+`DATABASE_MODE=embedded` and `REDIS_MODE=embedded`, and the launcher then starts a
+PostgreSQL cluster under `<installRoot>/pgdata` on port 55433 and an in-process
+Redis for the gateway it supervises:
+
+```bash
+npm i -g lianrouter
+lianrouter init
+lianrouter tray
+```
+
+No PostgreSQL install, no Redis server, no Docker. The cluster is a child of the
+launcher, so it lives exactly as long as the launcher does; `--background` is
+refused in this mode because it would return and take the database with it. To
+point the install at a database you already run instead, delete `DATABASE_MODE`
+from `~/.config`-equivalent `.env` (Windows: `%LOCALAPPDATA%\LianRouter\.env`) and
+set `DATABASE_URL`.
+
 Both substitutes are single-process, and that is the whole trade:
 
 - the PostgreSQL cluster is a child of the process that started it and stops

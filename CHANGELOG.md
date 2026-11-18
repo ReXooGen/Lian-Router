@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### `lianrouter init` now produces an install that starts
+
+A clean install printed a config error on the first run and told the operator to
+supply `DATABASE_URL` before anything would work. That is one setup step too
+many, and the one step a newcomer is least equipped to perform: the launcher
+already ships the server binaries, so it can own the database the same way it
+owns the gateway.
+
+`DATABASE_MODE=embedded` makes the launcher initialise a PostgreSQL cluster under
+`<installRoot>/pgdata` on port 55433, start it, and pass the gateway a
+`DATABASE_URL` pointing at it. The gateway is unchanged: `DATABASE_URL` remains
+the only persistence source in `src/`, and nothing inside it learns a second one.
+The cluster is a child of the launcher, so `lianrouter tray` and an interactive
+run both keep it alive for as long as they run, and `SIGINT` unwinds the gateway
+first and the postmaster second.
+
+`REDIS_MODE=embedded` is now what `init` writes too, so the pair needs no
+external service at all. `--background` is refused under `DATABASE_MODE=embedded`
+with an explanation instead of a silent failure: that flag unrefs the gateway and
+returns, which would take the database with it and leave a gateway that cannot
+reach its own URL. `lianrouter tray` is the shape that works, and the message
+says so.
+
+`embedded-postgres` is now a dependency of the published launcher package. Its
+platform binaries resolve at runtime through the package's own `import()`, so
+`scripts/build-cli.ts` marks both it and `@embedded-postgres/*` external: bundling
+them would inline 100 MB or fail on every platform but the build host.
+
+Verified end to end on a clean install root: `lianrouter init` writes the config,
+`lianrouter tray` starts the cluster and the gateway, and `/health/ready` answers
+`{"status":"ready","db":"connected"}` with Docker stopped and no PostgreSQL
+service installed.
+
 ### The root document no longer advertises a landing page
 
 `/` mounted the public landing app, so a console-only install opened on marketing

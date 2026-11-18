@@ -65,11 +65,44 @@ describe("resolveGatewayConfig precedence", () => {
     expect(config.missing).toEqual([]);
   });
 
-  it("reports both required names when the file is absent", async () => {
+  it("reports every missing name when the file is absent", async () => {
     const root = await tempRoot();
     const config = resolveGatewayConfig(root, {});
     expect(config.present).toBe(false);
-    expect(config.missing).toEqual(["DATABASE_URL", "LIANROUTER_ENCRYPTION_KEY", "REDIS_URL"]);
+    // `DATABASE_MODE` defaults to `url`, so an absent file asks for the URL the
+    // gateway requires. `embedded` removes that requirement, and its own test
+    // below covers that branch.
+    // Order follows the requirement order in `resolveGatewayConfig`, which is
+    // not the contract this test exists to pin; the set of names is.
+    expect([...config.missing].sort()).toEqual([
+      "DATABASE_URL",
+      "LIANROUTER_ENCRYPTION_KEY",
+      "REDIS_URL",
+    ].sort());
+  });
+
+  it("does not require DATABASE_URL when DATABASE_MODE=embedded", async () => {
+    const root = await tempRoot();
+    await writeFile(
+      resolveConfigFile(root),
+      `DATABASE_MODE=embedded\nLIANROUTER_ENCRYPTION_KEY=${VALID_KEY}\nREDIS_MODE=embedded\n`,
+      "utf8",
+    );
+    const config = resolveGatewayConfig(root, {});
+    expect(config.databaseMode).toBe("embedded");
+    expect(config.missing).toEqual([]);
+  });
+
+  it("still requires DATABASE_URL when DATABASE_MODE is anything else", async () => {
+    const root = await tempRoot();
+    await writeFile(
+      resolveConfigFile(root),
+      `DATABASE_MODE=url\nLIANROUTER_ENCRYPTION_KEY=${VALID_KEY}\nREDIS_MODE=embedded\n`,
+      "utf8",
+    );
+    const config = resolveGatewayConfig(root, {});
+    expect(config.databaseMode).toBe("url");
+    expect(config.missing).toEqual(["DATABASE_URL"]);
   });
 
   it("does not require REDIS_URL when single_instance_local is set", async () => {
