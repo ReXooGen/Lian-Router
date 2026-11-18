@@ -67,10 +67,13 @@ operator sees. `FreeConsole` measured as the only call that actually tears that
 console down. The tray session survives regardless, because detachment is what
 protects it.
 
-Verified on Windows: a detached child reports no console and stays alive after its
-parent is killed, while a plain child reports the shared handle and dies;
-`hideConsoleWindow()` hides a visible console window and reports `true`.
-`bun test cli/test` → 324 pass, 0 fail; both typechecks clean.
+Verified on Windows: a plain child reports the parent's console handle while the
+same child spawned detached reports `NULL`, which is the property that decides
+whether a console close can reach it; and `hideConsoleWindow()` hides a visible
+console window and reports `true`. `taskkill /T` does still reach a detached
+child, because process-tree termination follows parent pids rather than console
+attachment — that is a different mechanism and this change does not claim to
+survive it. `bun test cli/test` → 327 pass, 0 fail; both typechecks clean.
 
 ### `lianrouter init` now produces an install that starts
 
