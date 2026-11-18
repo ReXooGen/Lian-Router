@@ -961,6 +961,14 @@ async function enterTrayMode(
     await shutdownSession(session, supervisor);
     return 1;
   }
+  // Hand the gateway to the tray before blocking. From this point the tray is
+  // the thing that owns the session, so the launcher must stop treating itself
+  // as the owner: `detach()` sets the flag the exit hook reads, and without it a
+  // launcher that ends for *any* reason — a closed console window, a lost
+  // terminal, a crash — kills the gateway on its way out and the operator sees
+  // "hiding it stopped everything". The control server keeps running so the tray
+  // still has its command channel; only the child's lifetime changes hands.
+  supervisor.detach();
   if (options.noOpen) {
     console.log(`Tray host started; control port ${session.control.port}`);
   }

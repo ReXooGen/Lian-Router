@@ -54,12 +54,18 @@ export interface ShutdownRegistration {
 }
 
 /**
- * Wires `SIGINT`/`SIGTERM` to one graceful shutdown.
+ * Wires `SIGINT`/`SIGTERM`/`SIGHUP` to one graceful shutdown.
  *
  * `exit` is injected so a test can observe the outcome without terminating the
  * test runner; production passes `process.exit`. The first signal wins — a
  * second Ctrl-C while the gateway is still terminating must not start a second
  * teardown, because both would signal the same child and race the pid file.
+ *
+ * `SIGHUP` is not decoration on Windows: closing the terminal window, or losing
+ * the console the launcher was attached to, is delivered as `SIGHUP` rather than
+ * `SIGINT`. Without a handler the runtime's default ends the process abruptly
+ * and the shutdown path never runs, so the gateway is left holding a pid file
+ * the next launcher refuses to ignore.
  */
 export function installShutdownHandlers(
   shutdown: () => Promise<void>,
@@ -78,11 +84,16 @@ export function installShutdownHandlers(
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  // Not on Windows: Bun maps `SIGHUP` there to a console-close notification, and
+  // registering for it is what turns an abrupt termination into the same orderly
+  // teardown Ctrl-C gets. On POSIX it covers a closed terminal.
+  process.on("SIGHUP", onSignal);
   return {
     run,
     dispose(): void {
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
+      process.off("SIGHUP", onSignal);
     },
   };
 }

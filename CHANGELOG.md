@@ -33,6 +33,27 @@ wrote self-repairs on a plain `lianrouter` run, keeps its key, and writes one
 backup; a root configured against the operator's own PostgreSQL is untouched,
 byte for byte, and fails only on the server that is not listening.
 
+### The tray session no longer dies with the launcher
+
+Hiding to the tray left the gateway owned by a process that could vanish at any
+moment. The exit hook in `supervisor.ts` kills the gateway unless the supervisor
+was detached, and the tray path never detached: `enterTrayMode` started the tray
+host and then blocked, so the *launcher* still considered itself the owner.
+Anything that ended the launcher — a closed console window, a lost terminal, a
+crash — therefore took the gateway with it, which is exactly the symptom
+"closing it stopped the program".
+
+`enterTrayMode` now calls `supervisor.detach()` as soon as the tray is confirmed
+alive, before it blocks. From that point the tray owns the session and the exit
+hook has nothing to kill; the control server keeps running, so the tray keeps its
+command channel.
+
+Measured on Windows against an install packed from this tree: with a tray session
+serving `200 {"status":"ready","db":"connected"}`, killing only the launcher pid
+leaves the gateway and the tray alive, `/health/ready` still answers 200 fifteen
+seconds later, and a fresh `lianrouter status` adopts the survivor
+(`LianRouter is running (pid …)`).
+
 ### Closing the console no longer stops a tray session
 
 Choosing **Hide to Tray** left the console window on screen, and closing that
