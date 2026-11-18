@@ -33,6 +33,22 @@ wrote self-repairs on a plain `lianrouter` run, keeps its key, and writes one
 backup; a root configured against the operator's own PostgreSQL is untouched,
 byte for byte, and fails only on the server that is not listening.
 
+### `lianrouter stop` actually stops
+
+The command stopped the gateway and left the tray running. A live tray watches
+the control port, and a control port that disappears is precisely its
+resurrection trigger — so the tray started the gateway straight back up and the
+operator's stop was undone seconds later, with the process still serving on the
+same port.
+
+`stopServer` now closes the tray first, which removes the watcher, then stops the
+gateway. The message says so (`LianRouter stopped (tray closed)`) instead of
+implying nothing else was involved.
+
+Measured on Windows from a clean global install: after `lianrouter stop` the
+tray and every embedded-postgres process are gone and `/health/ready` stops
+answering.
+
 ### The tray session no longer dies with the launcher
 
 Hiding to the tray left the gateway owned by a process that could vanish at any

@@ -376,7 +376,7 @@ export async function run(argv: readonly string[]): Promise<number> {
     case "status":
       return await printStatus(supervisor);
     case "stop":
-      return await stopServer(supervisor);
+      return await stopServer(supervisor, runtime.installRoot);
     case "start":
       return await withShutdownHandlers(
         supervisor,
@@ -487,7 +487,19 @@ async function printStatus(supervisor: GatewaySupervisor): Promise<number> {
   return 0;
 }
 
-async function stopServer(supervisor: GatewaySupervisor): Promise<number> {
+async function stopServer(supervisor: GatewaySupervisor, installRoot: string): Promise<number> {
+  // The tray first, and for a reason that is not obvious from the call: a live
+  // tray watches the control port, and a control port that disappears is its
+  // resurrection trigger. Stopping the gateway alone therefore reported
+  // "LianRouter stopped" and then had the tray start it right back up — the
+  // operator's stop was undone by the icon they forgot was still there.
+  // Stopping the tray first removes the watcher, so the gate the operator asked
+  // for actually holds.
+  const trayWasRunning = await isTrayRunning(installRoot);
+  if (trayWasRunning) {
+    await stopTray(installRoot);
+  }
+
   const adopted = await supervisor.adoptExisting();
   if (!adopted) {
     console.log("LianRouter is not running.");
@@ -496,7 +508,7 @@ async function stopServer(supervisor: GatewaySupervisor): Promise<number> {
   const status = await supervisor.stop();
   console.log(
     status.state === "stopped"
-      ? "LianRouter stopped."
+      ? `LianRouter stopped${trayWasRunning ? " (tray closed)" : ""}.`
       : `Stop failed: ${status.lastError ?? status.state}`,
   );
   await supervisor.dispose();
@@ -923,7 +935,10 @@ async function exitSession(
   runtime: Runtime,
 ): Promise<number> {
   if (await isTrayRunning(runtime.installRoot)) {
-    // The tray still needs a gateway; leaving it up is what "background" means.
+    // "Exit" from the menu means the launcher goes away and the tray keeps
+    // serving — that is the whole point of the tray. The gateway therefore has
+    // to be detached rather than stopped, or exiting the menu would take the
+    // gateway with it and leave a tray with nothing behind it.
     supervisor.detach();
     console.log(`Gateway left running at ${supervisor.status.url}.`);
   } else {
