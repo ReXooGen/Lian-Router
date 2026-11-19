@@ -49,6 +49,24 @@ Measured on Windows from a clean global install: after `lianrouter stop` the
 tray and every embedded-postgres process are gone and `/health/ready` stops
 answering.
 
+### The tray menu says what the click does
+
+The menu row was hard-coded `Stop Server`, whatever the gateway was doing. A
+gateway that was already down offered a stop that had nothing to stop, and there
+was no way to bring it back except the console. The row is now
+`Stop Server`/`Start Server`, resolved from the gateway's state at the moment
+the menu opens, and one command id backs both labels: the host reads the state it
+holds, so the action always matches the label the operator read. A restart also
+re-renders the menu, and the tooltip refresh is immediate instead of waiting up
+to fifteen seconds for its next tick.
+
+`POST /server/start` existed in the control server; the tray simply had no
+client method for it.
+
+Measured on Windows against an install packed from this tree: the menu reads
+`Stop Server` while the gateway serves and `Start Server` after a stop, and
+the labelled click performs the labelled action in both directions.
+
 ### A stale `postmaster.pid` no longer blocks the next start
 
 Killing the launcher — a closed console, a crash, `taskkill` — leaves the

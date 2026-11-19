@@ -1,6 +1,6 @@
 {
   "name": "lianrouter",
-  "version": "2.3.10",
+  "version": "2.3.11",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",

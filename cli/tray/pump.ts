@@ -135,6 +135,11 @@ const callbackKeepAlive: JSCallback[] = [];
 export interface TrayPumpOptions {
   readonly tooltip: string;
   readonly iconPath?: string;
+  /**
+   * Whether the gateway is serving, re-read every time the menu opens. The host
+   * owns the probe; the pump only renders what it is told.
+   */
+  readonly readGatewayState: () => GatewayState;
   readonly onCommand: (command: TrayCommandId) => void;
   readonly onLeftClick?: () => void;
   readonly onReady?: () => void;
@@ -164,14 +169,24 @@ export interface TrayPumpHandle {
 // ─── Menu ───────────────────────────────────────────────────────────────────
 
 interface MenuEntry {
-  readonly label: string;
+  readonly label: string | ((state: GatewayState) => string);
   readonly command: TrayCommandId;
 }
+
+/**
+ * Whether the gateway behind the tray is serving. Resolved by the host from its
+ * last status probe and passed here, because the menu is built on demand — at
+ * click time — and the host is the only holder of the state.
+ */
+export type GatewayState = "running" | "stopped";
 
 const MENU_ENTRIES: readonly (MenuEntry | "separator")[] = [
   { label: "Open Console", command: TRAY_COMMANDS.openConsole },
   { label: "Restart Server", command: TRAY_COMMANDS.restart },
-  { label: "Stop Server", command: TRAY_COMMANDS.stop },
+  // The row is an action, not a status report: it names what the click does.
+  // A static "Stop Server" offered stopping to an operator whose gateway was
+  // already down, and there was no way back in except the console.
+  { label: (state) => (state === "running" ? "Stop Server" : "Start Server"), command: TRAY_COMMANDS.toggle },
   { label: "Check for Updates", command: TRAY_COMMANDS.checkUpdate },
   "separator",
   { label: "Exit", command: TRAY_COMMANDS.exit },
@@ -181,6 +196,10 @@ const MENU_ENTRIES: readonly (MenuEntry | "separator")[] = [
  * Builds, shows, and destroys the context menu, returning the chosen command id
  * (0 when the operator dismissed it).
  *
+ * The labels are resolved at click time, not at pump start, because the whole
+ * point of the toggle row is to describe the gateway as it is when the operator
+ * opens the menu. `state` comes from the host's last status probe.
+ *
  * `TrackPopupMenu` runs its own modal loop on this thread, so the pump stalls
  * for as long as the menu is open. That is unavoidable and harmless: the menu
  * needs the same message queue, and nothing else is due while it is up.
@@ -189,7 +208,7 @@ const MENU_ENTRIES: readonly (MenuEntry | "separator")[] = [
  * `AppendMenuW` copies the string, but holding them keeps the buffer lifetime
  * obvious to the next reader.
  */
-function showContextMenu(window: NativeHandle): number {
+function showContextMenu(window: NativeHandle, state: GatewayState): number {
   const { user32 } = getWin32();
   const menu = toHandle(user32.CreatePopupMenu());
   if (menu === undefined) return 0;
@@ -200,11 +219,11 @@ function showContextMenu(window: NativeHandle): number {
       user32.AppendMenuW(menu, MF_SEPARATOR, 0n, null);
       continue;
     }
-    const label = wideString(entry.label);
+    const text = typeof entry.label === "function" ? entry.label(state) : entry.label;
+    const label = wideString(text);
     keepAlive.push(label);
     user32.AppendMenuW(menu, MF_STRING, BigInt(entry.command), ptr(label));
   }
-
   const cursor = Buffer.alloc(POINT_SIZE);
   user32.GetCursorPos(ptr(cursor));
   const view = new DataView(cursor.buffer, cursor.byteOffset, cursor.byteLength);
@@ -354,7 +373,7 @@ export async function startTrayPump(options: TrayPumpOptions): Promise<TrayPumpH
           menuOpen = true;
           let chosen = 0;
           try {
-            chosen = showContextMenu(window);
+            chosen = showContextMenu(window, options.readGatewayState());
           } finally {
             menuOpen = false;
           }

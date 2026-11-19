@@ -150,6 +150,13 @@ async function main(): Promise<number> {
   let knownUrl: string | undefined;
   /** Gateway port from that URL, reused when a launcher has to be restarted. */
   let knownPort: number | undefined;
+  /**
+   * Whether the gateway was serving at the last probe. The menu's toggle row
+   * reads this to decide between "Stop Server" and "Start Server", and the
+   * toggle command itself reads it to decide what the click means. Both read
+   * the same value so the label and the action cannot disagree.
+   */
+  let gatewayServing = false;
 
   /**
    * Refreshes the tooltip from the live endpoint.
@@ -182,6 +189,7 @@ async function main(): Promise<number> {
       expectedPid,
       result?.ok === false ? result.error : resolved.ok ? undefined : resolved.error,
     );
+    gatewayServing = state.kind === "running";
     pump.setTooltip(describeTrayState(state));
   };
 
@@ -361,26 +369,53 @@ async function main(): Promise<number> {
       return;
     }
 
+    // The toggle row is one command id whose meaning comes from the state the
+    // menu was rendered with. `gatewayServing` is the value the label was built
+    // from, so the action matches what the operator read — a click on a row
+    // that said "Start Server" starts, even if the gateway died between the
+    // menu opening and the click landing.
+    if (command === TRAY_COMMANDS.toggle) {
+      const stopping = gatewayServing;
+      const result = await callRecovering({
+        installRoot,
+        startDir: moduleDir,
+        deps: recoveryDeps,
+        ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
+        call: (client) => (stopping ? client.stop() : client.start()),
+      });
+      if (!result.result.ok) {
+        showTrayError(result.result.error);
+        void refreshTooltip();
+        return;
+      }
+      // The label must not claim the opposite of what just happened while the
+      // next tooltip tick is up to fifteen seconds away.
+      gatewayServing = !stopping;
+      void refreshTooltip();
+      return;
+    }
+
     const result = await callRecovering({
       installRoot,
       startDir: moduleDir,
       deps: recoveryDeps,
       ...(knownPort === undefined ? {} : { gatewayPort: knownPort }),
-      call: (client) => (command === TRAY_COMMANDS.restart ? client.restart() : client.stop()),
+      call: (client) => client.restart(),
     });
     if (!result.result.ok) {
       showTrayError(result.result.error);
       void refreshTooltip();
       return;
     }
-    // The URL and the state both change after a restart or a stop, and the
-    // operator is looking at the icon when it happens.
+    // The URL and the state both change after a restart, and the operator is
+    // looking at the icon when it happens.
     void refreshTooltip();
   };
 
   try {
     pump = await startTrayPump({
       tooltip: TOOLTIP_UNREACHABLE,
+      readGatewayState: () => (gatewayServing ? "running" : "stopped"),
       onCommand: (command) => {
         void runCommand(command);
       },

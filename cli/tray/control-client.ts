@@ -60,6 +60,7 @@ export type ControlResult<T> = { readonly ok: true; readonly data: T } | { reado
 /** The control client the tray menu drives. */
 export interface ControlClient {
   status(): Promise<ControlResult<ControlStatus>>;
+  start(): Promise<ControlResult<unknown>>;
   restart(): Promise<ControlResult<unknown>>;
   stop(): Promise<ControlResult<unknown>>;
   shutdown(): Promise<ControlResult<unknown>>;
@@ -205,6 +206,7 @@ export function createControlClient(port: number, token: string): ControlClient 
 
   return {
     status: () => call("/status", "GET", readStatus),
+    start: () => call("/server/start", "POST", () => true),
     restart: () => call("/server/restart", "POST", () => true),
     stop: () => call("/server/stop", "POST", () => true),
     shutdown: () => call("/shutdown", "POST", () => true),
