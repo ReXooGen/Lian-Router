@@ -540,7 +540,14 @@ export function useAutoClawCredits(accountId: string, enabled: boolean) {
         signal: querySignal(context),
       }),
     enabled: Boolean(accountId) && enabled,
-    staleTime: 60_000,
+    // The balance moves whenever the vendor grants points or a routed request
+    // charges them; a minute-scale poll keeps the card honest without the
+    // operator refreshing. Each read also posts the activity event the
+    // vendor's campaign grants require, so the poll doubles as that heartbeat.
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
     retry: false,
   });
 }
