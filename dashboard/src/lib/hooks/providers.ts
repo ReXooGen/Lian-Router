@@ -3,7 +3,7 @@ import type { ApiErrorShape } from "../api";
 // Console-owned device-poll DTO; token material remains provider-internal.
 import type { AccountHealthEventRecord, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountRequest, CreateProviderRequest, OAuthDevicePollResponse as OAuthDevicePollResult, ProbeAllAccountsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountsExportResponse, ProviderResponse, SetModelEnabledRequest, UpdateProviderAccountRequest, UpdateProviderRequest } from "../contracts";
 import { queryKeys } from "../query-keys";
-import { QUERY_OPTIONS, assertModels, assertProviders, querySignal } from "./common";
+import { QUERY_OPTIONS, assertModels, assertProviderDetail, assertProviders, querySignal } from "./common";
 import { getErrorMessage } from "../helpers";
 import { toast } from "../toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +17,24 @@ export function useProviders() {
     queryFn: (context) =>
       consoleRequest<unknown>("/providers", { signal: querySignal(context) }).then(assertProviders),
     ...QUERY_OPTIONS,
+  });
+}
+/**
+ * Loads one provider's full row (detail endpoint projects `compatibilityProfile`
+ * and `baseUrl`, the list projection does not). The edit dialog reads this so a
+ * save never starts from a stripped row and silently drops stored config.
+ */
+export function useProviderDetail(providerId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.providers.detail(providerId ?? ""),
+    queryFn: (context) => {
+      if (!providerId) throw { status: 400, code: "invalid_request", message: "Provider is required" } satisfies ApiErrorShape;
+      return consoleRequest<unknown>(`/providers/${encodeURIComponent(providerId)}`, {
+        signal: querySignal(context),
+      }).then(assertProviderDetail);
+    },
+    ...QUERY_OPTIONS,
+    enabled: Boolean(providerId),
   });
 }
 

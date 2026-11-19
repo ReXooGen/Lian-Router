@@ -23,6 +23,7 @@ import {
   useCreateProviderAccount,
   useDeleteProvider,
   useProviderAccounts,
+  useProviderDetail,
   useProviderModels,
   useProviders,
   useSyncProviderModels,
@@ -368,7 +369,15 @@ export function EditProviderModal({
   onClose: () => void;
 }): ReactNode {
   const update = useUpdateProvider();
-  const profile = provider.compatibilityProfile ?? {};
+  // The list row strips `compatibilityProfile`/`baseUrl` (includeSecrets=false),
+  // so seeding from it would blank the form and a save would erase stored
+  // config. The detail endpoint projects the full row; while it loads, the
+  // list row still renders the trigger UI but the form stays inert.
+  const detail = useProviderDetail(open ? provider.providerId : undefined);
+  const fullProvider = detail.data ?? undefined;
+  const source = fullProvider ?? provider;
+  const hasFullRow = detail.data !== undefined;
+  const profile = source.compatibilityProfile ?? {};
   const storedIcon = typeof profile.iconUrl === "string" ? profile.iconUrl : null;
   const [label, setLabel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -392,16 +401,14 @@ export function EditProviderModal({
     );
   }, [profile.extra_headers]);
 
-  // Seed from the live row every time the dialog opens, and re-seed when the
-  // underlying provider object changes while open (a refetch landing mid-edit
-  // must not leave the form on a pre-fetch blank). A stale edit round
-  // (open -> cancel -> open) cannot carry over abandoned input because every
-  // field is reset from the row.
+  // Seed from the full detail row every time it lands (dialog open + row
+  // change). Until `detail.data` exists the form keeps its previous values and
+  // submit is blocked — an edit must never start from the stripped list row.
   useEffect(() => {
-    if (!open) return;
-    setLabel(provider.label ?? "");
-    setBaseUrl(provider.baseUrl ?? "");
-    setWireFamily((provider.wireFamilyDefault ?? "chat") as WireFamily);
+    if (!open || !hasFullRow) return;
+    setLabel(source.label ?? "");
+    setBaseUrl(source.baseUrl ?? "");
+    setWireFamily((source.wireFamilyDefault ?? "chat") as WireFamily);
     setSendCliIdentity(profile.cli_identity !== false);
     {
       const st = identityStateFrom(
@@ -417,7 +424,7 @@ export function EditProviderModal({
     setIconError(null);
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, provider]);
+  }, [open, source]);
 
   const acceptIconFile = (file: File) => {
     const okTypes = ["image/png", "image/webp", "image/gif", "image/jpeg"];
@@ -441,6 +448,7 @@ export function EditProviderModal({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!hasFullRow) return;
     if (!label.trim()) {
       setError("Display Name is required");
       return;
@@ -621,8 +629,13 @@ export function EditProviderModal({
           <Button variant="secondary" type="button" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" type="submit" disabled={submitting}>
-            {submitting ? "Saving..." : "Save changes"}
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={submitting || !hasFullRow}
+            title={hasFullRow ? undefined : "Loading current configuration…"}
+          >
+            {submitting ? "Saving..." : !hasFullRow ? "Loading…" : "Save changes"}
           </Button>
         </Inline>
       </form>

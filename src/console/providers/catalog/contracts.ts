@@ -331,6 +331,12 @@ export function validateCompatibilityProfile(profile: CompatibilityProfile): voi
     // Explicit gateway-identity opt-in for BYOK rows (mirrors
     // `ApiKeyProviderSpec.gatewayUserAgent` for bundled specs).
     gateway_user_agent: true,
+    // Presentation-only fields the dashboard persists with the row. Both are
+    // shape-validated above; neither reaches dispatch, but the edit dialog
+    // round-trips them inside `compatibilityProfile`, so the whitelist must
+    // admit them or every save carrying an icon/credential link 400s.
+    iconUrl: true,
+    credentialUrl: true,
   };
   for (const k of Object.keys(profile)) {
     if (!allowed[k]) {

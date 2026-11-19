@@ -81,6 +81,7 @@ export function mapProviderRow(row: typeof providers.$inferSelect): ProviderReco
       ? { capabilityProfile: row.capabilityProfile as Record<string, unknown> }
       : {}),
     ...(row.baseUrl ? { baseUrl: row.baseUrl } : {}),
+    ...(row.label ? { label: row.label } : {}),
     ...(row.compatibilityProfile
       ? { compatibilityProfile: row.compatibilityProfile as CompatibilityProfile }
       : {}),

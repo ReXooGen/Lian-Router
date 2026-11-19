@@ -34,6 +34,7 @@ CREATE TABLE "providers" (
   "capability_profile" jsonb,
   "base_url" text,
   "compatibility_profile" jsonb,
+  "label" text,
   "enabled" boolean DEFAULT true NOT NULL,
   "requires_account" boolean DEFAULT true NOT NULL,
   CONSTRAINT "providers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE cascade

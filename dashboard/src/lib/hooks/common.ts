@@ -250,6 +250,19 @@ export function assertProviders(value: unknown): ProviderResponse[] {
   });
 }
 
+/** Validates the `GET /providers/:providerId` detail row (same shape as list entries). */
+export function assertProviderDetail(value: unknown): ProviderResponse {
+  if (
+    !isRecord(value) ||
+    typeof value.providerId !== "string" ||
+    typeof value.enabled !== "boolean" ||
+    typeof value.isBuiltIn !== "boolean"
+  ) {
+    throw invalidResponse("Invalid provider detail response");
+  }
+  return value as unknown as ProviderResponse;
+}
+
 export function assertModels(value: unknown): ModelCatalogEntry[] {
   if (!Array.isArray(value)) throw invalidResponse("Invalid model response");
   return value.map((model) => {

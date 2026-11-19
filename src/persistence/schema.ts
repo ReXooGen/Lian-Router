@@ -119,6 +119,8 @@ export const providers = pgTable(
     capabilityProfile: jsonb("capability_profile"),
     baseUrl: text("base_url"),
     compatibilityProfile: jsonb("compatibility_profile"),
+    /** Operator's display name for custom/BYOK rows; null for bundled providers. */
+    label: text("label"),
     enabled: boolean("enabled").notNull().default(true),
     // Builtin default `true` (most providers need a real credential). Only a
     // genuinely public/unauthenticated builtin (OpenCode Free) is seeded

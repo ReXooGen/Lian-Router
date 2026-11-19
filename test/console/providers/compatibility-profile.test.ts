@@ -149,3 +149,16 @@ describe("provider system prompt normalization", () => {
     expect(normalizeSystemPrompt(atLimit)).toHaveLength(MAX_PROVIDER_SYSTEM_PROMPT);
   });
 });
+
+// Regression: the edit dialog round-trips `iconUrl` inside the profile; the
+// whitelist must admit the presentation fields it already shape-validates or
+// every save carrying an icon/credential link 400s.
+test("accepts presentation-only fields it shape-validates", () => {
+  validateCompatibilityProfile({
+    iconUrl: "https://cdn.example.com/icon.png",
+    credentialUrl: "https://example.com/keys",
+  } as never);
+  validateCompatibilityProfile({
+    iconUrl: `data:image/png;base64,${"A".repeat(64)}`,
+  } as never);
+});

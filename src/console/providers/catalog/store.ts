@@ -171,6 +171,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       capabilityProfile: record.capabilityProfile ?? null,
       baseUrl: record.baseUrl ?? null,
       compatibilityProfile: record.compatibilityProfile ?? null,
+      label: record.label ?? null,
     });
   }
   async update(
@@ -187,7 +188,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     if (patch.compatibilityProfile) validateCompatibilityProfile(patch.compatibilityProfile);
     const set: Partial<typeof providers.$inferInsert> = {};
     if (patch.enabled !== undefined) set.enabled = patch.enabled;
-    if (patch.capabilityProfile !== undefined) set.capabilityProfile = patch.capabilityProfile;
+    if (patch.label !== undefined) set.label = patch.label;
     if (patch.baseUrl !== undefined) set.baseUrl = patch.baseUrl;
     if (patch.compatibilityProfile !== undefined)
       set.compatibilityProfile = patch.compatibilityProfile;
