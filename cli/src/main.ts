@@ -11,7 +11,12 @@ import { run } from "./launcher";
 
 try {
   const code = await run(process.argv.slice(2));
-  process.exit(code);
+  // A clean return means every session handle was already disposed by the
+  // launcher (the tray handoff stops the control server, supervisor, and
+  // embedded cluster before it returns). Setting the exit code and letting
+  // the runtime drain avoids the SYNCHRONOUS TERMINATION NOTICE Bun prints
+  // when process.exit force-cuts pending exit hooks.
+  process.exitCode = code;
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`lianrouter: ${message}`);
