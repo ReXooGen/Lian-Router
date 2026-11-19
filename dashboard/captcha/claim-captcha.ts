@@ -43,6 +43,17 @@ const region = params.get("region") ?? "";
 const prefix = params.get("prefix") ?? "";
 const opener = window.opener as Window | null;
 const openerOrigin = window.location.origin;
+/**
+ * Which dialog this challenge belongs to.
+ *
+ * The page is shared: the claim flow and the AutoClaw OAuth flow both need an
+ * Aliyun token and both must run outside the dashboard document's policy. The
+ * channel is carried in and echoed back so each opener only accepts its own
+ * message instead of racing over a shared name.
+ */
+const channel = params.get("channel") ?? "zcode-claim-captcha";
+const pageTitle = params.get("title") ?? "";
+if (pageTitle.length > 0) document.title = pageTitle;
 
 const statusEl = document.getElementById("status");
 const holderEl = document.getElementById("holder");
@@ -60,7 +71,7 @@ function report(message: string): void {
  * rejection.
  */
 function finish(payload: { readonly param?: string; readonly error?: string }): void {
-  opener?.postMessage({ type: "zcode-claim-captcha", region, ...payload }, openerOrigin);
+  opener?.postMessage({ type: channel, region, ...payload }, openerOrigin);
   window.close();
 }
 
