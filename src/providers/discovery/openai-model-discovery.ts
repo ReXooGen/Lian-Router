@@ -59,7 +59,7 @@ export async function fetchOpenAICompatibleModels(
 
       const parsedOutput =
         positiveNumber(entry.max_output_tokens) ??
-        positiveNumber((entry as Record<string, unknown>).max_output_tokens) ??
+        positiveNumber((entry as Record<string, unknown>).max_completion_tokens) ??
         positiveNumber(entry.maxTokens);
       const maxOutputTokens = parsedOutput ?? fallback?.outputLimit ?? 64_192;
       const outputTokens = Math.min(maxOutputTokens, contextWindow);
