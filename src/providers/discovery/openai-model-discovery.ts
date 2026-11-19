@@ -105,6 +105,14 @@ export async function fetchOpenAICompatibleModels(
               (v): v is string => typeof v === "string",
             )
           : [];
+      // OpenAI-style nested object: `capabilities: { input: [...], output: [...] }`
+      const nestedCaps = (entry as Record<string, unknown>).capabilities;
+      const nestedInput = isRecord(nestedCaps) && Array.isArray(nestedCaps.input)
+        ? nestedCaps.input.filter((v): v is string => typeof v === "string")
+        : [];
+      // Router-style nested object may also carry boolean flags directly.
+      const nestedReasoning = isRecord(nestedCaps) && nestedCaps.reasoning === true;
+      const nestedToolCall = isRecord(nestedCaps) && nestedCaps.tool_call === true;
       const declaredCaps = Array.isArray((entry as Record<string, unknown>).capabilities)
         ? ((entry as Record<string, unknown>).capabilities as unknown[]).filter(
             (v): v is string => typeof v === "string",
@@ -113,6 +121,7 @@ export async function fetchOpenAICompatibleModels(
       const supportsImageInput =
         hasImage ||
         archInputList.some((v) => v.trim().toLowerCase() === "image") ||
+        nestedInput.some((v) => v.trim().toLowerCase() === "image") ||
         declaredCaps.some((v) => v.trim().toLowerCase() === "vision");
       // Reasoning: `reasoning: true` / `thinking` capability, or OpenRouter's
       // `supported_parameters` carrying `reasoning`/`include_reasoning`.
@@ -124,12 +133,14 @@ export async function fetchOpenAICompatibleModels(
       const paramsLower = supportedParams.map((v) => v.trim().toLowerCase());
       const supportsReasoning =
         entry.reasoning === true ||
+        nestedReasoning ||
         (entry as Record<string, unknown>).thinking === true ||
         declaredCaps.some((v) => v.trim().toLowerCase() === "thinking") ||
         paramsLower.some((v) => v === "reasoning" || v === "include_reasoning");
       // Tool calling: explicit flag or the two ecosystem parameter spellings.
       const supportsTools =
         entry.tool_call === true ||
+        nestedToolCall ||
         entry.tools === true ||
         declaredCaps.some((v) => v.trim().toLowerCase() === "tools") ||
         paramsLower.some((v) => v === "tools" || v === "tool_call" || v === "function_calling");

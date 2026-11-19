@@ -193,6 +193,8 @@ export class PublicModelCatalogStore {
         modelId: models.modelId,
         outputLimit: models.outputLimit,
         modalities: models.modalities,
+        reasoning: models.reasoning,
+        toolCall: models.toolCall,
         providerRequiresAccount: providers.requiresAccount,
       })
       .from(models)
@@ -266,7 +268,15 @@ export class PublicModelCatalogStore {
         owned_by: m.providerId,
         ...(m.contextLimit != null ? { context_length: m.contextLimit } : {}),
         ...(m.outputLimit != null ? { max_completion_tokens: m.outputLimit } : {}),
-        ...(m.modalities ? { capabilities: m.modalities } : {}),
+        ...(m.modalities || m.reasoning || m.toolCall
+          ? {
+              capabilities: {
+                ...(m.modalities ?? {}),
+                ...(m.reasoning ? { reasoning: true } : {}),
+                ...(m.toolCall ? { tool_call: true } : {}),
+              },
+            }
+          : {}),
       }));
 
     // Expose tenant model aliases and combos as first-class public models.
