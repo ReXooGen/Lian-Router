@@ -147,7 +147,11 @@ export function createStaticHandler(
 
           // Determine cache headers based on file type
           let cacheControl: string;
-          if (relativePath === "index.html" || relativePath.endsWith("/index.html")) {
+          if (
+            relativePath === "index.html" ||
+            relativePath.endsWith("/index.html") ||
+            relativePath.endsWith(".html")
+          ) {
             cacheControl = "no-cache, must-revalidate";
           } else if (hasHashInFilename(fullPath)) {
             // Hashed assets (e.g., app.abc123.js) are immutable
