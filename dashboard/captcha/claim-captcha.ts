@@ -28,8 +28,12 @@ interface AliyunCaptchaOptions {
   readonly element: string;
   readonly button: string;
   readonly getInstance: (instance: { show?: () => void }) => void;
-  readonly success: (captchaVerifyParam: string) => void;
-  readonly fail: (reason: unknown) => void;
+  /** verifyType 2.0 flow: the SDK passes the certify JSON; the page answers. */
+  readonly captchaVerifyCallback?: (
+    value: string,
+  ) => Promise<{ captchaResult: boolean }> | { captchaResult: boolean };
+  /** verifyType 1.0/3.0 flow: a signed certify id. */
+  readonly success?: (captchaVerifyParam: string) => void;
 }
 
 interface CaptchaWindow extends Window {
@@ -123,6 +127,25 @@ async function main(): Promise<void> {
         // A widget that refuses to open automatically is still reachable through
         // the button; an unhandled throw here would leave the page stuck.
       }
+    },
+    // The SDK's verifyType 2.0 flow (the default when the config omits
+    // verifyType) never calls `success`: it hands the certify result to
+    // `captchaVerifyCallback` and waits for the page to answer. The vendor's
+    // own desktop app follows the same pattern — the JSON string is the proof
+    // and the server-side exchange validates it — so the param goes to the
+    // opener verbatim and the callback resolves to close the widget.
+    captchaVerifyCallback: (value: string) => {
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (trimmed.length === 0) {
+        report("The challenge returned no token.");
+        finish({ error: "empty_token" });
+        return Promise.resolve({ captchaResult: false });
+      }
+      report("Challenge solved. Returning to the claim…");
+      finish({ param: trimmed });
+      // The opener navigates away and the window closes; the widget only needs
+      // an affirmative business result so it does not surface a retry error.
+      return Promise.resolve({ captchaResult: true });
     },
     success: (captchaVerifyParam: string) => {
       const trimmed = captchaVerifyParam.trim();
