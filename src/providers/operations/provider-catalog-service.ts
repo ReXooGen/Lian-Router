@@ -17,7 +17,7 @@ import { getCachedModels } from "./model-catalog-cache";
 import type { LianRouterDatabase } from "../../persistence/postgres";
 import { providers } from "../../persistence/schema";
 import type { CompatibilityProfile } from "../provider-metadata";
-import { resolveCustomCliHeaders } from "./custom-cli-headers";
+import { resolveCustomCliHeaders, isCliIdentityPreset, resolveIdentityHeadersAsync } from "./custom-cli-headers";
 import { GATEWAY_USER_AGENT } from "./gateway-user-agent";
 import { isIP } from "node:net";
 import { isAddressAllowed } from "../../network/ssrf";
@@ -198,11 +198,25 @@ export async function registerByokProviders(
           provider_id: providerId,
           base_url: baseUrl,
           authentication_header_shape: wireProfile.authHeaderShape,
-          buildExtraHeaders: (_context, _request, candidate) => {
-            // Explicit gateway identity wins over CLI cloaking, and Codex /
-            // Claude-Code-shaped traffic can never take this path: this hook
-            // only runs for BYOK custom rows, never bundled first-party
-            // adapters. Unset restores the CLI headers below.
+          buildExtraHeaders: async (_context, _request, candidate) => {
+            // Identity precedence: explicit userAgent preset/literal wins, then
+            // the gateway agent opt-in, then the historical CLI cloaking. Codex
+            // / Claude-Code-shaped traffic never reaches this hook — it is BYOK
+            // custom rows only, never bundled first-party adapters. Unset
+            // restores the CLI headers below.
+            const ua = compatibilityProfile?.userAgent?.trim();
+            if (ua !== undefined && ua.length > 0) {
+              // Version-tracking presets await npm discovery so the header
+              // carries the current upstream release (resolver TTL keeps
+              // repeat dispatches off the network).
+              const presetHeaders = isCliIdentityPreset(ua)
+                ? await resolveIdentityHeadersAsync(ua, candidate?.wire_family ?? "chat")
+                : { "user-agent": ua };
+              return {
+                ...presetHeaders,
+                ...(compatibilityProfile?.extra_headers ?? {}),
+              };
+            }
             if (compatibilityProfile?.gateway_user_agent === true) {
               return {
                 "user-agent": GATEWAY_USER_AGENT,

@@ -60,7 +60,7 @@ export const queryKeys = {
       ["console", "providers", providerId, "models"] as const,
     flatAll: ["console", "providers", "models-flat-all"] as const,
     accounts: (providerId: string | undefined) =>
-      ["console", "providers", providerId, "accounts"] as const,
+      ["console", "providers", providerId, "accounts"] as const,    autoClawCaptcha: () => ["console", "providers", "autoclaw", "captcha"] as const,
     routing: (providerId: string | undefined) =>
       ["console", "providers", providerId, "routing"] as const,
     claims: (accountId: string | undefined) =>
@@ -111,10 +111,29 @@ export const queryKeys = {
     list: (filters: { action?: string; actor?: string; cursor?: string; limit?: number }) =>
       ["console", "audit", "list", filters] as const,
   },
+  automation: {
+    all: ["console", "automation"] as const,
+    // Status is part of the key because the server filters the list; each
+    // filter gets its own cache entry instead of overwriting the last one.
+    reportAccounts: (providerId: string, status: string) =>
+      ["console", "automation", "report", "accounts", providerId, status] as const,
+    // Prefix for invalidating every filtered account list at once.
+    reportAccountsAll: (providerId: string) =>
+      ["console", "automation", "report", "accounts", providerId] as const,
+    reportSchedule: (providerId: string) =>
+      ["console", "automation", "report", "schedule", providerId] as const,
+    appealAccounts: (providerId: string, status: string) =>
+      ["console", "automation", "appeal", "accounts", providerId, status] as const,
+    appealAccountsAll: (providerId: string) =>
+      ["console", "automation", "appeal", "accounts", providerId] as const,
+  },
   quota: {
     all: ["console", "quota"] as const,
     account: (accountId: string) => ["console", "quota", "account", accountId] as const,
     resets: (accountId: string) => ["console", "quota", "account", accountId, "resets"] as const,
+    credits: (accountId: string) => ["console", "quota", "account", accountId, "credits"] as const,
+    creditsHistory: (accountId: string, direction: string) =>
+      ["console", "quota", "account", accountId, "credits", direction] as const,
   },
   studio: {
     sessions: ["console", "studio", "sessions"] as const,

@@ -6,7 +6,12 @@ import {
   runAccountCheckinBatch,
   type BulkCheckinSummary,
 } from "../account-checkin-batch";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 
 export interface QuotaProviderSummary {
@@ -100,12 +105,15 @@ export async function fetchQuotaOverview(signal?: AbortSignal): Promise<QuotaOve
 export function useQuotaOverview(options?: {
   readonly refreshingMs?: number;
   readonly idleMs?: number;
+  /** Set false to hold the read until the caller actually needs it. */
+  readonly enabled?: boolean;
 }) {
   const refreshingMs = options?.refreshingMs ?? 2_000;
   const idleMs = options?.idleMs ?? 60_000;
   return useQuery<QuotaOverview>({
     queryKey: queryKeys.quota.all,
     queryFn: (context) => fetchQuotaOverview(querySignal(context)),
+    enabled: options?.enabled ?? true,
     staleTime: 0,
     refetchInterval: (query) => ((query.state.data?.refreshing ?? 0) > 0 ? refreshingMs : idleMs),
     refetchIntervalInBackground: false,
@@ -304,7 +312,7 @@ export interface AccountCheckinResult {
 }
 
 /** Provider ids whose billing facade exposes the daily check-in routes. */
-const CHECKIN_PROVIDER_IDS = new Set(["workbuddy", "cb", "cbcn"]);
+const CHECKIN_PROVIDER_IDS = new Set(["workbuddy", "cb", "cbcn", "autoclaw"]);
 
 /** True when the account can show a daily check-in action on its card. */
 export function supportsAccountCheckin(providerId: string): boolean {
@@ -482,6 +490,146 @@ export function useTriggerAccountReset(accountId: string) {
         },
       );
     },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+      ]);
+    },
+  });
+}
+
+
+/** One wallet row as the AutoClaw facade reports it. */
+export interface AutoClawWallet {
+  readonly totalBalance: number | null;
+  readonly dailyPoints: number | null;
+  /** Login email from the profile route; shown to tell same-named accounts apart. */
+  readonly email?: string | null;
+  readonly updatedAt: string;
+}
+
+/** Credits route result; `ok: false` carries the facade's own refusal. */
+export interface AutoClawCreditsResult {
+  readonly ok: boolean;
+  readonly wallet?: AutoClawWallet;
+  /**
+   * True when the day's grant is already settled for this account.
+   *
+   * Read from the same day marker the check-in writes, so the card can show a
+   * settled state on first paint instead of only after a click.
+   */
+  readonly checkedInToday?: boolean;
+  readonly error?: string;
+  readonly code?: string;
+}
+
+/**
+ * Reads the account's points.
+ *
+ * Served from its own route rather than the quota envelope because the number
+ * lives on the billing facade, not on the model quota endpoint: folding it into
+ * the quota payload would make a wallet read block the quota refresh that every
+ * other provider depends on.
+ */
+export function useAutoClawCredits(accountId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.quota.credits(accountId),
+    queryFn: (context) =>
+      consoleRequest<AutoClawCreditsResult>(`/accounts/${encodeURIComponent(accountId)}/credits`, {
+        signal: querySignal(context),
+      }),
+    enabled: Boolean(accountId) && enabled,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/** One movement in an AutoClaw account's points ledger. */
+export interface AutoClawLedgerEntry {
+  readonly id: string;
+  /** Signed points: positive for a grant, negative for a charge. */
+  readonly amount: number;
+  readonly description: string;
+  readonly occurredAt: string;
+  readonly walletScope: string | null;
+  readonly direction: "credit" | "debit";
+}
+
+/** Credits history result; `ok: false` carries the facade's own refusal. */
+export interface AutoClawCreditsHistoryResult {
+  readonly ok: boolean;
+  readonly entries?: readonly AutoClawLedgerEntry[];
+  readonly nextCursor?: string | null;
+  readonly error?: string;
+  readonly code?: string;
+}
+
+/** Direction filter the ledger route accepts. */
+export type AutoClawCreditsHistoryDirection = "all" | "income" | "expense";
+
+/**
+ * Reads the account's points ledger, one page at a time.
+ *
+ * Paged rather than "latest N": the vendor charges per request, and a
+ * long-lived account's ledger is thousands of rows while the card only needs
+ * the head until the operator asks for more. `useInfiniteQuery` keeps every
+ * page it has already fetched, so "load more" appends instead of refetching the
+ * head.
+ */
+export function useAutoClawCreditsHistory(
+  accountId: string,
+  direction: AutoClawCreditsHistoryDirection,
+  enabled: boolean,
+) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.quota.creditsHistory(accountId, direction),
+    initialPageParam: null as string | null,
+    queryFn: (context) => {
+      const cursor = context.pageParam;
+      const query = new URLSearchParams({ direction });
+      if (typeof cursor === "string" && cursor.length > 0) query.set("cursor", cursor);
+      return consoleRequest<AutoClawCreditsHistoryResult>(
+        `/accounts/${encodeURIComponent(accountId)}/credits/history?${query.toString()}`,
+        { signal: querySignal(context) },
+      );
+    },
+    getNextPageParam: (last) => (last.ok && last.nextCursor ? last.nextCursor : undefined),
+    enabled: Boolean(accountId) && enabled,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** Outcome of one AutoClaw check-in, which claims every outstanding task. */
+export interface AutoClawCheckinResult {
+  readonly ok: boolean;
+  readonly message?: string;
+  readonly code?: string;
+  readonly data?: {
+    readonly id: string;
+    readonly state: string;
+    readonly credit: number | null;
+    readonly streakDays: number | null;
+    readonly claims?: readonly { readonly task: string; readonly points: number }[];
+    readonly already?: readonly string[];
+  };
+}
+
+/**
+ * Claims AutoClaw's outstanding grants.
+ *
+ * The same `POST /accounts/:id/checkin` the buddy family uses: the route
+ * branches on the provider, so the dashboard does not need a second endpoint to
+ * learn about a second claim surface.
+ */
+export function useTriggerAutoClawCheckin(accountId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<AutoClawCheckinResult, ApiErrorShape, void>({
+    mutationFn: () =>
+      consoleRequest<AutoClawCheckinResult>(`/accounts/${encodeURIComponent(accountId)}/checkin`, {
+        method: "POST",
+      }),
     onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),

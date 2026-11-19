@@ -4,6 +4,7 @@ import {
   ExternalLink,
   FlaskConical,
   KeyRound,
+  Pencil,
   LockOpen,
   PackageX,
   Plus,
@@ -16,6 +17,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { consoleRequest } from "../lib/api";
 import { ProviderIcon } from "../components/ProviderIcon";
+import { EditProviderModal } from "./Providers";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
 import { BackLink, PageHeader } from "../components/ui/page-header";
@@ -29,6 +31,7 @@ import {
   useProviderModels,
   useProviders,
   useStartOAuthAuthorize,
+  useStartAutoClawAuthorize,
   useStartOAuthLoopback,
   useSyncProviderModels,
   useUpdateGlobalProvider,
@@ -44,6 +47,12 @@ import {
   OAuthBrowserDialog,
   OAuthLoopbackDialog,
 } from "./provider-detail/OAuthDialogs";
+import { AutoClawCaptchaDialog } from "./provider-detail/AutoClawCaptchaDialog";
+import {
+  CreditBalanceCard,
+  supportsCreditBalance,
+} from "./provider-detail/CreditBalanceCard";
+import { AutoClawTokenDialog } from "./provider-detail/AutoClawTokenDialog";
 import { AddModelModal, ModelGrid } from "./provider-detail/Models";
 import { ClaimPlansCard, supportsPlanClaims } from "./provider-detail/ClaimPlansCard";
 
@@ -59,11 +68,15 @@ export default function ProviderDetail(): ReactNode {
   const probeAllAccounts = useProbeAllProviderAccounts();
   const updateGlobalProvider = useUpdateGlobalProvider();
   const startAuthorize = useStartOAuthAuthorize();
+  const startAutoClawAuthorize = useStartAutoClawAuthorize();
   const startLoopback = useStartOAuthLoopback();
   const queryClient = useQueryClient();
   const [addAccountOpen, setAddAccountOpen] = useState(false);
+  const [editProviderOpen, setEditProviderOpen] = useState(false);
   const [addModelOpen, setAddModelOpen] = useState(false);
   const [deviceDialogOpen, setDeviceDialogOpen] = useState(false);
+  const [autoClawTokenOpen, setAutoClawTokenOpen] = useState(false);
+  const [autoClawCaptchaOpen, setAutoClawCaptchaOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderAccountResponse | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [oauthBrowserSession, setOauthBrowserSession] = useState<{
@@ -71,6 +84,10 @@ export default function ProviderDetail(): ReactNode {
     state: string;
     popup: Window;
   } | null>(null);
+  // An AutoClaw re-login targets a specific stale account: once the fresh login
+  // lands, this id is deleted so the replaced credential is not left behind.
+  const reloginTargetRef = useRef<string | null>(null);
+  const reloginCleanupRef = useRef<(() => Promise<void>) | null>(null);
   const [oauthLoopbackSession, setOauthLoopbackSession] = useState<{
     shellSnippet: string;
     helperScriptUrl: string;
@@ -135,7 +152,98 @@ export default function ProviderDetail(): ReactNode {
 
   const activeAccounts = accounts.filter((a) => a.status === "active").length;
 
+  /**
+   * AutoClaw signs its own OAuth `state`, so the generic browser-code route
+   * cannot build its URL — it would hand back a link the exchange rejects. This
+   * path asks the AutoClaw route for both the URL and the state the vendor
+   * minted, and keeps the popup handle so the login can be driven from here.
+   */
+  const handleAutoClawOAuth = (captchaVerifyParam?: string) => {
+    // The window has to exist before this call, not after it. Solving the
+    // challenge takes an async round trip, so by the time the authorize URL
+    // arrives the click that started it is long over and `window.open` is no
+    // longer a user gesture — the browser blocks it. `handleOAuthBrowser` opens
+    // a blank tab synchronously and this navigates it.
+    const preOpened = oauthPopupRef.current;
+    startAutoClawAuthorize.mutate(
+      { ...(captchaVerifyParam ? { captchaVerifyParam } : {}), accountLabel: provider?.label ?? "AutoClaw" },
+      {
+        onSuccess: ({ url, state }) => {
+          const target =
+            preOpened !== null && !preOpened.closed
+              ? preOpened
+              : window.open(url, "lianrouter-oauth", "popup,width=720,height=820");
+          if (!target) {
+            toast.error("Popup blocked", "Allow popups to complete OAuth login.");
+            return;
+          }
+          target.location.href = url;
+          target.opener = null;
+          oauthPopupRef.current = target;
+          setOauthBrowserSession({ authorizeUrl: url, state, popup: target });
+        },
+        onError: (err: unknown) => {
+          if (preOpened !== null && !preOpened.closed) preOpened.close();
+          if (oauthPopupRef.current === preOpened) oauthPopupRef.current = null;
+          const message =
+            err && typeof err === "object" && "message" in err && typeof err.message === "string"
+              ? err.message
+              : "Unable to start AutoClaw authorization";
+          toast.error("Failed to start OAuth", message);
+        },
+      },
+    );
+  };
+
+  /**
+   * Re-login for one AutoClaw account: the same captcha + authorize flow, with
+   * the stale row deleted once the replacement is confirmed by the account
+   * watcher in OAuthBrowserDialog. Deleting eagerly would leave the provider
+   * with zero working accounts if the new login is abandoned.
+   */
+  const handleAutoClawRelogin = (account: { id: string; label: string | null }) => {
+    reloginTargetRef.current = account.id;
+    reloginCleanupRef.current = async () => {
+      const targetId = reloginTargetRef.current;
+      reloginTargetRef.current = null;
+      if (!targetId) return;
+      try {
+        await consoleRequest(`/accounts/${encodeURIComponent(targetId)}`, { method: "DELETE" });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.providers.accounts(id) });
+        toast.success("Old credential replaced", account.label || targetId.slice(0, 8));
+      } catch (err) {
+        toast.error(
+          "Could not remove the old account",
+          (err as { message?: string }).message ?? "Delete failed after re-login",
+        );
+      }
+    };
+    // The authorize step is captcha-gated exactly like the first login, so the
+    // widget dialog has to run first; calling the authorize handler directly
+    // answers 400001 before a URL can even be minted. The placeholder popup is
+    // opened here inside the click so the later navigation is not blocked.
+    const blankPopup = window.open("about:blank", "lianrouter-oauth", "popup,width=720,height=820");
+    if (blankPopup) {
+      blankPopup.opener = null;
+      oauthPopupRef.current = blankPopup;
+    }
+    setAutoClawCaptchaOpen(true);
+  };
   const handleOAuthBrowser = () => {
+    if (id === "autoclaw") {
+      // The vendor will not mint a URL without a solved challenge, so the flow
+      // starts with the widget — and the destination window must be opened here,
+      // inside the click, because both the captcha and the authorize call happen
+      // after it. `handleAutoClawOAuth` navigates this window once the token is
+      // solved.
+      const blankPopup = window.open("about:blank", "lianrouter-oauth", "popup,width=720,height=820");
+      if (blankPopup) {
+        blankPopup.opener = null;
+        oauthPopupRef.current = blankPopup;
+      }
+      setAutoClawCaptchaOpen(true);
+      return;
+    }
     // Opened synchronously in the click handler so popup blockers allow it.
     // `opener` is severed (noopener equivalent) while retaining the handle
     // needed to navigate/close the window; `window.open` with a literal
@@ -248,6 +356,11 @@ export default function ProviderDetail(): ReactNode {
             icon={provider.providerId}
             name={providerDisplayName(provider.providerId, provider.label)}
             size={28}
+            iconUrl={
+              typeof provider.compatibilityProfile?.iconUrl === "string"
+                ? provider.compatibilityProfile.iconUrl
+                : undefined
+            }
           />
         }
         back={{ to: "/providers", label: "Back to Providers" }}
@@ -264,6 +377,17 @@ export default function ProviderDetail(): ReactNode {
             >
               Test All
             </Button>
+            {!provider.isBuiltIn ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Pencil size={13} />}
+                onClick={() => setEditProviderOpen(true)}
+                title="Edit this provider's name, base URL, wire format, headers, and icon"
+              >
+                Edit
+              </Button>
+            ) : null}
             {provider.isBuiltIn ? (
               <Button
                 variant={provider.enabled ? "danger" : "secondary"}
@@ -341,6 +465,17 @@ export default function ProviderDetail(): ReactNode {
                     Login with device code
                   </Button>
                 )}
+                {id === "autoclaw" && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    icon={<KeyRound size={13} />}
+                    onClick={() => setAutoClawTokenOpen(true)}
+                    title="Add an account by pasting a token from the AutoClaw desktop app. Use this when the browser login cannot reach the server's callback port."
+                  >
+                    Add with token
+                  </Button>
+                )}
                 {id === "antigravity" && (
                   <Button
                     variant="secondary"
@@ -385,11 +520,23 @@ export default function ProviderDetail(): ReactNode {
                 showGrokProbe={id === "grok"}
                 grokProbePending={probeAllAccounts.isPending}
                 onGrokProbe={runGrokAccountProbe}
+                onRelogin={id === "autoclaw" ? handleAutoClawRelogin : undefined}
               />
             )}
           </CardBody>
         </Card>
       )}
+
+      {/* Credits — points and the daily check-in, above the claim campaigns */}
+      {supportsCreditBalance(id) && provider.requiresAccount !== false ? (
+        <CreditBalanceCard
+          accounts={accounts.map((account) => ({
+            id: account.id,
+            label: account.label,
+            status: account.status,
+          }))}
+        />
+      ) : null}
 
       {/* Claim plan — per-account campaigns, above the model catalog */}
       {supportsPlanClaims(id) && provider.requiresAccount !== false ? (
@@ -565,6 +712,39 @@ export default function ProviderDetail(): ReactNode {
         confirmLabel="Delete"
         danger
       />
+      {autoClawCaptchaOpen && (
+        <AutoClawCaptchaDialog
+          open={autoClawCaptchaOpen}
+          onSolved={(captchaVerifyParam) => {
+            setAutoClawCaptchaOpen(false);
+            handleAutoClawOAuth(captchaVerifyParam);
+          }}
+          onClose={() => {
+            setAutoClawCaptchaOpen(false);
+            // The pre-opened window is only a placeholder; abandoning the flow
+            // must not leave an empty tab behind.
+            const blank = oauthPopupRef.current;
+            if (blank !== null && !blank.closed) blank.close();
+            oauthPopupRef.current = null;
+          }}
+        />
+      )}
+      {!provider.isBuiltIn ? (
+        <EditProviderModal
+          provider={provider}
+          open={editProviderOpen}
+          onClose={() => setEditProviderOpen(false)}
+        />
+      ) : null}
+      {autoClawTokenOpen && (
+        <AutoClawTokenDialog
+          open={autoClawTokenOpen}
+          onClose={(completed) => {
+            setAutoClawTokenOpen(false);
+            if (completed) void queryClient.invalidateQueries({ queryKey: queryKeys.providers.accounts(id) });
+          }}
+        />
+      )}
       {deviceDialogOpen && (
         <DeviceCodeDialog providerId={id} onClose={() => setDeviceDialogOpen(false)} />
       )}
@@ -574,7 +754,17 @@ export default function ProviderDetail(): ReactNode {
           authorizeUrl={oauthBrowserSession.authorizeUrl}
           state={oauthBrowserSession.state}
           popup={oauthBrowserSession.popup}
-          onClose={closeOAuthBrowserSession}
+          onClose={(completed) => {
+            closeOAuthBrowserSession(completed);
+            if (completed && reloginCleanupRef.current !== null) {
+              const cleanup = reloginCleanupRef.current;
+              reloginCleanupRef.current = null;
+              void cleanup();
+            } else if (!completed) {
+              reloginTargetRef.current = null;
+              reloginCleanupRef.current = null;
+            }
+          }}
         />
       )}
       {oauthLoopbackSession && (

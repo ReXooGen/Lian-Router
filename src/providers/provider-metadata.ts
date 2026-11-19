@@ -13,6 +13,21 @@ export interface CompatibilityProfile {
     readonly wire_family: WireFamily;
   }>;
   readonly credentialUrl?: string;
+  /**
+   * Presentation-only override for the provider card/detail icon. Accepted
+   * shapes: an https URL, or a base64 data-image URL (png/webp/gif/jpeg) the
+   * dashboard stamps from an operator-picked file. Rendered by the dashboard
+   * icon component ahead of the bundled provider asset.
+   */
+  readonly iconUrl?: string;
+  /**
+   * Upstream `user-agent` override for BYOK rows. Either a preset name
+   * (`codex`, `claude`, `omp`, `hermes`, `gateway`, `none`) or a literal
+   * string (e.g. `codex_cli_rs/0.156.1`). Empty/absent keeps the historical
+   * CLI-cloaking behavior. Rendered as a dropdown + free-text field in the
+   * dashboard edit dialogs.
+   */
+  readonly userAgent?: string;
   /** Whether requests to OpenAI/Anthropic-compatible upstream should send official CLI headers. Defaults to true. */
   readonly cli_identity?: boolean;
   /**
@@ -62,6 +77,7 @@ const RAW_BUNDLED_PROVIDER_METADATA = [
   { id: "fireworks", displayName: "Fireworks AI", baseUrl: "https://api.fireworks.ai/inference/v1" },
   { id: "nvidia", displayName: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1" },
   { id: "gmi", displayName: "GMI Cloud", baseUrl: "https://api.gmi-serving.com/v1" },
+  { id: "autoclaw", displayName: "AutoClaw", baseUrl: "https://autoglm-api.autoglm.ai" },
   { id: "zai", displayName: "Z.AI", baseUrl: "https://api.z.ai/api/paas/v4" },
   {
     id: "zcode",

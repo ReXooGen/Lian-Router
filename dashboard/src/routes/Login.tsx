@@ -7,6 +7,12 @@ import { Button } from "../components/ui/button";
 import { consoleRequest } from "../lib/api";
 import { queryClient } from "../lib/query-client";
 import { queryKeys } from "../lib/query-keys";
+import {
+  loginBody,
+  loginScreenFromProbeFailure,
+  resolveLoginScreen,
+  type SetupProbeResult,
+} from "./login-state";
 
 interface LoginResult {
   readonly status: "success" | "failed";
@@ -43,6 +49,12 @@ export default function Login(): ReactNode {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [checkingSetup, setCheckingSetup] = useState(true);
+  // Set when `/auth/first-boot` itself failed. The probe is the only thing that
+  // knows which shape the form should take, so a failure here is not "no setup
+  // needed" — it is "the gateway could not answer". Rendering the username form
+  // on that path tells the operator to type a username the server never asked
+  // for, which is exactly the lie that hides a dead database.
+  const [setupError, setSetupError] = useState<string | null>(null);
   // Single-password mode (`LIANROUTER_CONSOLE_PASSWORD`): the server owns the
   // only credential, so the form asks for a password and nothing else.
   const [passwordOnly, setPasswordOnly] = useState(false);
@@ -79,23 +91,27 @@ export default function Login(): ReactNode {
 
   useEffect(() => {
     let active = true;
-    void consoleRequest<{
-      requires_setup: boolean;
-      password_gate?: boolean;
-      default_password_hint?: boolean;
-    }>("/auth/first-boot")
+    void consoleRequest<SetupProbeResult>("/auth/first-boot")
       .then((result) => {
         if (!active) return;
-        if (result.password_gate === true) setPasswordOnly(true);
-        if (result.default_password_hint === true) setShowDefaultHint(true);
-        if (result.requires_setup) {
-          navigate("/setup", { replace: true });
+        const screen = resolveLoginScreen(result);
+        if (screen.kind === "redirect") {
+          navigate(screen.to, { replace: true });
           return;
+        }
+        if (screen.kind === "form") {
+          setPasswordOnly(screen.passwordOnly);
+          setShowDefaultHint(screen.showDefaultHint);
         }
         setCheckingSetup(false);
       })
-      .catch(() => {
-        if (active) setCheckingSetup(false);
+      .catch((reason: unknown) => {
+        if (!active) return;
+        // A failed probe is not "no setup needed": rendering the username form
+        // on this path is what hid a dead database behind a credential error.
+        const screen = loginScreenFromProbeFailure(reason);
+        if (screen.kind === "unavailable") setSetupError(screen.message);
+        setCheckingSetup(false);
       });
     return () => {
       active = false;
@@ -110,7 +126,11 @@ export default function Login(): ReactNode {
       const result = await consoleRequest<LoginResult>("/auth/login", {
         method: "POST",
         body: JSON.stringify(
-          passwordOnly ? { password } : { username: username.trim(), password },
+          loginBody(
+            { kind: "form", passwordOnly, showDefaultHint },
+            username,
+            password,
+          ),
         ),
       });
       if (result.status !== "success") {
@@ -166,6 +186,44 @@ export default function Login(): ReactNode {
             </span>
           </div>
           <h1 className="auth-title">Checking console setup…</h1>
+        </div>
+      </main>
+    );
+  }
+
+  if (setupError !== null) {
+    return (
+      <main className="auth-viewport auth-viewport--brand">
+        <div className="auth-window auth-window--glass">
+          <div className="auth-brandline">
+            <span className="auth-mark">
+              <BrandMark />
+            </span>
+            <span className="auth-brandtext">
+              <strong>LianRouter</strong>
+              <small>AI PROXY ROUTER</small>
+            </span>
+          </div>
+          <div className="auth-lead">
+            <h1 className="auth-title">Console unavailable</h1>
+            <p className="auth-desc">
+              The gateway is answering, but it could not complete the setup check.
+              This usually means its database is unreachable, so no credential can
+              be verified.
+            </p>
+          </div>
+          <p className="auth-error" role="alert">
+            {setupError}
+          </p>
+          <Button
+            variant="primary"
+            type="button"
+            className="auth-submit"
+            icon={<ArrowRight size={15} />}
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </Button>
         </div>
       </main>
     );

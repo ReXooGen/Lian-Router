@@ -8,6 +8,7 @@ import {
   Globe,
   Image as ImageIcon,
   LayoutDashboard,
+  LifeBuoy,
   LogOut,
   Menu,
   Moon,
@@ -84,6 +85,15 @@ export const navigationGroups: readonly NavGroupDef[] = [
       { label: "Prompt Injection", path: "/prompt-injection", icon: Syringe },
       { label: "Combos & Routes", path: "/combos", icon: Cpu },
       { label: "Quota Management", path: "/quota", icon: ShieldAlert },
+      {
+        label: "Automation",
+        path: "/automation",
+        icon: Rocket,
+        children: [
+          { label: "Growth Activity", path: "/automation", icon: Rocket },
+          { label: "Appeal", path: "/automation/appeal", icon: LifeBuoy },
+        ],
+      },
       { label: "Proxy & Requests", path: "/proxy", icon: Network },
       { label: "CLI Tools", path: "/cli-tools", icon: Terminal },
     ],
@@ -102,6 +112,14 @@ export const navigationGroups: readonly NavGroupDef[] = [
 const titlesMap: Record<string, { title: string; sub: string }> = {
   "/": { title: "Overview", sub: "Gateway health, capacity, and live metrics" },
   "/usage": { title: "Usage & Metrics", sub: "Token economics, requests, and cost breakdown" },
+  "/automation": {
+    title: "CodeBuddy Growth Activity",
+    sub: "CodeBuddy growth-activity report and hit schedule",
+  },
+  "/automation/appeal": {
+    title: "CodeBuddy Appeal",
+    sub: "Banned accounts and appeal submission",
+  },
   "/providers": { title: "Provider Catalog", sub: "Upstream credentials, models, and latency" },
   "/combos": {
     title: "Combos & Routing",

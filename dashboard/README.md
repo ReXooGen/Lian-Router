@@ -41,6 +41,7 @@ chunks:
 | `/combos` | `Combos` | `console/routing/model` |
 | `/quota` | `Quota` | `console/quota` |
 | `/automation` | `Automation` | `console/automation/report` |
+| `/automation/appeal` | `Appeal` | `console/automation/appeal` |
 | `/proxy` | `Proxy` | `network/pool` and routing |
 | `/customization` | `Customization` | none (browser-local: `dashboard/src/lib/customization`) |
 | `/model-lab` | `Studio` | `console/domains/studio`; the composer's **Generate** tool reuses the `console/generation` panel |

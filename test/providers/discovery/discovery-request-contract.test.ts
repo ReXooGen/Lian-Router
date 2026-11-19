@@ -100,6 +100,17 @@ const EXPECTED: Readonly<Record<string, ExpectedDiscovery>> = {
   fireworks: { url: "https://api.fireworks.ai/inference/v1/models", authHeader: "authorization" },
   nvidia: { url: "https://integrate.api.nvidia.com/v1/models", authHeader: "authorization" },
   gmi: { url: "https://api.gmi-serving.com/v1/models", authHeader: "authorization" },
+  // AutoClaw's roster is POST-free: the app-signature headers ride along and
+  // the credential goes out as a standard bearer (the completion wire is the
+  // one that wants the `x-` variant).
+  autoclaw: {
+    url: "https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw-model-config",
+    authHeader: "authorization",
+    headers: {
+      "x-auth-appid": "100003",
+      "x-product": "autoclaw",
+    },
+  },
   zai: { url: "https://api.z.ai/api/paas/v4/models", authHeader: "authorization" },
   hermes: { url: "https://inference-api.nousresearch.com/v1/models", authHeader: "authorization" },
   bai: { url: "https://api.b.ai/v1/models", authHeader: "authorization" },

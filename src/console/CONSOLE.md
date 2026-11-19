@@ -44,10 +44,10 @@ src/console/
                           key publishes — the surface behind the public /status page
   backup/                 export/restore of config + telemetry metadata, and the router-export
                           importer (nine-router.ts)
-  automation/             authenticated root-path proxy to the loopback GrokFarm WebUI
-                          (`/automation/*`, enabled by LIANROUTER_AUTOMATION_UPSTREAM; lives at
-                          the root, not under /console/api, because the embedded app calls
-                          absolute paths)
+  automation/             CodeBuddy growth control plane under `/console/api`:
+                          `report/` (activity-report bookkeeping, batch hit, and the
+                          recurring schedule the quota sweep fires) and `appeal/`
+                          (banned-account appeal submission and verdict recheck)
   tunnel/                 cloudflared quick-tunnel lifecycle (`/tunnel*`) that publishes this
                           gateway publicly and outranks LIANROUTER_PUBLIC_BASE_URL while live
   update/                 launcher-mediated self-update (`/update*`): reads the launcher's
@@ -849,17 +849,39 @@ The wire shape is the dashboard's contract:
 trailing fields `null` when absent. `phase: "error"` carries the reason in
 `error`.
 
-## Automation proxy (`automation/`)
+## Automation control plane (`automation/`)
 
-`/automation/*` reverse-proxies the loopback GrokFarm WebUI (a FastAPI control plane for Grok
-account registration) when `LIANROUTER_AUTOMATION_UPSTREAM` is set; unset keeps the route 404 and
-hides the dashboard's Automation nav entry. The route lives at the **root**, mounted in `app.ts`
-beside the share router, because the embedded app calls absolute paths (`fetch('/api/config')`)
-that a `/console/api` prefix or `<base>` rewrite cannot capture. Since the console middleware only
-guards `/console/api/*`, each request resolves the session itself via `resolveConsoleAccess`;
-unauthenticated requests redirect to the console login. Request cookies are never forwarded and
-response CSP/frame headers are stripped and re-imposed (the upstream is loopback-only and
-untrusted); the upstream URL must be loopback or config validation rejects it.
+Two tenant-scoped domains under the console API, both mounted from
+`domain-registration.ts` with `accessResolver` + `auditRecorder`. Reads require
+`dashboard:read`, writes `dashboard:write`.
+
+**`report/` — CodeBuddy growth-activity report.**
+`GET /automation/report/accounts?providerId=cb` returns the provider's accounts
+with counts and the saved schedule; `POST /automation/report/hit` fires N unhit
+accounts; `GET|PUT /automation/report/schedule` reads and replaces the recurring
+schedule. Bookkeeping lives in `provider_report_hits` (one row per account, so
+`hit_at` survives a later failed attempt) and `provider_report_schedule`.
+
+The schedule is not a second timer: `quotaRefreshSweep` calls
+`reportSchedulePass` after its quota waves, and each due row runs the same
+`runReportPass` the manual button uses, so the two cannot diverge in eligibility
+or pacing. It runs *after* the waves because the report endpoint punishes a
+burst — the pass posts sequentially by design.
+
+**`appeal/` — banned-account appeal.** The health classifier marks a ban by
+setting `last_error_category = 'policy_blocked_banned'`; this domain adds the
+bookkeeping and the action. `GET /automation/appeal/accounts` lists only those
+accounts, `POST /automation/appeal/send` appeals up to 100 sequentially with a
+250 ms gap (`cb_appeals` holds one row per account), and
+`POST /automation/appeal/recheck` derives the verdict.
+
+The upstream never reports a verdict — `POST {base}/v2/feedback` answers only
+`{"code":0,…,"data":{"feedback_id":N}}`. So the recheck judges an appeal by
+whether the account works again, through the same `probeModel` live traffic
+uses: a successful probe proves acceptance and puts the account back in rotation
+via `recoverAccount`, and a still-restricted probe past
+`APPEAL_DECLINE_AFTER_MS` (24 h) marks it declined. `verdict IS NULL` means
+undecided, not "no".
 
 ## How to extend
 

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
+import { DEFAULT_CONSOLE_PASSWORD } from "../../src/console/auth/default-console-password";
 import { resolveConfigFile } from "./paths";
 
 /**
@@ -208,6 +209,17 @@ function starterConfigText(encryptionKey: string): string {
 # DATABASE_URL=postgres://user:password@localhost:5432/lianrouter
 DATABASE_MODE=embedded
 
+# Console password. When set, the console asks for this one password and
+# nothing else — no username, no first-boot account wizard. This is the mode a
+# single-operator local install wants. \`local-console-2026\` is the shipped
+# default and the login screen prints it while it is still in use; set your own
+# value and the hint disappears. Leave the line commented out to keep per-user
+# accounts and the setup wizard.
+#
+# This is the INITIAL password: it can also be changed from the console
+# (Settings -> Security Controls), which stores a hash and takes ownership.
+LIANROUTER_CONSOLE_PASSWORD=local-console-2026
+
 # 256-bit key for encrypting provider credentials and hashing API keys.
 # Required. Base64 (44 characters) or hex (64 characters); it must decode to
 # exactly 32 bytes. Keep it secret and keep it stable: a new key cannot decrypt
@@ -272,6 +284,11 @@ function appendEntry(text: string, key: string, value: string): string {
  *   cannot boot is not a preference worth preserving.
  * - A missing or unparsable encryption key is filled in, because nothing else
  *   can produce one and the gateway refuses to start without it.
+ * - A missing console-password line is filled with the shipped default, because
+ *   a local install with no gate renders a username form the operator never
+ *   asked for and a setup wizard in front of a private machine. An operator who
+ *   prefers per-user accounts deletes or comments the line; the ownership
+ *   transfer means a console-changed password survives it.
  */
 export function upgradeStarterConfig(text: string, encryptionKey: string): string {
   let next = text;
@@ -293,6 +310,14 @@ export function upgradeStarterConfig(text: string, encryptionKey: string): strin
   const existingKey = parseEnvFile(next).LIANROUTER_ENCRYPTION_KEY;
   if (existingKey === undefined || existingKey.trim() === "") {
     next = appendEntry(next, "LIANROUTER_ENCRYPTION_KEY", encryptionKey);
+  }
+
+  // A local install without a console password falls back to the multi-user
+  // wizard, which is the wrong shape for a single-operator machine. The default
+  // here matches the starter file; ownership transfer keeps a console-changed
+  // password authoritative over this value on later boots.
+  if (!hasActiveKey(next, "LIANROUTER_CONSOLE_PASSWORD")) {
+    next = appendEntry(next, "LIANROUTER_CONSOLE_PASSWORD", DEFAULT_CONSOLE_PASSWORD);
   }
 
   return next;

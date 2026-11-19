@@ -52,6 +52,7 @@ const NON_SRC_ENV_KEYS = new Set([
   "BUN_OPTIONS", // Bun runtime
   "BUN_GARBAGE_COLLECTOR_LEVEL", // Bun runtime
   "LIANROUTER_HOME", // cli/src/paths.ts — launcher install root
+  "DATABASE_MODE", // cli/src/install-config.ts — launcher decides embedded vs URL before starting the gateway
   "LIANROUTER_UPDATE_BASE_URL", // cli/update/github-source.ts — launcher update feed
 ]);
 

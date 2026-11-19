@@ -12,7 +12,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { consoleRequest } from "../../lib/api";
 import { Badge } from "../../components/ui/badge";
@@ -225,6 +225,7 @@ function AccountRow({
   selected,
   onToggleSelect,
   onDelete,
+  onRelogin,
   models,
   modelsLoading,
 }: {
@@ -235,6 +236,8 @@ function AccountRow({
   readonly selected: boolean;
   readonly onToggleSelect: (accountId: string, next: boolean) => void;
   readonly onDelete: (account: ProviderAccountResponse) => void;
+  /** Starts the OAuth re-login flow for this account (AutoClaw only). */
+  readonly onRelogin?: (account: ProviderAccountResponse) => void;
   /** The provider's catalog, loaded once by the list for every probe dialog. */
   readonly models: readonly AccountProbeModel[];
   readonly modelsLoading: boolean;
@@ -248,6 +251,22 @@ function AccountRow({
   const isRecoverable =
     account.status === "cooldown" || hasActiveCooldown || account.status === "degraded";
   const [showHistory, setShowHistory] = useState(false);
+  const [reloginPending, setReloginPending] = useState(false);
+  const reloginTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (reloginTimer.current !== null) window.clearTimeout(reloginTimer.current);
+  }, []);
+  const handleRelogin = useCallback(() => {
+    if (onRelogin === undefined || reloginPending) return;
+    setReloginPending(true);
+    try {
+      onRelogin(account);
+    } finally {
+      // The authorize URL mint happens in the parent; keep the spinner visible
+      // long enough to cover the popup hand-off without tracking its promise.
+      reloginTimer.current = window.setTimeout(() => setReloginPending(false), 2500);
+    }
+  }, [onRelogin, reloginPending, account]);
   const [showProbe, setShowProbe] = useState(false);
   const [, setTick] = useState(0);
   const [renaming, setRenaming] = useState(false);
@@ -386,6 +405,21 @@ function AccountRow({
                 >
                   <Pencil size={11} />
                 </button>
+                {account.accountEmail ? (
+                  <span
+                    style={{
+                      fontSize: "11.5px",
+                      color: "var(--text-secondary)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      marginLeft: "4px",
+                    }}
+                    title={account.accountEmail}
+                  >
+                    {account.accountEmail}
+                  </span>
+                ) : null}
               </>
             )}
           </div>
@@ -530,6 +564,18 @@ function AccountRow({
             onClick={toggleEnabled}
             title={disabled ? "Enable account" : "Disable account"}
           />
+          {onRelogin !== undefined && account.credentialKind === "oauth" ? (
+            <Button
+              size="icon"
+              variant="secondary"
+              icon={<RotateCcw size={12} className={reloginPending ? "animate-spin" : ""} />}
+              label={reloginPending ? "Re-logging…" : "Relogin"}
+              aria-label={`Relogin ${label}`}
+              disabled={reloginPending}
+              onClick={handleRelogin}
+              title="Start a fresh OAuth login and replace this account's credential"
+            />
+          ) : null}
           {isRecoverable ? (
             <Button
               size="icon"
@@ -622,6 +668,7 @@ export function AccountsList({
   showGrokProbe = false,
   grokProbePending = false,
   onGrokProbe,
+  onRelogin,
 }: {
   readonly providerId: string;
   readonly accounts: readonly ProviderAccountResponse[];
@@ -629,6 +676,7 @@ export function AccountsList({
   readonly showGrokProbe?: boolean;
   readonly grokProbePending?: boolean;
   readonly onGrokProbe?: () => void;
+  readonly onRelogin?: (account: ProviderAccountResponse) => void;
 }): ReactNode {
   const queryClient = useQueryClient();
   const update = useUpdateProviderAccount();
@@ -904,6 +952,7 @@ export function AccountsList({
             selected={selected.has(account.id)}
             onToggleSelect={toggleSelect}
             onDelete={onDelete}
+            onRelogin={onRelogin}
             models={models}
             modelsLoading={modelsQuery.isPending}
           />

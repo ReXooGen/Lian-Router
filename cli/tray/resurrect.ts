@@ -39,19 +39,22 @@ export interface LauncherCommand {
 /**
  * Finds something to spawn as a launcher.
  *
- * Two layouts, mirroring `resolveTrayEntry` in `cli/src/tray-launcher.ts`: a
- * source checkout runs the TypeScript entry through the current runtime, and a
- * packaged install has the compiled binary beside the tray bundle. The check is
- * by existence, because a checkout that has not been built has neither and a
- * packaged install has no source at all.
+ * Three layouts, in order of preference:
  *
- * The checkout root is found by walking up for `src/app.ts` — the gateway's
- * application builder, the same marker `resolveDevRepoRoot` uses. Walking is
- * necessary because the tray bundle may be loaded from `cli/dist/tray.js` or
- * from `cli/tray/host.ts`, which are two different depths.
+ * 1. `dist/cli.js` beside the tray bundle — the launcher's own JavaScript
+ *    entry. This is the correct resurrection target for an npm install: the
+ *    `lianrouter.exe` in the install root is the *gateway* binary, not a
+ *    launcher, and spawning it starts a gateway with no control server, which
+ *    leaves the tray with a handshake that never appears.
+ * 2. A source checkout, found by walking up for `src/app.ts` — the gateway's
+ *    application builder, the same marker `resolveDevRepoRoot` uses.
+ * 3. The compiled `lianrouter` binary in the install root, when the install
+ *    ships one that is actually a launcher.
+ *
+ * The check is by existence, because a checkout that has not been built has
+ * neither entry and a packaged install has no source at all.
  */
 export function resolveLauncherCommand(
-  installRoot: string,
   startDir: string,
   gatewayPort?: number,
 ): LauncherCommand | undefined {
@@ -59,13 +62,20 @@ export function resolveLauncherCommand(
   // open points at the old port, and a launcher that comes back on a different
   // one silently breaks that tab.
   const portArgs = gatewayPort === undefined ? [] : ["--port", String(gatewayPort)];
-  const executable = process.platform === "win32" ? "lianrouter.exe" : "lianrouter";
-  const installed = join(installRoot, executable);
-  if (existsSync(installed)) {
-    // `--headless`, not `--background`: the tray needs a control server to talk
-    // to, and `--background` stops it and returns. Headless stays resident with
-    // the server up and prints no menu.
-    return { file: installed, args: ["--headless", "--no-open", ...portArgs] };
+  // `--headless`, not `--background`: the tray needs a control server to talk
+  // to, and `--background` stops it and returns. Headless stays resident with
+  // the server up and prints no menu.
+  const headlessArgs = ["--headless", "--no-open", ...portArgs];
+
+  // The tray bundle lives in the launcher package's `dist/`, so a launcher
+  // entry beside it is the same installation this process came from. This is
+  // the correct resurrection target for an npm install: the `lianrouter.exe`
+  // in the install root is the *gateway* binary, not a launcher, and spawning
+  // it starts a gateway with no control server — a handshake that never
+  // appears and a tray that stays dead.
+  const besideBundle = join(dirname(dirname(import.meta.path)), "cli.js");
+  if (existsSync(besideBundle)) {
+    return { file: process.execPath, args: [besideBundle, ...headlessArgs] };
   }
 
   let current = startDir;
@@ -73,7 +83,7 @@ export function resolveLauncherCommand(
     if (existsSync(join(current, "src", "app.ts")) && existsSync(join(current, "src", "main.ts"))) {
       const entry = join(current, "cli", "src", "main.ts");
       if (existsSync(entry)) {
-        return { file: process.execPath, args: ["run", entry, "--headless", "--no-open", ...portArgs] };
+        return { file: process.execPath, args: ["run", entry, ...headlessArgs] };
       }
       return undefined;
     }
@@ -132,7 +142,7 @@ export async function resurrectLauncher(
     return { kind: "skipped", reason: `the last attempt failed; try again in ${seconds}s` };
   }
 
-  const command = resolveLauncherCommand(deps.installRoot, deps.startDir, deps.gatewayPort);
+  const command = resolveLauncherCommand(deps.startDir, deps.gatewayPort);
   if (command === undefined) {
     lastFailureAt = now;
     return { kind: "failed", reason: "no launcher entry was found for this install", command: undefined };

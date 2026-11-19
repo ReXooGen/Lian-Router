@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 
 const failedIcons = new Set<string>();
 
-const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
+const iconAssets: Record<string, { file: string; ext: "svg" | "webp" | "png" }> = {
   claude: { file: "claude-code", ext: "svg" },
   anthropic: { file: "anthropic-light", ext: "svg" },
   openai: { file: "openai-light", ext: "svg" },
@@ -32,6 +32,7 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   perplexity: { file: "perplexity", ext: "webp" },
   tokenharbor: { file: "tokenharbor", ext: "svg" },
   aihubmix: { file: "aihubmix", ext: "svg" },
+  autoclaw: { file: "autoclaw", ext: "png" },
   zai: { file: "zai", ext: "svg" },
   zcode: { file: "zcode", ext: "webp" },
   zaicp: { file: "zai-coding-plan", ext: "svg" },
@@ -136,7 +137,7 @@ const iconAssets: Record<string, { file: string; ext: "svg" | "webp" }> = {
   zed: { file: "zed", ext: "svg" },
 };
 
-function assetFor(icon: string): { file: string; ext: "svg" | "webp" } {
+function assetFor(icon: string): { file: string; ext: "svg" | "webp" | "png" } {
   const normalized = icon.toLowerCase().trim();
   return iconAssets[normalized] ?? { file: normalized, ext: "webp" };
 }
@@ -154,12 +155,15 @@ export const ProviderIcon = memo(function ProviderIcon({
   icon,
   name,
   size = 32,
+  iconUrl,
   style,
   className,
 }: {
   icon: string;
   name: string;
   size?: number;
+  /** Operator override — an https URL or a data:image/* URL. Wins over the bundled asset. */
+  iconUrl?: string;
   style?: React.CSSProperties;
   className?: string;
 }) {
@@ -183,7 +187,18 @@ export const ProviderIcon = memo(function ProviderIcon({
       role="img"
       aria-label={`${name} provider`}
     >
-      {failed ? (
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt=""
+          width={size}
+          height={size}
+          loading="lazy"
+          decoding="async"
+          style={{ width: "100%", height: "100%", objectFit: "contain", padding: "2px" }}
+          onError={() => setFailed(true)}
+        />
+      ) : failed ? (
         <span
           style={{
             fontSize: `${Math.max(10, Math.floor(size * 0.35))}px`,

@@ -1,5 +1,9 @@
 import type { healthStatus } from "../../../src/persistence/schema";
 import type { SessionStatusResponse } from "../../../src/console/auth/session";
+import type {
+  AppealAccountRow as BackendAppealAccountRow,
+  AppealCounts as BackendAppealCounts,
+} from "../../../src/console/automation/appeal/contracts";
 /**
  * Type-only projections of the console API contracts.
  *
@@ -211,7 +215,125 @@ export interface PromptInjectionInput {
   /** Client IPs this injection never applies to (normalized, compared as sets). */
   readonly excludedClientIps?: readonly string[];
   /** API key ids this injection never applies to; a template id skips its children. */
-  readonly excludedApiKeyIds?: readonly string[];
+  readonly excludedApiKeyIds: readonly string[];
+}
+
+// ── Automation: CodeBuddy growth-activity report ─────────────────────────────
+// Type-only re-exports from `src/console/automation/report/contracts.ts`. That
+// module is safe to reference this way: `export type` is erased under
+// `verbatimModuleSyntax`, so its Elysia-adjacent value graph never reaches the
+// browser bundle. The request bodies are dashboard-local (the backend validates
+// `unknown`), so they are declared here and pinned by
+// `dashboard/src/automation-report-parity.test.ts`.
+export type {
+  ReportAccountRow,
+  ReportAccountsResponse,
+  ReportCounts,
+  ReportHitResponse,
+  ReportHitResult,
+  ReportLastState,
+  ReportSchedule,
+  ReportScheduleResponse,
+} from "../../../src/console/automation/report/contracts";
+
+/**
+ * `status` query parameter on `GET /automation/report/accounts`. The filter is
+ * applied server-side; `counts` in the response stays global either way.
+ */
+export type ReportStatusFilter = "all" | "pending" | "hit" | "failed";
+
+/** Wire body for `POST /automation/report/hit`. */
+export interface ReportHitRequest {
+  readonly providerId: "cb";
+  readonly limit: number;
+}
+
+/** Wire body for `PUT /automation/report/schedule` (a full replace). */
+export interface ReportScheduleRequest {
+  readonly providerId: "cb";
+  readonly enabled: boolean;
+  readonly accountsPerRun: number;
+  readonly intervalMinutes: number;
+}
+
+// Type-only re-exports from the appeal domain, mirrored from the report block
+// above: the backend module is browser-safe under `export type` erasure.
+export type {
+  AppealSendResponse,
+  AppealSendResult,
+} from "../../../src/console/automation/appeal/contracts";
+
+/** Latest upstream re-check outcome for an appealed account. */
+export type AppealVerdict = "accepted" | "declined";
+
+/** A re-check result also carries the arm that is not decided yet. */
+export type AppealRecheckVerdict = AppealVerdict | "pending";
+
+/** Global counts keep the backend totals and add the verdict split. */
+export interface AppealCounts extends BackendAppealCounts {
+  readonly accepted: number;
+  readonly declined: number;
+}
+
+/**
+ * One banned account. The verdict is layered over the appeal bookkeeping: an
+ * acknowledgment can be accepted or declined, and `null` means not re-checked.
+ */
+export interface AppealAccountRow extends BackendAppealAccountRow {
+  readonly verdict: AppealVerdict | null;
+  readonly verdictCheckedAt: string | null;
+}
+
+export interface AppealAccountsResponse {
+  readonly providerId: string;
+  readonly counts: AppealCounts;
+  readonly accounts: readonly AppealAccountRow[];
+}
+
+/**
+ * `status` query parameter on `GET /automation/appeal/accounts`. Server-side
+ * filter like the report surface's; `counts` stays global either way.
+ */
+export type AppealStatusFilter =
+  | "all"
+  | "pending"
+  | "appealed"
+  | "failed"
+  | "accepted"
+  | "declined";
+
+/** Wire body for `POST /automation/appeal/send`. */
+export interface AppealSendRequest {
+  readonly providerId: "cb";
+  readonly limit: number;
+  /** Empty string ⇒ the backend's default per-account message. */
+  readonly message: string;
+  /** Re-send to accounts that already have an acknowledged appeal. */
+  readonly resend: boolean;
+}
+
+/** Wire body for `POST /automation/appeal/recheck`. */
+export interface AppealRecheckRequest {
+  readonly providerId: "cb";
+  readonly limit: number;
+  /** Omitted by this page: the backend picks its default model. */
+  readonly modelId?: string;
+}
+
+export interface AppealRecheckResult {
+  readonly accountId: string;
+  readonly label: string;
+  readonly verdict: AppealRecheckVerdict;
+  readonly error: string | null;
+}
+
+export interface AppealRecheckResponse {
+  readonly providerId: string;
+  readonly attempted: number;
+  readonly accepted: number;
+  readonly declined: number;
+  readonly pending: number;
+  readonly results: readonly AppealRecheckResult[];
 }
 
 export interface PromptInjectionPreviewEntry {

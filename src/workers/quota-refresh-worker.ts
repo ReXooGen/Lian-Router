@@ -29,6 +29,8 @@ import {
   type BuddyActivityReportResult,
   type DailyCheckinResult,
 } from "./daily-checkin";
+import { runScheduleOnce } from "../console/automation/report/service";
+import type { ReportScheduleRecord, ReportStorePort } from "../console/automation/report/contracts";
 
 export interface QuotaRefreshSweepDeps extends QuotaRefreshDeps {
   /** Lists OAuth accounts to consider; the default excludes API-key accounts. */
@@ -45,6 +47,16 @@ export interface QuotaRefreshSweepDeps extends QuotaRefreshDeps {
   readonly maxCheckinsPerPass?: number;
   /** Injectable fetch for the check-in ride-along (tests). */
   readonly checkinFetcher?: typeof fetch;
+  /**
+   * Report-schedule ride-along store. Omitted skips the leg entirely: a sweep
+   * test that only exercises quota/check-in should not need a database double
+   * just to be told there is no schedule to fire.
+   */
+  readonly reportStore?: ReportStorePort;
+  /** Injectable fetch for the report ride-along (tests). */
+  readonly reportFetcher?: typeof fetch;
+  /** Injectable inter-account gap for the report ride-along (tests). */
+  readonly reportSleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
   readonly onTick?: (result: {
     readonly targets: number;
@@ -53,6 +65,8 @@ export interface QuotaRefreshSweepDeps extends QuotaRefreshDeps {
     readonly failed: number;
     /** Daily check-ins attempted in this pass. */
     readonly checkins: number;
+    /** Report-schedule rows fired in this pass. */
+    readonly reportRuns: number;
   }) => void;
 }
 const DEFAULT_MAX_CONCURRENCY = 5;
@@ -187,6 +201,53 @@ function logSweepAccounts(
 const DEFAULT_MIN_AGE_MS = 4 * 60_000;
 const DEFAULT_MAX_PER_PASS = 40;
 const DEFAULT_PASS_BUDGET_MS = 90_000;
+
+/**
+ * Report-schedule ride-along: fires every due `provider_report_schedule` row.
+ *
+ * It shares this sweep for the same reason the daily check-in does — the sweep
+ * already runs every minute and already owns a refresh-aware credential
+ * resolver, so a second timer would only duplicate that wiring. Each due row
+ * runs the console's own `runReportPass` through `runScheduleOnce`, so the
+ * schedule and the manual button cannot diverge in eligibility or pacing.
+ *
+ * Failures are logged and swallowed: a broken upstream must not take the quota
+ * sweep down with it, and `runScheduleOnce` has already advanced the cursor so
+ * the next attempt waits a full interval instead of spinning.
+ */
+export async function reportSchedulePass(deps: QuotaRefreshSweepDeps): Promise<number> {
+  if (deps.reportStore === undefined) return 0;
+  const now = deps.now ?? Date.now;
+  let due: readonly ReportScheduleRecord[];
+  try {
+    due = await deps.reportStore.listDueSchedules(new Date(now()));
+  } catch (error) {
+    log.error("[report-schedule] failed to load due schedules", error as Error);
+    return 0;
+  }
+  let fired = 0;
+  for (const schedule of due) {
+    try {
+      const result = await runScheduleOnce({
+        schedule,
+        deps: {
+          store: deps.reportStore,
+          resolveCredential: deps.resolveCredential,
+          now: () => new Date(now()),
+          ...(deps.reportFetcher ? { fetcher: deps.reportFetcher } : {}),
+          ...(deps.reportSleep ? { sleep: deps.reportSleep } : {}),
+        },
+      });
+      fired += 1;
+      log.info(
+        `[report-schedule] ${schedule.providerId} reported ${result.succeeded}/${result.attempted} (${result.failed} failed)`,
+      );
+    } catch (error) {
+      log.error(`[report-schedule] ${schedule.providerId} pass failed`, error as Error);
+    }
+  }
+  return fired;
+}
 
 /**
  * One non-overlapping quota sweep. Never rejects out of the timer path: the
@@ -343,5 +404,10 @@ export async function quotaRefreshSweep(deps: QuotaRefreshSweepDeps): Promise<vo
   });
 
   logSweepAccounts(batch.map((entry) => entry.target), quotaOutcomes, checkinOutcomes, reportOutcomes, failed, claimed);
-  deps.onTick?.({ targets: targets.length, attempted, skipped, failed, checkins });
+  // The scheduled growth-report leg runs after the quota waves, not inside
+  // them: it picks its own accounts (unhit today, oldest first) and posts
+  // sequentially by design, so folding it into the wave concurrency would
+  // reintroduce exactly the burst the report endpoint punishes.
+  const reportRuns = await reportSchedulePass(deps);
+  deps.onTick?.({ targets: targets.length, attempted, skipped, failed, checkins, reportRuns });
 }

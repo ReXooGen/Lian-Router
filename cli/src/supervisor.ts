@@ -50,13 +50,14 @@ export interface SupervisorOptions {
   readonly onLogLine?: (line: string) => void;
 }
 
-/** Restart budget: attempts allowed inside the rolling window. */
 const RESTART_MAX_ATTEMPTS = 3;
 const RESTART_WINDOW_MS = 60_000;
 const RESTART_BASE_DELAY_MS = 500;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 30_000;
 const HEALTH_POLL_INTERVAL_MS = 150;
+/** How often an adopted pid's liveness is re-checked. */
+const ADOPTED_POLL_INTERVAL_MS = 1_000;
 
 /**
  * Accumulates decoded chunks into whole lines. Child output arrives in
@@ -339,7 +340,46 @@ export class GatewaySupervisor {
     this.startedAt = undefined;
     this.state = "running";
     this.emit();
+    this.watchAdopted(pid);
     return true;
+  }
+
+  /**
+   * Polls an adopted pid and recovers when it disappears.
+   *
+   * An adopted gateway has no exit event to listen for — this process never
+   * held the child handle — so death is only observable by polling. Without
+   * this, a gateway that dies seconds after adoption (the hand-off race: the
+   * previous launcher's job kills it while the successor is still booting)
+   * leaves this supervisor reporting `running` behind a dead pid forever.
+   *
+   * Death restarts rather than merely reporting: the hand-off successor adopts
+   * a gateway it did not spawn, and that gateway is killed by the previous
+   * launcher's job object on a schedule nobody controls. Reporting `crashed`
+   * would leave the console answering "the gateway is answering but its
+   * database is unreachable" until the operator poked the tray. Restarting
+   * here is the same budgeted path a spawned child gets — same window, same
+   * attempt cap — so a stack that keeps dying stays down after three tries.
+   */
+  private watchAdopted(pid: number): void {
+    const timer = setInterval(() => {
+      if (!isProcessAlive(pid)) {
+        clearInterval(timer);
+        if (this.childPid !== pid) return;
+        this.childPid = undefined;
+        this.lastExitCode = undefined;
+        this.state = "crashed";
+        this.lastError = "the adopted gateway process died; restarting";
+        this.emit();
+        // The pid file must be gone before the restart can claim the root
+        // again; `start()` writes a fresh one after spawning.
+        void this.removePidFile().then(() => {
+          this.emit();
+          void this.start();
+        });
+      }
+    }, ADOPTED_POLL_INTERVAL_MS);
+    timer.unref();
   }
 
   /** Releases timers and log handles without signalling the child. */

@@ -298,6 +298,40 @@ describe("GatewaySupervisor", () => {
   );
 
   test(
+    "an adopted gateway that dies restarts under the adopter's budget",
+    async () => {
+      // The hand-off race this pins: a successor launcher adopts a gateway
+      // that the previous launcher's job object kills moments later. The
+      // adopter must recover by spawning its own gateway — reporting `crashed`
+      // forever would leave the console answering "its database is
+      // unreachable" until the operator poked the tray.
+      const root = await makeRoot();
+      // The adopted child exits on its own shortly after adoption.
+      const supervisor = makeSupervisor(root, "setTimeout(() => {}, 400)", 41_803);
+      const started = await supervisor.start();
+      const firstPid = started.pid;
+      await supervisor.dispose();
+
+      // The adopter's own command would exit 9 if the *first* gateway ever
+      // adopted it; the restarted gateway proves the spawn came from the
+      // watcher.
+      const adopter = makeSupervisor(root, "console.log('restart-spawned'); setInterval(() => {}, 1000)", 41_804);
+      expect(await adopter.adoptExisting()).toBe(true);
+      expect(adopter.status.state).toBe("running");
+      expect(adopter.status.pid).toBe(firstPid);
+
+      // The adopted pid dies on its own timer; the watcher polls, then
+      // restarts. The observable chain: crashed → a new pid that is neither
+      // the old one nor absent.
+      await waitForStatus(adopter, (s) => s.state === "crashed", 10_000);
+      const restarted = await waitForStatus(adopter, (s) => s.state === "running" && s.pid !== undefined && s.pid !== firstPid, 15_000);
+      expect(restarted.pid).toBeDefined();
+      expect(restarted.pid).not.toBe(firstPid);
+    },
+    30_000,
+  );
+
+  test(
     "surfaces EADDRINUSE from the child's stderr as lastError",
     async () => {
       const root = await makeRoot();

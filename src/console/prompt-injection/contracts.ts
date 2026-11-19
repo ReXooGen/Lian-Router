@@ -16,7 +16,10 @@ import type {
   PromptInjectionTurn,
 } from "../../persistence/schema";
 import type { PromptInjectionInput } from "../../persistence/prompt-injection-store";
-import { selectPromptInjections } from "../../persistence/prompt-injection-store";
+import {
+  selectPromptInjections,
+  normalizeExcludedClientIp,
+} from "../../persistence/prompt-injection-store";
 
 /** The editor payload the routes accept; owned by the persistence boundary. */
 export type { PromptInjectionInput };
@@ -24,6 +27,10 @@ export type { PromptInjectionInput };
 export const PROMPT_INJECTION_MODES = ["prompt", "script"] as const;
 export const PROMPT_INJECTION_PRESETS = ["custom", "assistant", "uncensored"] as const;
 export const PROMPT_INJECTION_POSITIONS = ["prepend", "append"] as const;
+
+/** Exclusion lists are bounded so one save cannot grow unbounded. */
+const MAX_EXCLUSIONS = 100;
+const MAX_EXCLUSION_CHARS = 64;
 
 /** A prompt large enough to be a persona, small enough to stay out of a DoS. */
 const MAX_CONTENT_CHARS = 200_000;
@@ -114,6 +121,32 @@ function invalid(message: string): never {
  * non-empty turns has nothing to inject, and keeping an empty row would make
  * the catalog disagree with the page about whether a target is configured.
  */
+/**
+ * Normalizes one exclusion list. Absent means "exclude nobody"; a non-array is
+ * a request-shape error, not an empty list. Values are transformed (IP lists
+ * canonicalize; key ids only trim), de-duplicated, and bounded.
+ */
+function normalizeExclusionList(
+  raw: unknown,
+  label: string,
+  transform: (value: string) => string,
+): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) invalid(`${label} must be an array`);
+  const values: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") invalid(`${label} must contain strings`);
+    const value = transform(item);
+    if (value.length === 0) continue;
+    if (value.length > MAX_EXCLUSION_CHARS) {
+      invalid(`${label} entry exceeds ${MAX_EXCLUSION_CHARS} characters`);
+    }
+    if (!values.includes(value)) values.push(value);
+    if (values.length >= MAX_EXCLUSIONS) break;
+  }
+  return values;
+}
+
 export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInput | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) {
@@ -145,6 +178,17 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
   const active = record["active"] ?? true;
   if (typeof active !== "boolean") invalid("active must be a boolean");
 
+  const excludedClientIps = normalizeExclusionList(
+    record["excludedClientIps"],
+    "excludedClientIps",
+    normalizeExcludedClientIp,
+  );
+  const excludedApiKeyIds = normalizeExclusionList(
+    record["excludedApiKeyIds"],
+    "excludedApiKeyIds",
+    (value) => value.trim(),
+  );
+
   if (mode === "prompt") {
     const content = record["content"];
     if (content !== undefined && typeof content !== "string") invalid("content must be a string");
@@ -160,6 +204,8 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
       turns: [],
       position: position as PromptInjectionPosition,
       enabled,
+      excludedClientIps,
+      excludedApiKeyIds,
     };
   }
 
@@ -190,6 +236,8 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
     turns,
     position: position as PromptInjectionPosition,
     enabled,
+    excludedClientIps,
+    excludedApiKeyIds,
   };
 }
 

@@ -24,6 +24,16 @@ import type {
 } from "./contracts";
 
 const compatibilityProfileSchema = t.Object({
+  iconUrl: t.Optional(
+    t.String({
+      description: "https URL or data:image/* base64 URL used as the provider card icon",
+    }),
+  ),
+  userAgent: t.Optional(
+    t.String({
+      description: "identity preset (codex|claude|omp|hermes|gateway|none) or a literal user-agent string",
+    }),
+  ),
   cli_identity: t.Optional(t.Boolean()),
   gateway_user_agent: t.Optional(t.Boolean()),
   extra_headers: t.Optional(t.Record(t.String(), t.String())),

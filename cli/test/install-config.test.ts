@@ -10,6 +10,7 @@ import {
   resolveGatewayConfig,
   writeStarterConfig,
 } from "../src/install-config";
+import { DEFAULT_CONSOLE_PASSWORD } from "../../src/console/auth/default-console-password";
 import { resolveConfigFile } from "../src/paths";
 
 const tempDirs: string[] = [];
@@ -238,10 +239,28 @@ describe("writeStarterConfig", () => {
 
     const result = writeStarterConfig(root);
     const parsed = parseEnvFile(await readFile(path, "utf8"));
-    expect(result.kind).toBe("unchanged");
+    expect(result.kind).toBe("migrated");
     expect(parsed["DATABASE_MODE"]).toBeUndefined();
     expect(parsed["REDIS_MODE"]).toBeUndefined();
     expect(parsed["DATABASE_URL"]).toBe("postgres://real@db:5432/mine");
+    // The gate line is the one addition a fully-configured file still gets: a
+    // local install without it renders a username form nobody asked for.
+    expect(parsed["LIANROUTER_CONSOLE_PASSWORD"]).toBe(DEFAULT_CONSOLE_PASSWORD);
+  });
+
+  it("leaves an existing console password untouched", async () => {
+    const root = await tempRoot();
+    const path = resolveConfigFile(root);
+    await writeFile(
+      path,
+      `LIANROUTER_CONSOLE_PASSWORD=operator-secret\nLIANROUTER_ENCRYPTION_KEY=${VALID_KEY}\nDATABASE_MODE=embedded\nREDIS_MODE=embedded\n`,
+      "utf8",
+    );
+
+    const result = writeStarterConfig(root);
+    expect(result.kind).toBe("unchanged");
+    const parsed = parseEnvFile(await readFile(path, "utf8"));
+    expect(parsed["LIANROUTER_CONSOLE_PASSWORD"]).toBe("operator-secret");
   });
 
   it("fills in a missing encryption key and leaves a backup of the old file", async () => {

@@ -1,5 +1,5 @@
-import { ChevronDown, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ChevronDown, Eye, EyeOff, Image as ImageIcon, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   HeaderPairsEditor,
@@ -17,7 +17,7 @@ import { EmptyState, ErrorState, LoadingState } from "../components/ui/state";
 import { Switch } from "../components/ui/switch";
 import { Inline } from "../components/ui/inline";
 import { Stack } from "../components/ui/stack";
-import type { CreateProviderRequest, ProviderResponse } from "../lib/contracts";
+import type { CreateProviderRequest, ProviderResponse, UpdateProviderRequest } from "../lib/contracts";
 import {
   useCreateProvider,
   useCreateProviderAccount,
@@ -27,12 +27,38 @@ import {
   useProviders,
   useSyncProviderModels,
   useTestByokConnection,
+  useUpdateProvider,
 } from "../lib/hooks/providers";
 import { providerDisplayName } from "../lib/provider-names";
 import { getErrorMessage } from "../lib/helpers";
 
 const wireFamilies = ["chat", "responses", "messages", "embeddings", "native"] as const;
 type WireFamily = (typeof wireFamilies)[number];
+
+const IDENTITY_PRESETS = [
+  { value: "codex", label: "Codex CLI (codex_cli_rs/<version>)" },
+  { value: "claude", label: "Claude Code CLI (claude-cli/<version>)" },
+  { value: "omp", label: "OMP Agent (omp/<version>)" },
+  { value: "hermes", label: "Hermes Agent (hermes-agent/0.13.0)" },
+  { value: "gateway", label: "Gateway (LianRouter/<version>)" },
+  { value: "custom", label: "Custom user-agent…" },
+  { value: "none", label: "None (runtime default)" },
+] as const;
+type IdentityPreset = (typeof IDENTITY_PRESETS)[number]["value"];
+
+/** Maps a stored userAgent value onto the dropdown + literal input state. */
+function identityStateFrom(value: string | undefined): {
+  preset: IdentityPreset;
+  literal: string;
+} {
+  const known = IDENTITY_PRESETS.filter((p) => p.value !== "custom").map((p) => p.value);
+  if (value === undefined || value.trim() === "") return { preset: "codex", literal: "" };
+  const trimmed = value.trim();
+  if ((known as readonly string[]).includes(trimmed)) {
+    return { preset: trimmed as IdentityPreset, literal: "" };
+  }
+  return { preset: "custom", literal: trimmed };
+}
 
 // ── Custom Compatible Provider Modal ──────────────────────────────────────────
 
@@ -332,9 +358,283 @@ function AddCompatibleModal({
 
 // ── Custom Providers Section ──────────────────────────────────────────────────
 
+export function EditProviderModal({
+  provider,
+  open,
+  onClose,
+}: {
+  provider: ProviderResponse;
+  open: boolean;
+  onClose: () => void;
+}): ReactNode {
+  const update = useUpdateProvider();
+  const profile = provider.compatibilityProfile ?? {};
+  const storedIcon = typeof profile.iconUrl === "string" ? profile.iconUrl : null;
+  const [label, setLabel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [wireFamily, setWireFamily] = useState<WireFamily>("chat");
+  const [sendCliIdentity, setSendCliIdentity] = useState(true);
+  const [editIdentityPreset, setEditIdentityPreset] = useState<IdentityPreset>("codex");
+  const [editIdentityLiteral, setEditIdentityLiteral] = useState("");
+  const [identityDirty, setIdentityDirty] = useState(false);
+  const [headerPairs, setHeaderPairs] = useState<readonly HeaderPair[]>([]);
+  const [iconPreview, setIconPreview] = useState<string | null>(null);
+  const [iconDirty, setIconDirty] = useState(false);
+  const [iconError, setIconError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const iconInputRef = useRef<HTMLInputElement>(null);
+  const headersFromProfile = useMemo(() => {
+    const raw = profile.extra_headers;
+    if (raw === null || typeof raw !== "object") return [];
+    return Object.entries(raw as Record<string, string>).map(
+      ([key, value]) => [key, value] as HeaderPair,
+    );
+  }, [profile.extra_headers]);
+
+  // Seed from the live row every time the dialog opens, and re-seed when the
+  // underlying provider object changes while open (a refetch landing mid-edit
+  // must not leave the form on a pre-fetch blank). A stale edit round
+  // (open -> cancel -> open) cannot carry over abandoned input because every
+  // field is reset from the row.
+  useEffect(() => {
+    if (!open) return;
+    setLabel(provider.label ?? "");
+    setBaseUrl(provider.baseUrl ?? "");
+    setWireFamily((provider.wireFamilyDefault ?? "chat") as WireFamily);
+    setSendCliIdentity(profile.cli_identity !== false);
+    {
+      const st = identityStateFrom(
+        typeof profile.userAgent === "string" ? profile.userAgent : undefined,
+      );
+      setEditIdentityPreset(st.preset);
+      setEditIdentityLiteral(st.literal);
+    }
+    setIdentityDirty(false);
+    setHeaderPairs(headersFromProfile);
+    setIconPreview(storedIcon);
+    setIconDirty(false);
+    setIconError(null);
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, provider]);
+
+  const acceptIconFile = (file: File) => {
+    const okTypes = ["image/png", "image/webp", "image/gif", "image/jpeg"];
+    if (!okTypes.includes(file.type)) {
+      setIconError("Icon must be PNG, WebP, GIF, or JPEG.");
+      return;
+    }
+    if (file.size > 300_000) {
+      setIconError("Icon exceeds the 300 KB limit.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setIconPreview(typeof reader.result === "string" ? reader.result : null);
+      setIconDirty(true);
+      setIconError(null);
+    };
+    reader.onerror = () => setIconError("Could not read the icon file.");
+    reader.readAsDataURL(file);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!label.trim()) {
+      setError("Display Name is required");
+      return;
+    }
+    if (!baseUrl.trim()) {
+      setError("Base URL is required");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const extraHeaders = pairsToHeaders(headerPairs);
+      // Carry forward every profile field this modal does not render
+      // (endpoint_paths_by_wire_family, model_wire_families, streaming and
+      // structured-output config) — a save that dropped them would silently
+      // erase operator config the edit surface does not show.
+      const request: UpdateProviderRequest = {
+        label: label.trim(),
+        baseUrl: baseUrl.trim(),
+        compatibilityProfile: {
+          ...profile,
+          cli_identity: sendCliIdentity,
+          ...(identityDirty
+            ? editIdentityPreset === "custom"
+              ? editIdentityLiteral.trim()
+                ? { userAgent: editIdentityLiteral.trim() }
+                : { userAgent: undefined }
+              : { userAgent: editIdentityPreset }
+            : {}),
+          ...(iconDirty ? (iconPreview ? { iconUrl: iconPreview } : { iconUrl: undefined }) : {}),
+          ...(Object.keys(extraHeaders).length > 0 ? { extra_headers: extraHeaders } : {}),
+        },
+      };
+      await update.mutateAsync({ providerId: provider.providerId, request });
+      onClose();
+    } catch (err) {
+      setError(getErrorMessage(err, "Failed to update provider"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} title={`Edit ${provider.label || provider.providerId}`}>
+      <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        {error ? <div style={{ color: "var(--red)", fontSize: "12px" }}>{error}</div> : null}
+        <Input
+          label="Display Name"
+          id="edit-label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          required
+        />
+        <div className="form-group">
+          <label className="form-label" htmlFor="edit-url">
+            <span>Base URL</span>
+          </label>
+          <Inline gap="8px">
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Input id="edit-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} required />
+            </div>
+            <Button type="button" variant="secondary" onClick={() => void navigator.clipboard.readText().then((t) => t.trim() && setBaseUrl(t.trim())).catch(() => undefined)}>
+              Paste
+            </Button>
+          </Inline>
+        </div>
+        <Select
+          id="edit-wire"
+          label="API format"
+          value={wireFamily}
+          onValueChange={(value) => setWireFamily(value as WireFamily)}
+          options={wireFamilies.map((value) => ({ value, label: value }))}
+        />
+        <div className="form-group">
+          <label className="form-label" htmlFor="edit-identity">
+            <span>User-Agent identity</span>
+            <span className="form-hint">
+              What the upstream sees in the user-agent header. Custom takes a literal string.
+            </span>
+          </label>
+          <Select
+            id="edit-identity"
+            value={editIdentityPreset}
+            onValueChange={(value) => {
+              setEditIdentityPreset(value as IdentityPreset);
+              setIdentityDirty(true);
+            }}
+            options={IDENTITY_PRESETS.map((p) => ({ value: p.value, label: p.label }))}
+          />
+          {editIdentityPreset === "custom" ? (
+            <div style={{ marginTop: "6px" }}>
+              <Input
+                id="edit-identity-literal"
+                placeholder="codex_cli_rs/0.156.1"
+                value={editIdentityLiteral}
+                onChange={(e) => {
+                  setEditIdentityLiteral(e.target.value);
+                  setIdentityDirty(true);
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+        <div className="form-group">
+          <label className="form-label">
+            <span>Provider Icon</span>
+            <span className="form-hint">
+              PNG, WebP, GIF, or JPEG up to 300 KB. Remove clears the stored icon.
+            </span>
+          </label>
+          <Inline gap="8px">
+            <div
+              style={{
+                width: "44px",
+                height: "44px",
+                borderRadius: "8px",
+                border: "1px solid var(--inner-border)",
+                background: "var(--surface-2)",
+                display: "grid",
+                placeItems: "center",
+                overflow: "hidden",
+                flexShrink: 0,
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {iconPreview ? (
+                <img
+                  src={iconPreview}
+                  alt="Provider icon preview"
+                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                />
+              ) : (
+                <ImageIcon size={16} />
+              )}
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              icon={<Upload size={13} />}
+              onClick={() => iconInputRef.current?.click()}
+            >
+              Choose icon
+            </Button>
+            {iconPreview ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setIconPreview(null);
+                  setIconDirty(true);
+                }}
+              >
+                Remove
+              </Button>
+            ) : null}
+          </Inline>
+          <input
+            ref={iconInputRef}
+            hidden
+            type="file"
+            accept="image/png,image/webp,image/gif,image/jpeg"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) acceptIconFile(file);
+            }}
+          />
+          {iconError ? (
+            <p className="form-error" role="alert" style={{ marginTop: "6px", fontSize: "12px" }}>
+              {iconError}
+            </p>
+          ) : null}
+        </div>
+        <HeaderPairsEditor pairs={headerPairs} onChange={setHeaderPairs} />
+        <Inline justify="flex-end" gap="8px" style={{ marginTop: "8px" }}>
+          <Button variant="secondary" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" disabled={submitting}>
+            {submitting ? "Saving..." : "Save changes"}
+          </Button>
+        </Inline>
+      </form>
+    </Dialog>
+  );
+}
+
+
 function CustomProviderCard({ customProvider }: { customProvider: ProviderResponse }): ReactNode {
   const deleteMutation = useDeleteProvider();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   // Same data the builtin card reads: connection badges and model counts
   // come from the same hooks. Collectorless custom endpoints never refresh
   // quota, so a stale manufactured error is not rendered: the row shows
@@ -468,6 +768,21 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
         }}
         title={`Delete ${customProvider.label || customProvider.providerId}`}
       />
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<Pencil size={12} />}
+        onClick={() => setEditOpen(true)}
+        style={{
+          position: "absolute",
+          top: "4px",
+          right: "36px",
+          color: "var(--text-tertiary)",
+          padding: "4px",
+        }}
+        title={`Edit ${customProvider.label || customProvider.providerId}`}
+      />
+      <EditProviderModal provider={customProvider} open={editOpen} onClose={() => setEditOpen(false)} />
       <Dialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}

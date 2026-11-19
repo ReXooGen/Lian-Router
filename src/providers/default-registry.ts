@@ -2,26 +2,31 @@ import { GENERIC_API_KEY_SPECS } from "./integrations/configured-openai-provider
 import { createApiKeyAdapter } from "./integrations/configured-provider";
 import { ProviderRegistry, toRegistration, type ProviderAuthentication, type ProviderModule } from "./provider-registry";
 import type { OAuthLoginClient } from "./authentication/oauth-flow-store";
-import type { QuotaFetcher } from "./quota/quota-support";
+import type { OAuthTokenRefresher } from "./authentication/oauth-refresh-service";
 import { BUNDLED_PROVIDER_METADATA, PROVIDER_COMPATIBILITY_PROFILES, providerRequiresAccount, providerUpstreamHost, providerDefaultWireFamily, type BundledProviderId } from "./provider-metadata";
+import type { QuotaFetcher } from "./quota/quota-support";
 import { modelsDevCatalog } from "./discovery/models-dev-catalog";
 import type { ProviderModelDiscovery } from "./discovery/discovery-types";
 
 /**
  * Builds a lazy OAuth authentication loader from a dynamic module import and the
- * exported client name. The same client usually acts as its own refresher, so
- * `withRefresher` mirrors the client as the refresher.
+ * exported client name. A provider whose login client and token refresher are
+ * different objects names the refresher export; `withRefresher` alone mirrors
+ * the client as the refresher, which is what every same-object provider relies on.
  */
 function oauthCapability<M, K extends keyof M>(
   loader: () => Promise<M>,
   exportName: K,
-  options: { readonly withRefresher?: boolean } = {},
+  options: { readonly withRefresher?: boolean; readonly refresherExport?: string } = {},
 ): () => Promise<ProviderAuthentication> {
   return async () => {
-    const module = await loader();
-    const client = (module as Record<string, unknown>)[exportName as string] as OAuthLoginClient & { refresh: unknown };
+    const module = (await loader()) as Record<string, unknown>;
+    const client = module[exportName as string] as OAuthLoginClient & { refresh: unknown };
+    const refresher = options.refresherExport
+      ? (module[options.refresherExport] as OAuthTokenRefresher)
+      : client;
     return options.withRefresher
-      ? ({ client, refresher: client } as ProviderAuthentication)
+      ? ({ client, refresher } as ProviderAuthentication)
       : ({ client } as ProviderAuthentication);
   };
 }
@@ -432,6 +437,27 @@ export const PROVIDER_CAPABILITIES = {
     // Token-plan keys are cluster-specific; discovery runs against the bundled
     // SGP origin, the same one this row dispatches to.
     loadModelDiscovery: openAIModelDiscovery("xiaomitp", { headers: (credential) => ({ authorization: `Bearer ${credential}` }) }),
+  },
+  autoclaw: {
+    loadAdapter: async () => createApiKeyAdapter((await import("./integrations/autoclaw/spec")).AUTOCLAW_SPEC),
+    loadModels: async () => (await import("./integrations/autoclaw/spec")).AUTOCLAW_FALLBACK_MODELS,
+    // The login client and the token refresher are separate objects here: the
+    // vendor's renewal lane (/userapi/v1/refresh) is a different endpoint
+    // family from the browser-code exchange, so a dedicated refresher module
+    // owns it. withRefresher + the export name wire both halves in.
+    loadAuthentication: oauthCapability(
+      () => import("./integrations/autoclaw/autoclaw-refresher"),
+      "AutoClawLoginClient",
+      { withRefresher: true, refresherExport: "autoclawTokenRefresher" },
+    ),
+    // The live list carries per-model capability (`input`, `reasoning`,
+    // `contextWindow`, `maxTokens`), so discovery is the authority and the
+    // bundled rows are only what an account sees before the first read.
+    loadModelDiscovery: async () => async ({ credential, fetcher }) =>
+      (await import("./integrations/autoclaw/spec")).discoverAutoClawModels({
+        credential,
+        ...(fetcher === undefined ? {} : { fetcher }),
+      }),
   },
   zai: {
     loadAdapter: async () => createApiKeyAdapter((await import("./integrations/zai/spec")).ZAI_SPEC),

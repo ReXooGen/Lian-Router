@@ -106,6 +106,15 @@ export const VERSION_SOURCES = {
     fallback: "0.156.1",
     sources: [{ url: "https://registry.npmjs.org/@openai/codex/latest" }],
   },
+  // OMP agent (`omp` CLI, oh-my-pi). The CLI's own face is
+  // `omp/<version>`, and its release line is tracked by the
+  // `@oh-my-pi/pi-coding-agent` npm package whose versions match the
+  // GitHub release tags (18.x line) one-for-one.
+  ompAgent: {
+    key: "omp-agent",
+    fallback: "18.16.0",
+    sources: [{ url: "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest" }],
+  },
   workbuddyClient: {
     key: "workbuddy-client",
     fallback: "5.6.2.39458645",
@@ -170,6 +179,7 @@ const resolvers = {
   clineClient: createClientVersionResolver(VERSION_SOURCES.clineClient),
   clineSdk: createClientVersionResolver(VERSION_SOURCES.clineSdk),
   codex: createClientVersionResolver(VERSION_SOURCES.codex),
+  ompAgent: createClientVersionResolver(VERSION_SOURCES.ompAgent),
   workbuddyClient: createClientVersionResolver(VERSION_SOURCES.workbuddyClient),
   workbuddyCli: createClientVersionResolver(VERSION_SOURCES.workbuddyCli),
   kimiCli: createClientVersionResolver(VERSION_SOURCES.kimiCli),
@@ -279,6 +289,22 @@ export function _resetWorkBuddyClientVersionCache(version: string | null = null)
 
 export function getCodexVersion(): string {
   return resolvers.codex.get();
+}
+
+export function getOmpAgentVersion(): string {
+  return resolvers.ompAgent.get();
+}
+
+export async function resolveOmpAgentVersion(
+  fetcher?: typeof fetch,
+  signal?: AbortSignal,
+): Promise<string> {
+  await resolvers.ompAgent.ensure(fetcher, signal);
+  return getOmpAgentVersion();
+}
+
+export function _resetOmpAgentVersion(version: string | null = null): void {
+  resolvers.ompAgent.reset(version);
 }
 
 export async function resolveCodexVersion(fetcher?: typeof fetch, signal?: AbortSignal): Promise<string> {

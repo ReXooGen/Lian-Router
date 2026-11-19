@@ -21,6 +21,16 @@ import {
 } from "./antigravity-loopback-helper";
 import type { ConsoleAccessResolver } from "../../auth/access";
 import { oauthAccountFingerprint } from "./account-fingerprint";
+import {
+  AUTOCLAW_OAUTH_REDIRECT_URI,
+  AutoClawOAuthError,
+} from "../../../providers/integrations/autoclaw/oauth";
+import {
+  AutoClawOAuthClient,
+  beginAutoClawAuthorize,
+  readAutoClawCaptchaConfig,
+  verifyAutoClawToken,
+} from "../../../providers/integrations/autoclaw/oauth-client";
 /** OAuth identity is not exposed by the current exchange contract; the refresh
  * token fingerprint prevents replaying the exact same OAuth credential only. */
 
@@ -41,6 +51,7 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
             providerId,
             tenantId,
             label: input.label,
+            accountEmail: exchangeEmail(input),
             credentialKind: "oauth",
             credentialCiphertext: encryptCredential(input.access),
             credentialFingerprint: oauthAccountFingerprint(providerId, input),
@@ -67,6 +78,19 @@ export class DrizzleOAuthAccountStore implements OAuthAccountStore {
       throw error;
     }
   }
+}
+
+/**
+ * The login email an OAuth exchange reported, when its shape carries one.
+ *
+ * AutoClaw's result packs `displayName` from `user_name`/`email` in one field,
+ * so a value that parses as an email is stored separately from the label. This
+ * lets the accounts list show which mailbox backs a credential without a
+ * profile round-trip per row.
+ */
+export function exchangeEmail(result: { readonly accountLabel?: string | null }): string | null {
+  const label = result.accountLabel?.trim();
+  return label !== undefined && label.includes("@") ? label : null;
 }
 
 /**
@@ -564,7 +588,89 @@ function oauthErrorResponse(error: unknown, set: { status?: number | string }) {
   });
 }
 
+/**
+ * The tab the vendor's redirect lands in.
+ *
+ * Deliberately tiny and same-origin only: no fonts, no scripts, no external
+ * assets, so a callback page can never become an injection surface or leak the
+ * referrer. It closes itself on success because the operator started this from
+ * the console and has nothing left to do here.
+ */
+function autoClawCallbackPage(ok: boolean, title: string, detail: string): string {
+  const accent = ok ? "#2f855a" : "#c53030";
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>${title}</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#14161a;color:#e6e8eb;
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  main{max-width:420px;padding:28px;text-align:center}
+  h1{margin:0 0 8px;font-size:17px;color:${accent}}
+  p{margin:0;color:#9aa3ad;font-size:13px}
+</style></head>
+<body><main><h1>${title}</h1><p>${detail}</p></main>
+${ok ? "<script>setTimeout(() => { location.replace('/console/providers/autoclaw'); }, 1400)</script>" : ""}
+</body></html>`;
+}
+
 const accountLabelBody = t.Optional(t.Object({ accountLabel: t.Optional(t.String()) }));
+/**
+ * AutoClaw's authorize step is captcha-gated and its `state` is minted by the
+ * vendor, so it cannot ride the generic browser-code route: that route builds a
+ * URL from a locally generated state, which the exchange endpoint rejects.
+ */
+const autoClawStartBody = t.Optional(
+  t.Object({ accountLabel: t.Optional(t.String()), captchaVerifyParam: t.Optional(t.String()) }),
+);
+/**
+ * A token obtained elsewhere: from the AutoClaw desktop app, or from a login the
+ * operator finished in a browser on another machine.
+ */
+const autoClawTokenBody = t.Object({
+  token: t.String({ minLength: 1 }),
+  accountLabel: t.Optional(t.String()),
+});
+/** The callback's code plus the state the vendor minted with it. */
+const autoClawCompleteBody = t.Object({
+  code: t.String({ minLength: 1 }),
+  state: t.String({ minLength: 1 }),
+  accountLabel: t.Optional(t.String()),
+});
+/**
+ * The redirect target a browser login must name.
+ *
+ * Z.ai validates `redirect_uri` only once the browser holds a login session:
+ * pre-auth requests get a `307 -> /auth?...` for any URI, which makes the
+ * endpoint look permissive. Signed in, the same request is refused for every
+ * URI except this client's registered loopback, so the registered value is the
+ * only usable one. Its server is the desktop app's; the dashboard and the
+ * OAuth bridge cover the gap by handing the code straight back here.
+ */
+function autoClawCallbackUri(): string {
+  return AUTOCLAW_OAUTH_REDIRECT_URI;
+}
+
+/**
+ * The shipped AutoClaw client's own app identity.
+ *
+ * Public constants of the desktop build, not deployment secrets: every AutoClaw
+ * client signs with these, and the gateway only checks that the digest matches.
+ */
+const AUTOCLAW_SIGNER = {
+  appId: "100003",
+  appKey: "38d2391985e2369a5fb8227d8e6cd5e5",
+} as const;
+
+/**
+ * The device id the gateway associates with a login.
+ *
+ * Derived per process rather than random per request: the gateway records the
+ * device that first completed a flow, and a value that changes per login makes
+ * every attempt look like a new device.
+ */
+function autoClawDeviceId(): string {
+  return `lianrouter-${process.platform}`;
+}
+
 const devicePollBody = t.Object({ deviceAuthId: t.String() });
 const loopbackCompleteBody = t.Object({
   state: t.String({ minLength: 1 }),
@@ -575,6 +681,174 @@ const loopbackCompleteBody = t.Object({
 export function createOAuthLoginRoutes(config: OAuthLoginConfig): Elysia {
   const factory = createOAuthLoginOperations(config);
   return new Elysia({ prefix: "/providers" })
+    /**
+     * AutoClaw: mint an authorization URL, captcha included.
+     *
+     * The vendor signs the `state` it hands back, and its exchange endpoint
+     * verifies that signature — so the operator must open exactly this URL and
+     * come back with exactly this state.
+     */
+    .post(
+      "/autoclaw/oauth/authorize",
+      { body: autoClawStartBody },
+      async ({ request, body, set }) => {
+        try {
+          const access = config.accessResolver(request);
+          requireScope(access, "dashboard:write");
+          set.status = 201;
+          const navigateUri = autoClawCallbackUri();
+          const started = await beginAutoClawAuthorize({
+            signer: AUTOCLAW_SIGNER,
+            deviceId: autoClawDeviceId(),
+            ...(body?.captchaVerifyParam ? { captchaVerifyParam: body.captchaVerifyParam } : {}),
+            navigateUri,
+          }).catch((error: unknown) => {
+            // An unsolved captcha is the normal first answer, not a server
+            // fault: the gateway refuses to mint a URL until the challenge is
+            // answered, so the operator needs that fact and the code, not 500.
+            if (error instanceof AutoClawOAuthError) {
+              throw new ConsoleDomainError(
+                "autoclaw_oauth_failed",
+                400,
+                error.message,
+                { providerId: "autoclaw", upstreamCode: error.code },
+              );
+            }
+            throw error;
+          });
+          // The callback arrives with no console session, so the tenant and the
+          // exact `navigate_uri` this URL was minted for have to be remembered
+          // against the vendor's `state`. Consuming it there also makes the
+          // state single-use.
+          await config.oauthFlowStore.savePending(started.state, {
+            providerId: "autoclaw",
+            codeVerifier: "",
+            accountLabel: body?.accountLabel?.trim() || "AutoClaw",
+            tenantId: access?.tenantId ?? null,
+            redirectUri: navigateUri,
+          });
+          return started;
+        } catch (e) {
+          return oauthErrorResponse(e, set);
+        }
+      },
+    )
+    /**
+     * AutoClaw: the vendor will never send a browser here.
+     *
+     * Kept as an explicit dead end rather than deleted: an operator who pastes
+     * this URL somewhere, or a deployment whose client registration ever changes,
+     * should get an answer that names the real destination instead of a 404 that
+     * looks like the console is broken. If a code does arrive, the login is
+     * finished: the vendor only rejects the advertised target, not the exchange.
+     */
+    .get("/autoclaw/oauth/callback", async ({ request, set }) => {
+      const url = new URL(request.url);
+      const code = url.searchParams.get("code");
+      const origin = new URL(request.url).origin;
+      set.headers["content-type"] = "text/html; charset=utf-8";
+      if (code === null) {
+        set.status = 400;
+        return autoClawCallbackPage(
+          false,
+          "Not the redirect target",
+          "AutoClaw only accepts http://localhost:18432/auth/callback-zai. If you reached this page some other way, start the login again from the dashboard.",
+        );
+      }
+      try {
+        const state = url.searchParams.get("state") ?? "";
+        const pending = await config.oauthFlowStore.consumePending(state);
+        if (pending === undefined || pending.providerId !== "autoclaw") {
+          set.status = 400;
+          return autoClawCallbackPage(
+            false,
+            "Login expired",
+            "This login link was already used or has expired. Start the login again from the dashboard.",
+          );
+        }
+        const client = new AutoClawOAuthClient({
+          signer: AUTOCLAW_SIGNER,
+          deviceId: autoClawDeviceId(),
+          navigateUri: pending.redirectUri,
+        });
+        const exchanged = await client.exchangeLogin({ code, state });
+        const persisted = await config.accountStore.persistAccount(pending.tenantId, "autoclaw", {
+          label: pending.accountLabel || exchanged.accountLabel || "AutoClaw",
+          ...exchanged,
+        });
+        await config.snapshotInvalidator?.invalidate();
+        return autoClawCallbackPage(
+          true,
+          "Account connected",
+          `AutoClaw account ${persisted.accountId.slice(0, 8)} is ready. Return to ${origin}.`,
+        );
+      } catch (error) {
+        return autoClawCallbackPage(
+          false,
+          "Login failed",
+          error instanceof AutoClawOAuthError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : "The exchange failed.",
+        );
+      }
+    })
+    /**
+     * AutoClaw: redeem the callback's code.
+     *
+     * No access check on purpose, matching `/oauth/loopback/complete`: the
+     * vendor-signed `state` is the authentication. Only a caller who obtained a
+     * live state from the authorize step can present one the gateway accepts,
+     * and the gateway itself rejects anything else.
+     */
+    .post(
+      "/autoclaw/oauth/complete",
+      { body: autoClawCompleteBody },
+      async ({ request, body, set }) => {
+        try {
+          const access = config.accessResolver(request);
+          // The state was minted by the vendor during `authorize`, which also
+          // remembered the tenant that started it. Reading it back means a URL
+          // pasted from a different browser still lands on the right tenant;
+          // a state that was never seen here falls back to the session.
+          const pending = await config.oauthFlowStore.consumePending(body.state);
+          const client = new AutoClawOAuthClient({
+            signer: AUTOCLAW_SIGNER,
+            deviceId: autoClawDeviceId(),
+            navigateUri: autoClawCallbackUri(),
+          });
+          const exchanged = await client.exchangeLogin({ code: body.code, state: body.state }).catch(
+            (error: unknown) => {
+              // The vendor's own codes are the useful half of this failure: a
+              // rejected code and a rejected state are different operator
+              // actions, and collapsing them into a 500 hides which.
+              if (error instanceof AutoClawOAuthError) {
+                throw new ConsoleDomainError(
+                  "autoclaw_oauth_failed",
+                  400,
+                  error.message,
+                  { providerId: "autoclaw", upstreamCode: error.code },
+                );
+              }
+              throw error;
+            },
+          );
+          const persisted = await config.accountStore.persistAccount(
+            pending?.tenantId ?? access?.tenantId ?? null,
+            "autoclaw",
+            {
+              label: body.accountLabel?.trim() || exchanged.accountLabel || "AutoClaw",
+              ...exchanged,
+            },
+          );
+          await config.snapshotInvalidator?.invalidate();
+          return { accountId: persisted.accountId };
+        } catch (e) {
+          return oauthErrorResponse(e, set);
+        }
+      },
+    )
     .post(
       "/:providerId/oauth/authorize",
       { body: accountLabelBody },
@@ -586,6 +860,84 @@ export function createOAuthLoginRoutes(config: OAuthLoginConfig): Elysia {
             params.providerId,
             body?.accountLabel ?? params.providerId,
           );
+        } catch (e) {
+          return oauthErrorResponse(e, set);
+        }
+      },
+    )
+    /**
+     * AutoClaw: store a token that was obtained somewhere else.
+     *
+     * This is the path that works from a headless deployment. The authorize
+     * step is captcha-gated, and an Aliyun token is bound to the browser's own
+     * IP, so a server cannot mint one for an operator sitting elsewhere. The
+     * desktop app already holds a valid token for the account, so accepting one
+     * pasted by the operator needs no challenge at all — and the token is
+     * verified against the gateway before it is stored, so a stale or foreign
+     * value is rejected here rather than becoming a failing account.
+     */
+    .post(
+      "/autoclaw/oauth/token",
+      { body: autoClawTokenBody },
+      async ({ request, body, set }) => {
+        try {
+          const access = config.accessResolver(request);
+          requireScope(access, "dashboard:write");
+          const token = body.token.trim();
+          const check = await verifyAutoClawToken(token);
+          if (!check.valid) {
+            throw new ConsoleDomainError(
+              "autoclaw_token_invalid",
+              400,
+              check.reason ?? "AutoClaw did not accept this token",
+              { providerId: "autoclaw" },
+            );
+          }
+          const persisted = await config.accountStore.persistAccount(access?.tenantId ?? null, "autoclaw", {
+            label: body.accountLabel?.trim() || check.accountLabel || "AutoClaw",
+            access: token,
+            refresh: "",
+            expiresAt: new Date("9999-12-31T00:00:00.000Z"),
+            ...(check.accountLabel !== undefined ? { accountLabel: check.accountLabel } : {}),
+          });
+          await config.snapshotInvalidator?.invalidate();
+          set.status = 201;
+          return { accountId: persisted.accountId };
+        } catch (e) {
+          return oauthErrorResponse(e, set);
+        }
+      },
+    )
+    /**
+     * AutoClaw: read the challenge the authorize step will demand.
+     *
+     * Separate from `authorize` because the dashboard has to render a widget
+     * before a login can start: the vendor refuses to mint a URL until the
+     * challenge is solved, so `authorize` answering "captcha not answered" is
+     * the normal first reply and the client needs the challenge parameters to
+     * do anything about it. This route is what makes the browser flow usable
+     * without a human reading a comment to find out which challenge to load.
+     */
+    .get(
+      "/autoclaw/oauth/captcha",
+      async ({ request, set }) => {
+        try {
+          const access = config.accessResolver(request);
+          requireScope(access, "dashboard:read");
+          return await readAutoClawCaptchaConfig({
+            signer: AUTOCLAW_SIGNER,
+            deviceId: autoClawDeviceId(),
+          }).catch((error: unknown) => {
+            if (error instanceof AutoClawOAuthError) {
+              throw new ConsoleDomainError(
+                "autoclaw_oauth_failed",
+                502,
+                error.message,
+                { providerId: "autoclaw", upstreamCode: error.code },
+              );
+            }
+            throw error;
+          });
         } catch (e) {
           return oauthErrorResponse(e, set);
         }

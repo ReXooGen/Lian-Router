@@ -142,6 +142,8 @@ export const providerAccounts = pgTable("provider_accounts", {
     .references(() => providers.id, { onDelete: "cascade" }),
   tenantId: tenantRefNullable(),
   label: text("label").notNull(),
+  /** Login email the vendor reports for OAuth accounts; null for API keys. */
+  accountEmail: text("account_email"),
   credentialCiphertext: bytea("credential_ciphertext"),
   /**
    * HMAC fingerprint of the credential, never the plaintext secret. Nullable

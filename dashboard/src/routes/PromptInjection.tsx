@@ -194,8 +194,8 @@ function toDraft(entry: PromptInjectionEntry): PromptInjectionInput {
     turns: entry.turns,
     position: entry.position,
     enabled: entry.enabled,
-    excludedClientIps: entry.excludedClientIps,
-    excludedApiKeyIds: entry.excludedApiKeyIds,
+    excludedClientIps: entry.excludedClientIps ?? [],
+    excludedApiKeyIds: entry.excludedApiKeyIds ?? [],
   };
 }
 

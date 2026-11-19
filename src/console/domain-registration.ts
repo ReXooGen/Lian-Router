@@ -27,6 +27,10 @@ import { createTunnelRoutes } from "./tunnel/contracts";
 import { getTunnelService } from "./tunnel/service";
 import { DrizzleRuntimeSettingsStore } from "./settings/store";
 import { createPromptInjectionRoutes } from "./prompt-injection/routes";
+import { createAppealRoutes } from "./automation/appeal/routes";
+import { DrizzleAppealStore } from "./automation/appeal/store";
+import { createReportRoutes } from "./automation/report/routes";
+import { DrizzleReportStore } from "./automation/report/store";
 import { DrizzlePromptInjectionStore } from "../persistence/prompt-injection-store";
 import { createObservabilityRoutes } from "./domains/stats/contracts";
 import { DrizzleObservabilityStore } from "./domains/stats/store";
@@ -45,6 +49,7 @@ import type { ConsoleCredentialService } from "./auth/service";
 import { OAuthFlowStore } from "../providers/authentication/oauth-flow-store";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
 import { syncByokProvider } from "../providers/operations/provider-catalog-service";
+import { recoverAccount } from "../providers/operations/account-health-service";
 import { DrizzleApiKeyStore } from "../persistence/api-key-store";
 import { DrizzleShareLinkStore } from "../persistence/share-store";
 import { createShareUsagePort } from "./share/share-usage";
@@ -217,6 +222,43 @@ export function registerConsoleDomains(
       store: new DrizzlePromptInjectionStore(ctx.db),
       accessResolver: ctx.accessResolver,
       auditSink: ctx.auditRecorder,
+    }),
+  );
+  // The growth-report control plane shares its credential resolver with the
+  // quota routes: both need a refreshed OAuth token, and two resolvers would
+  // mean two refresh paths for the same account.
+  console.use(
+    createReportRoutes({
+      store: new DrizzleReportStore(ctx.db),
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+      resolveCredential,
+    }),
+  );
+  console.use(
+    createAppealRoutes({
+      store: new DrizzleAppealStore(ctx.db),
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+      resolveCredential,
+      // The recheck judges an appeal by whether the account works again, so it
+      // must ask the same question live traffic asks: the catalog store's
+      // probeModel runs the real adapter, identity headers and health recorder.
+      probeAccount: async ({ tenantId, providerId, accountId, modelId }) => {
+        const result = await providerCatalogStore.probeModel(tenantId, providerId, {
+          modelId,
+          accountId,
+        });
+        return {
+          ok: result.ok,
+          ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
+          ...(result.error === undefined ? {} : { error: result.error }),
+        };
+      },
+      // An accepted appeal is the operator-visible proof that the ban is gone.
+      recoverAccount: async (accountId) => {
+        await recoverAccount(ctx.db, accountId, "appeal_accepted");
+      },
     }),
   );
   console.use(

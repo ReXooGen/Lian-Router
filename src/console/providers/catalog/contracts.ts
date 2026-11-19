@@ -135,6 +135,54 @@ export function validateCompatibilityProfile(profile: CompatibilityProfile): voi
       throw new GatewayError("invalid_request", 400, "credentialUrl must be string");
     }
   }
+  if (profile.iconUrl !== undefined) {
+    // Presentation-only. An https URL renders as-is; a data:image/* URL lets
+    // the dashboard persist an operator-picked icon without an upload route.
+    // Anything else is refused here so the catalog can never store a value the
+    // icon component would silently drop back to initials.
+    const value = profile.iconUrl;
+    const httpsOk = typeof value === "string" && value.startsWith("https://") && value.length <= 2048;
+    const dataOk =
+      typeof value === "string" &&
+      /^data:image\/(png|webp|gif|jpeg);base64,[A-Za-z0-9+/=]+$/.test(value) &&
+      value.length <= 400_000;
+    if (!httpsOk && !dataOk) {
+      throw new GatewayError(
+        "invalid_request",
+        400,
+        "iconUrl must be an https URL or a data:image/{png,webp,gif,jpeg} base64 URL (max ~300 KB)",
+      );
+    }
+  }
+  if (profile.userAgent !== undefined) {
+    // Either a known preset name or a literal agent string. A literal must be
+    // printable ASCII and short — it becomes an outbound header value.
+    const value = profile.userAgent;
+    if (typeof value !== "string") {
+      throw new GatewayError("invalid_request", 400, "userAgent must be a string");
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      throw new GatewayError("invalid_request", 400, "userAgent must not be empty; omit the field instead");
+    }
+    const presets: Record<string, true> = { codex: true, claude: true, omp: true, hermes: true, gateway: true, none: true };
+    if (presets[trimmed] !== true) {
+      if (trimmed.length > 256 || /[\r\n\x00-\x1f\x7f]/.test(trimmed)) {
+        throw new GatewayError(
+          "invalid_request",
+          400,
+          "userAgent literal must be at most 256 chars without control characters",
+        );
+      }
+    }
+    if (profile.userAgent !== trimmed) {
+      throw new GatewayError(
+        "invalid_request",
+        400,
+        "userAgent must not carry leading or trailing whitespace",
+      );
+    }
+  }
   if (profile.cli_identity !== undefined) {
     if (typeof profile.cli_identity !== "boolean") {
       throw new GatewayError("invalid_request", 400, "cli_identity must be boolean");
@@ -421,6 +469,8 @@ export interface ProviderAccountResponse {
   providerId: string;
   tenantId: string | null;
   label: string;
+  /** Login email the vendor reports for OAuth accounts; null for API keys. */
+  accountEmail: string | null;
   credentialKind: CredentialKind;
   status: string;
   /** null inherits the provider routing default; no provider default means unlimited. */

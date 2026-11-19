@@ -337,6 +337,119 @@ export interface OAuthAuthorizeResult {
 }
 
 /** Begins the browser OAuth login flow for a provider account; caller opens `authorizeUrl` in a popup. */
+/** Authorize-start response: the vendor URL, its signed state, and the challenge. */
+export interface AutoClawAuthorizeResult {
+  readonly url: string;
+  readonly state: string;
+  readonly captcha: {
+    readonly enabled: boolean;
+    readonly region: string;
+    readonly prefix: string;
+    readonly sceneId: string;
+    readonly supplier: string;
+  };
+}
+
+/** The Aliyun challenge the AutoClaw authorize step demands. */
+export interface AutoClawCaptchaConfig {
+  readonly enabled: boolean;
+  readonly region: string;
+  readonly prefix: string;
+  readonly sceneId: string;
+  readonly supplier: string;
+}
+
+/**
+ * Reads the challenge before a login is attempted.
+ *
+ * `useStartAutoClawAuthorize` cannot succeed without it whenever the gate is
+ * on, and the vendor's own answer to a bare attempt is an error rather than the
+ * challenge parameters — so the dialog reads this first and only then offers
+ * the button that starts the flow.
+ */
+export function useAutoClawCaptchaConfig(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.providers.autoClawCaptcha(),
+    queryFn: (context) =>
+      consoleRequest<AutoClawCaptchaConfig>("/providers/autoclaw/oauth/captcha", {
+        signal: querySignal(context),
+      }),
+    enabled,
+    ...QUERY_OPTIONS,
+    retry: false,
+  });
+}
+
+/** Starts an AutoClaw login; `captchaVerifyParam` is required when the gate is on. */
+export function useStartAutoClawAuthorize() {
+  return useMutation<
+    AutoClawAuthorizeResult,
+    ApiErrorShape,
+    { captchaVerifyParam?: string; accountLabel?: string }
+  >({
+    mutationFn: ({ captchaVerifyParam, accountLabel }) =>
+      consoleRequest<AutoClawAuthorizeResult>("/providers/autoclaw/oauth/authorize", {
+        method: "POST",
+        body: JSON.stringify({
+          ...(captchaVerifyParam ? { captchaVerifyParam } : {}),
+          ...(accountLabel ? { accountLabel } : {}),
+        }),
+      }),
+  });
+}
+
+/**
+ * Redeems the code AutoClaw's callback carries.
+ *
+ * Separate from `useCompleteOAuthBrowserLogin` because that hook posts to the
+ * generic callback route, which exchanges against a locally generated state —
+ * rejected by AutoClaw's gateway. `state` here must be the vendor-minted value
+ * the authorize step returned.
+ */
+export function useCompleteAutoClawLogin() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { accountId: string },
+    ApiErrorShape,
+    { code: string; state: string; accountLabel?: string }
+  >({
+    mutationFn: ({ code, state, accountLabel }) =>
+      consoleRequest<{ accountId: string }>("/providers/autoclaw/oauth/complete", {
+        method: "POST",
+        body: JSON.stringify({ code, state, ...(accountLabel ? { accountLabel } : {}) }),
+      }),
+    onSuccess: async () => {
+      await invalidateProviderAccounts(queryClient, "autoclaw");
+    },
+  });
+}
+
+/**
+ * Stores a token obtained from the AutoClaw desktop app.
+ *
+ * The OAuth route needs a captcha token that is bound to the browser's IP, so a
+ * headless deployment cannot mint one on the operator's behalf. This path needs
+ * no challenge: the server verifies the pasted value against the gateway and
+ * rejects it if the credential is not live.
+ */
+export function useImportAutoClawToken() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { accountId: string },
+    ApiErrorShape,
+    { token: string; accountLabel?: string }
+  >({
+    mutationFn: ({ token, accountLabel }) =>
+      consoleRequest<{ accountId: string }>("/providers/autoclaw/oauth/token", {
+        method: "POST",
+        body: JSON.stringify({ token, ...(accountLabel ? { accountLabel } : {}) }),
+      }),
+    onSuccess: async () => {
+      await invalidateProviderAccounts(queryClient, "autoclaw");
+    },
+  });
+}
+
 export function useStartOAuthAuthorize() {
   return useMutation<
     OAuthAuthorizeResult,

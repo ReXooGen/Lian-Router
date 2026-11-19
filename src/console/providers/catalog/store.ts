@@ -876,6 +876,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
       providerId: row.providerId,
       tenantId: row.tenantId,
       label: row.label,
+      accountEmail: row.accountEmail ?? null,
       credentialKind: row.credentialKind,
       status: row.status,
       maxInflight: row.maxInflight,

@@ -44,6 +44,7 @@ CREATE TABLE "provider_accounts" (
   "provider_id" text NOT NULL,
   "tenant_id" uuid,
   "label" text NOT NULL,
+  "account_email" text,
   "credential_ciphertext" bytea,
   "credential_fingerprint" text,
   "credential_kind" "credential_kind" NOT NULL,

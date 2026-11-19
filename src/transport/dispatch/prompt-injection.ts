@@ -137,13 +137,22 @@ export function injectionModelNames(
 export async function applyPromptInjections(
   db: LianRouterDatabase,
   request: CanonicalRequest,
-  context: { readonly tenantId: string; readonly apiKeyId?: string | undefined },
+  context: {
+    readonly tenantId: string;
+    readonly apiKeyId?: string | undefined;
+    /** Share template behind a child key, for exclusion matching. */
+    readonly parentApiKeyId?: string | undefined;
+    /** Authenticated client address, used by per-entry exclusion lists. */
+    readonly clientIp?: string | undefined;
+  },
   candidates: readonly { readonly provider_id: string; readonly model_id: string }[],
 ): Promise<CanonicalRequest> {
   try {
     const store = new DrizzlePromptInjectionStore(db);
     const injections = await store.resolve(context.tenantId, {
       ...(context.apiKeyId === undefined ? {} : { apiKeyId: context.apiKeyId }),
+      ...(context.parentApiKeyId === undefined ? {} : { parentApiKeyId: context.parentApiKeyId }),
+      ...(context.clientIp === undefined ? {} : { clientIp: context.clientIp }),
       modelNames: injectionModelNames(request, candidates),
     });
     return withPromptInjections(request, injections);

@@ -127,4 +127,89 @@ describe("shutdown cleanup", () => {
     expect(shutdowns).toBe(1);
     expect(exitCode).toBe(0);
   });
+
+  it("hands off on SIGHUP when a successor is configured, without teardown", async () => {
+    const { installShutdownHandlers } = await import("../src/shutdown");
+    let shutdowns = 0;
+    let exitCode: number | undefined;
+    let handoffs = 0;
+    const registration = installShutdownHandlers(
+      () => {
+        shutdowns += 1;
+        return Promise.resolve();
+      },
+      (code) => {
+        exitCode = code;
+      },
+      async () => {
+        handoffs += 1;
+        return true;
+      },
+    );
+
+    try {
+      process.emit("SIGHUP", "SIGHUP");
+      // The hand-off resolves on a microtask; let it settle.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      registration.dispose();
+    }
+
+    expect(handoffs).toBe(1);
+    expect(shutdowns).toBe(0);
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("falls back to teardown on SIGHUP when no successor takes over", async () => {
+    const { installShutdownHandlers } = await import("../src/shutdown");
+    let shutdowns = 0;
+    let exitCode: number | undefined;
+    const registration = installShutdownHandlers(
+      () => {
+        shutdowns += 1;
+        return Promise.resolve();
+      },
+      (code) => {
+        exitCode = code;
+      },
+      async () => false,
+    );
+
+    try {
+      process.emit("SIGHUP", "SIGHUP");
+      await registration.run();
+    } finally {
+      registration.dispose();
+    }
+
+    expect(shutdowns).toBe(1);
+    expect(exitCode).toBe(0);
+  });
+
+  it("tears down on SIGINT even when a hand-off is available", async () => {
+    const { installShutdownHandlers } = await import("../src/shutdown");
+    let shutdowns = 0;
+    let handoffs = 0;
+    const registration = installShutdownHandlers(
+      () => {
+        shutdowns += 1;
+        return Promise.resolve();
+      },
+      () => undefined,
+      async () => {
+        handoffs += 1;
+        return true;
+      },
+    );
+
+    try {
+      process.emit("SIGINT", "SIGINT");
+      await registration.run();
+    } finally {
+      registration.dispose();
+    }
+
+    expect(shutdowns).toBe(1);
+    expect(handoffs).toBe(0);
+  });
 });

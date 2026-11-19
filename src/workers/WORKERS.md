@@ -156,7 +156,7 @@ upstream fan-out. One bounded pass per tick:
 
 Per-account failures are counted and logged, never rethrown: the registry's
 error path is a backstop, not a channel. `onTick` reports
-`{ targets, attempted, skipped, failed, checkins }`.
+`{ targets, attempted, skipped, failed, checkins, reportRuns }`.
 
 ## Rules / invariants
 

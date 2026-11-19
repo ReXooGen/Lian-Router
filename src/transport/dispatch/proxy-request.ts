@@ -122,6 +122,10 @@ export async function handleProviderProxyRequest(
     {
       tenantId: prepared.authorization.tenantId,
       ...(prepared.authorization.id ? { apiKeyId: prepared.authorization.id } : {}),
+      ...(prepared.authorization.parentKeyId
+        ? { parentApiKeyId: prepared.authorization.parentKeyId }
+        : {}),
+      ...(state.clientIdentity ? { clientIp: state.clientIdentity.address } : {}),
     },
     candidates,
   );

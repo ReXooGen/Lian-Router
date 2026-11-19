@@ -35,9 +35,10 @@ Two planes share one process (`src/main.ts` → `bootstrap()` in
   dispatch) → protocol codecs → provider adapters → network egress, guarded
   by security layers and recorded by observability.
 - **Control plane** — `/console/api/*` dashboard API plus the public
-  `/share/:token` enrollment surface and the authenticated `/automation`
-  loopback-tool proxy: per-tenant operator mutations and
-  metadata-only child-key telemetry with trusted-IP enrollment limits.
+  `/share/:token` enrollment surface plus the CodeBuddy growth report and
+  appeal control plane under `/console/api/automation`: per-tenant operator
+  mutations and metadata-only child-key telemetry with trusted-IP enrollment
+  limits.
 
 `src/app.ts` exposes a single builder, `createGatewayApp(deps)`, whose `mode`
 discriminant selects how much of the process mounts:

@@ -4,6 +4,17 @@ import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { providerAccounts, providers } from "../../persistence/schema";
 import { providerDisplayName } from "../../providers/provider-metadata";
 import { requireTenantScope } from "../shared/errors";
+// AutoClaw's facade resets its daily tasks on the vendor's local day, not UTC:
+// measured 2026-11-15, a claim landed 04:58 WIB while the UTC marker still read
+// done. The autoclaw branches key the ledger on the vendor's day instead.
+import { vendorDayKey } from "../../providers/integrations/autoclaw/vendor-day-key";
+import {
+  claimAutoClawCheckin,
+  fetchAutoClawLedger,
+  fetchAutoClawWallet,
+  reportAutoClawActivity,
+  type AutoClawLedgerDirection,
+} from "../../providers/integrations/autoclaw/autoclaw-credits";
 import {
   GLOBAL_QUOTA_LENS,
   getCachedQuotaEntries,
@@ -53,8 +64,17 @@ import {
 } from "./account-quota-shared";
 
 /** Daily check-in only exists on the buddy billing facade; everything else 400s with intent. */
+/**
+ * Providers whose daily check-in this route can drive.
+ *
+ * The buddy family answers through its own billing facade and AutoClaw through
+ * its task proxy; both are claimed by the same `POST /accounts/:id/checkin`, so
+ * the route branches on the provider rather than exposing a second path. Any
+ * other provider still 400s with intent instead of pretending.
+ */
 function supportsAccountCheckin(providerId: string): boolean {
-  return (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
+  return providerId === "autoclaw"
+    || (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
 }
 
 /** One account's check-in through the buddy billing facade. */
@@ -81,9 +101,16 @@ async function runAccountCheckin(
 async function todayCheckinAttempted(
   redis: AccountQuotaRoutesDeps["redis"],
   accountId: string,
+  providerId?: string,
 ): Promise<boolean> {
   try {
-    const marker = await redis.get(ledgerKey(checkinDayKey(), accountId));
+    // Buddy providers reset on UTC; AutoClaw resets on the vendor's local day
+    // (measured: a claim landed 04:58 WIB while the UTC marker still read done),
+    // so each family reads the marker under its own day key.
+    const dayKey = providerId === "autoclaw"
+      ? ledgerKey(vendorDayKey(), accountId)
+      : ledgerKey(checkinDayKey(), accountId);
+    const marker = await redis.get(dayKey);
     return marker !== null;
   } catch {
     return false;
@@ -195,7 +222,7 @@ export function registerAccountQuotaTenantRoutes(
       const checkinAttempted = new Map<string, boolean>();
       await Promise.all(
         checkinCandidates.map(async (row) => {
-          checkinAttempted.set(row.id, await todayCheckinAttempted(redis, row.id));
+          checkinAttempted.set(row.id, await todayCheckinAttempted(redis, row.id, row.providerId));
         }),
       );
       const accounts = rows.map((row) => {
@@ -577,6 +604,68 @@ export function registerAccountQuotaTenantRoutes(
       // the sweep's once-per-day ledger and forces the status probe. The
       // upstream itself stays idempotent: a duplicate claim answers
       // `already_claimed`, never a double grant.
+      if (account.providerId === "autoclaw") {
+        // AutoClaw grants through its task proxy, so its result shape is its
+        // own: several tasks in one pass, and the points come from each claim.
+        try {
+          const credential = await refreshDeps.resolveCredential(
+            account.providerId as ProviderId,
+            account.id,
+          );
+          // The campaign engine reads activity, not claims: report before the
+          // claim so a period whose reward is still unpaid can settle in the
+          // same pass the operator asked for.
+          await reportAutoClawActivity(credential);
+          const outcome = await claimAutoClawCheckin(credential);
+          // Record the day the sweep's ledger also reads, so the card can show
+          // "checked in today" without a second upstream round trip. A failed
+          // pass is not recorded: the day slot must stay open for a retry.
+          if (outcome.state === "claimed" || outcome.state === "already_claimed") {
+            // Keyed on the vendor's day: AutoClaw resets on its local midnight,
+            // so the marker expires when the vendor resets, not when UTC does.
+            await redis
+              .set(ledgerKey(vendorDayKey(), account.id), "1", "EX", 3 * 24 * 60 * 60)
+              .catch(() => undefined);
+          }
+          if (outcome.state === "error") {
+            set.status = 502;
+            return {
+              ok: false,
+              status: 502,
+              data: { id: account.id, state: outcome.state },
+              message: outcome.error ?? "Daily check-in failed",
+              code: "checkin_failed",
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            data: {
+              id: account.id,
+              state: outcome.state,
+              credit: outcome.credit,
+              streakDays: null,
+              claims: outcome.claims,
+              already: outcome.already,
+            },
+            message:
+              outcome.state === "claimed"
+                ? `Claimed ${outcome.claims.length} task(s)${outcome.credit !== null && outcome.credit > 0 ? ` (+${outcome.credit} points)` : ""}`
+                : outcome.state === "already_claimed"
+                  ? "Already checked in today"
+                  : (outcome.error ?? "Nothing to claim"),
+          };
+        } catch (error) {
+          set.status = 502;
+          return {
+            ok: false,
+            status: 502,
+            data: { id: account.id, state: "error" },
+            message: error instanceof Error ? error.message : "Daily check-in failed",
+            code: "checkin_failed",
+          };
+        }
+      }
       let result: DailyCheckinResult;
       try {
         const credential = await refreshDeps.resolveCredential(
@@ -978,6 +1067,150 @@ export function registerAccountQuotaTenantRoutes(
           status: "error",
           message: err instanceof Error ? err.message : "Claim operation failed",
           code: "claim_failed",
+        };
+      }
+    })
+    /**
+     * AutoClaw: the account's points.
+     *
+     * The desktop client shows this next to the account, and the number comes
+     * from a billing facade that answers a bearer alone — no app signature, so
+     * this read keeps working even after the client version ages out of the
+     * gateway's accepted range.
+     */
+    .get("/accounts/:id/credits", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      // Unowned accounts are visible to every tenant through `/quota/overview`,
+      // so the points read has to follow the same rule; scoping it to owned rows
+      // alone answered 404 for the account the card was rendering.
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(
+            eq(providerAccounts.id, params.id),
+            or(isNull(providerAccounts.tenantId), eq(providerAccounts.tenantId, access.tenantId)),
+          ),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== "autoclaw") {
+        set.status = 400;
+        return {
+          ok: false,
+          error: `Credits are not exposed for provider ${account.providerId}`,
+          code: "credits_unsupported",
+        };
+      }
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        // Campaign grants (the "Limited-time Bonus" family) are paid when the
+        // server sees the account active, and the desktop client is what
+        // normally supplies that signal. Posting it here means an account that
+        // lives only in this gateway still collects the period's reward instead
+        // of waiting for someone to open the app on a desktop.
+        await reportAutoClawActivity(
+          credential,
+          signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+        );
+        const wallet = await fetchAutoClawWallet(
+          credential,
+          signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+        );
+        // The claim is idempotent upstream but not free to ask: a read that has
+        // to probe four tasks to learn "already done" would make opening the
+        // card cost four requests. The marker the claim writes answers it here
+        // for one Redis round trip.
+        // Vendor-day key: the marker expires when the vendor's daily tasks
+        // reset (its local midnight), not when the UTC day rolls (07:00 WIB) —
+        // otherwise the button reads disabled hours after the real reset.
+        const checkedInToday = (await redis.get(ledgerKey(vendorDayKey(), account.id))) !== null;
+        return { ok: true, wallet, checkedInToday };
+      } catch (err) {
+        set.status = 502;
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Credit read failed",
+          code: "credits_failed",
+        };
+      }
+    })
+    /**
+     * AutoClaw: the points ledger, newest first.
+     *
+     * Grants and model charges are the same stream with a signed amount, so one
+     * route serves both the "where did my points go" question and the "what did
+     * I earn" one; `direction` narrows it upstream rather than filtering here,
+     * because the page the operator sees must match the page the vendor paged.
+     */
+    .get("/accounts/:id/credits/history", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(
+            eq(providerAccounts.id, params.id),
+            or(isNull(providerAccounts.tenantId), eq(providerAccounts.tenantId, access.tenantId)),
+          ),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== "autoclaw") {
+        set.status = 400;
+        return {
+          ok: false,
+          error: `Credit history is not exposed for provider ${account.providerId}`,
+          code: "credits_unsupported",
+        };
+      }
+      const url = new URL(request.url);
+      const rawDirection = url.searchParams.get("direction") ?? "all";
+      if (rawDirection !== "all" && rawDirection !== "income" && rawDirection !== "expense") {
+        set.status = 400;
+        return {
+          ok: false,
+          error: "direction must be one of: all, income, expense",
+          code: "invalid_request",
+        };
+      }
+      const cursor = url.searchParams.get("cursor") ?? undefined;
+      const rawPageSize = Number(url.searchParams.get("pageSize") ?? "20");
+      const pageSize = Number.isFinite(rawPageSize)
+        ? Math.min(Math.max(Math.trunc(rawPageSize), 1), 100)
+        : 20;
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const page = await fetchAutoClawLedger(
+          credential,
+          {
+            direction: rawDirection as AutoClawLedgerDirection,
+            ...(cursor ? { cursor } : {}),
+            pageSize,
+          },
+          signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
+        );
+        return { ok: true, ...page };
+      } catch (err) {
+        set.status = 502;
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Ledger read failed",
+          code: "credits_history_failed",
         };
       }
     });

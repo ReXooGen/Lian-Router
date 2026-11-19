@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { CLI_VERSION } from "./version";
 import { ensureGatewayInstalled } from "./bootstrap";
@@ -10,6 +11,7 @@ import {
   DEFAULT_PORT,
   consoleUrl,
   ensureStateDirs,
+  resolveControlFile,
   resolveDevRepoRoot,
   resolveInstallRoot,
   resolveLogFile,
@@ -18,7 +20,12 @@ import {
 } from "./paths";
 import { startEmbeddedDatabase } from "./embedded-database";
 import type { EmbeddedDatabase } from "./embedded-database";
-import { installShutdownHandlers, shutdownSessionFiles } from "./shutdown";
+import {
+  installShutdownHandlers,
+  resolveHeadlessEntry,
+  shutdownSessionFiles,
+  spawnHeadlessLauncher,
+} from "./shutdown";
 import { GatewaySupervisor, type ServerStatus } from "./supervisor";
 import { assertGatewayConfigured, resolveGatewayConfig, writeStarterConfig } from "./install-config";
 import { resolveGatewayVersion, runUpdateSequence } from "./update-flow";
@@ -323,13 +330,45 @@ export async function run(argv: readonly string[]): Promise<number> {
     assertGatewayConfigured(gatewayConfig);
   }
 
+  // An already-running tray owner answers every start-shaped invocation. The
+  // check must run BEFORE the embedded cluster boots: a second launcher that
+  // starts its own PostgreSQL while the owner's is live gets a `FATAL: lock
+  // file "postmaster.pid" already exists`, and the operator reads that wall of
+  // pg output as a crash. An owner pid from `run/control.json` naming a live
+  // process is the ownership marker — the same handshake every other
+  // component reads.
+  if (startsGateway) {
+    const existingOwner = await readHandshakePid(runtime.installRoot);
+    if (existingOwner !== undefined && existingOwner !== process.pid && isProcessAlive(existingOwner)) {
+      console.log(
+        `LianRouter is already running in the tray (owner pid ${existingOwner}).`,
+      );
+      console.log(`Console: ${consoleUrl(options.port, options.host)}`);
+      return 0;
+    }
+  }
+
   // `DATABASE_MODE=embedded` means this process owns the database too, not just
   // the gateway: the cluster it starts is a child of this launcher, so the
   // connection string only exists while the launcher does. Started before the
   // supervisor so the child inherits a URL that already answers.
   const embeddedDatabase =
     gatewayConfig?.databaseMode === "embedded" && startsGateway
-      ? await startEmbeddedDatabase({ installRoot: runtime.installRoot })
+      ? await startEmbeddedDatabase({
+          installRoot: runtime.installRoot,
+          // The launcher's own console stays clean: embedded-postgres defaults
+          // `onLog` to `console.log`, which would paint every pg LOG line —
+          // including client-disconnect noise during a hand-off teardown —
+          // straight onto the operator's menu. The launcher log already
+          // captures everything the supervisor relays, so pg belongs there.
+          onLog: (message) => {
+            try {
+              appendFileSync(resolveLogFile(runtime.installRoot), message.endsWith("\n") ? message : `${message}\n`);
+            } catch {
+              // A failed log write must not take down the boot.
+            }
+          },
+        })
       : undefined;
   // `--background` unrefs the gateway child and returns, which is the shape a
   // launcher that supervises a pre-existing database can offer. It cannot offer
@@ -362,8 +401,16 @@ export async function run(argv: readonly string[]): Promise<number> {
     // and the launcher is the only process allowed to install. The child needs
     // the install root to find `run/control.json`; without it the console has no
     // launcher to talk to and reports updates as unavailable.
+    //
+    // NODE_ENV=production is set for an installed copy because the child is the
+    // compiled gateway, and a development-mode gateway reaches for
+    // `pino-pretty` (absent from a launcher install) and relative migrations
+    // (absent from the install root's cwd) — either one is a crash before
+    // /health. A dev checkout passes no value, so the child keeps whatever the
+    // shell exported.
     env: {
       LIANROUTER_LAUNCHER_HOME: runtime.installRoot,
+      ...(runtime.command === undefined ? { NODE_ENV: "production" } : {}),
       ...(gatewayConfig?.env ?? {}),
       // Last so a cluster this launcher started wins over a stale value in the
       // file: the URL it names is the only one that answers.
@@ -381,13 +428,15 @@ export async function run(argv: readonly string[]): Promise<number> {
       return await withShutdownHandlers(
         supervisor,
         runtime,
-        () => runInteractive(supervisor, options, runtime),
+        options,
+        () => runInteractive(supervisor, options, runtime, embeddedDatabase),
         embeddedDatabase,
       );
     case "tray":
       return await withShutdownHandlers(
         supervisor,
         runtime,
+        options,
         () => enterTrayMode(supervisor, options, runtime),
         embeddedDatabase,
       );
@@ -395,6 +444,7 @@ export async function run(argv: readonly string[]): Promise<number> {
       return await withShutdownHandlers(
         supervisor,
         runtime,
+        options,
         () => runTui(supervisor, options, runtime),
         embeddedDatabase,
       );
@@ -404,7 +454,8 @@ export async function run(argv: readonly string[]): Promise<number> {
       return await withShutdownHandlers(
         supervisor,
         runtime,
-        () => runInteractive(supervisor, options, runtime),
+        options,
+        () => runInteractive(supervisor, options, runtime, embeddedDatabase),
         embeddedDatabase,
       );
     default:
@@ -426,13 +477,17 @@ export async function run(argv: readonly string[]): Promise<number> {
 let activeControl: ControlServer | undefined;
 
 /**
- * Runs a command with `SIGINT`/`SIGTERM` wired to a graceful shutdown.
+ * Runs a command with the signal policy wired.
  *
- * The stop calls are the same ones the menu's Exit uses, so the post-condition
- * is identical: the gateway child is terminated, the control server closes and
- * removes `run/control.json`, and `run/lianrouter.pid` is gone. Without this, a
- * killed launcher leaves both files naming a dead pid and the next tray reads
- * them.
+ * Ctrl-C and `SIGTERM` tear the session down the way the menu's Exit does: the
+ * gateway child is terminated, the control server closes and removes
+ * `run/control.json`, and `run/lianrouter.pid` is gone.
+ *
+ * Closing the console window (`SIGHUP`) is not that. The operator hid or closed
+ * a window, not the stack — so this session hands itself to a detached headless
+ * launcher (`dist/cli.js --headless`) and exits, leaving the control port and
+ * both files describing a live process. Only when no headless entry exists does
+ * console-close fall back to the teardown.
  *
  * `status` and `stop` are excluded because they own no session: there is
  * nothing to tear down beyond what they already dispose themselves.
@@ -440,6 +495,7 @@ let activeControl: ControlServer | undefined;
 async function withShutdownHandlers(
   supervisor: GatewaySupervisor,
   runtime: Runtime,
+  options: CliOptions,
   command: () => Promise<number>,
   embeddedDatabase?: EmbeddedDatabase,
 ): Promise<number> {
@@ -462,12 +518,59 @@ async function withShutdownHandlers(
         },
       }),
     (code) => process.exit(code),
+    async () => {
+      const entry = resolveHeadlessEntry(runtime.installRoot);
+      if (entry === undefined) return false;
+      const pid = spawnHeadlessLauncher(
+        [process.execPath, entry, "--headless", "--no-open", "--port", String(options.port)],
+        runtime.installRoot,
+      );
+      if (pid === undefined) return false;
+      // The hand-off only counts when the successor is actually serving: a
+      // process that dies before binding its control port leaves the same
+      // orphaned tray a teardown would have, so poll the handshake pid.
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const handshake = await readHandshakePid(runtime.installRoot);
+        if (handshake !== undefined && handshake !== process.pid) {
+          // The successor owns the session now. Releasing before this process
+          // exits is what keeps the supervisor's exit hook from SIGKILLing the
+          // gateway — the hook fires even on a clean `process.exit`, and a
+          // killed gateway behind a live successor is the exact orphan this
+          // path exists to prevent.
+          supervisor.detach();
+          await supervisor.dispose();
+          return true;
+        }
+        await Bun.sleep(250);
+      }
+      return false;
+    },
   );
   try {
     return await command();
   } finally {
     registration.dispose();
   }
+}
+
+/**
+ * Reads the launcher pid out of `run/control.json`, or `undefined` when the
+ * file is absent or malformed. Same posture as the tray's `readStalePid`: the
+ * file is plain JSON in a user directory, so every field is untrusted.
+ */
+async function readHandshakePid(installRoot: string): Promise<number | undefined> {
+  try {
+    const raw = await Bun.file(resolveControlFile(installRoot)).text();
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null && "pid" in parsed) {
+      const pid = parsed.pid;
+      if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) return pid;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 async function printStatus(supervisor: GatewaySupervisor): Promise<number> {
@@ -641,6 +744,7 @@ async function runInteractive(
   supervisor: GatewaySupervisor,
   options: CliOptions,
   runtime: Runtime,
+  embeddedDatabase?: EmbeddedDatabase,
 ): Promise<number> {
   // One authority decides whether startup talks to the network at all: the
   // registry check and the release-feed check are skipped together, so a
@@ -718,7 +822,7 @@ async function runInteractive(
         : undefined,
   });
 
-  return await dispatch(action, supervisor, session, options, runtime);
+  return await dispatch(action, supervisor, session, options, runtime, embeddedDatabase);
 }
 
 async function dispatch(
@@ -727,6 +831,7 @@ async function dispatch(
   session: Session,
   options: CliOptions,
   runtime: Runtime,
+  embeddedDatabase?: EmbeddedDatabase,
 ): Promise<number> {
   switch (action) {
     case "web":
@@ -739,13 +844,29 @@ async function dispatch(
       return 0;
     }
     case "tray": {
-      const started = await startTrayHost(supervisor, session, runtime);
-      if (!started.ok) {
-        console.error(started.error);
-        await shutdownSession(session, supervisor);
+      // The 9Router shape: the console process never becomes the stack's owner.
+      // Spawn the detached background owner FIRST (`node:child_process` does
+      // not create a kill-on-close job, so it survives this console closing),
+      // then tear this process's stack down immediately. The owner's boot waits
+      // for the port and the postmaster lock, so it binds exactly when the old
+      // cluster releases them — and the console's gateway keeps serving during
+      // the owner's boot, so the dashboard never sees a gap. After the exit no
+      // console window is load-bearing: closing any cmd kills a process that
+      // owns nothing, and the tray Exit menu is the only stop switch.
+      const handoff = spawnTrayOwner(runtime, options);
+      if (!handoff.ok) {
+        console.error(handoff.error);
         return 1;
       }
-      return await blockUntilTrayExit(supervisor, session, runtime);
+      await shutdownSession(session, supervisor);
+      await supervisor.stop();
+      await supervisor.dispose();
+      await embeddedDatabase?.stop();
+      console.log(
+        `LianRouter is running in the tray (owner pid ${handoff.pid}). ` +
+          "You can close this window.",
+      );
+      return 0;
     }
     case "update": {
       await runUpdateWithProgress(supervisor, session, runtime);
@@ -813,6 +934,54 @@ async function runUpdateWithProgress(
     // "running" once the install settles.
     session.control.setUpdateRunning(false);
   }
+}
+
+/** Result of handing the stack to a detached background owner. */
+type TrayOwnerHandoff =
+  | { readonly ok: true; readonly pid: number }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Spawns the detached background owner for the stack, 9Router-style.
+ *
+ * The console process must never be the thing keeping the stack alive: Bun
+ * wraps every child it spawns in a Windows job object with kill-on-close, so
+ * a stack owned by a console-attached launcher dies the moment that console
+ * closes — no signal, no handler, no recovery. The fix is ownership, not
+ * signal handling: the background `cli.js tray` runs through
+ * `node:child_process` (which does not create such a job).
+ *
+ * Returns immediately after the spawn — the caller tears its own stack down
+ * concurrently, and the owner's boot waits for the port and the postmaster
+ * lock (`startEmbeddedDatabase`), so the successor binds exactly when the old
+ * cluster finishes releasing them. The console's gateway keeps serving during
+ * the owner's boot, which is what keeps the dashboard answerable.
+ */
+function spawnTrayOwner(runtime: Runtime, options: CliOptions): TrayOwnerHandoff {
+  // An install has `dist/cli.js` in the install root; a launcher started from
+  // the npm-global package has it in the same `dist/` directory as the tray
+  // bundle it spawns. Both name the same launcher, so try the install root
+  // first and fall back to this process's own module directory.
+  const entry =
+    resolveHeadlessEntry(runtime.installRoot) ??
+    (() => {
+      const besideBundle = join(dirname(fileURLToPath(import.meta.url)), "cli.js");
+      return existsSync(besideBundle) ? besideBundle : undefined;
+    })();
+  if (entry === undefined) {
+    return {
+      ok: false,
+      error: `no launcher entry at ${join(runtime.installRoot, "dist", "cli.js")} or beside the tray bundle`,
+    };
+  }
+  const pid = spawnHeadlessLauncher(
+    [process.execPath, entry, "tray", "--no-open", "--port", String(options.port)],
+    runtime.installRoot,
+  );
+  if (pid === undefined) {
+    return { ok: false, error: "could not spawn the background launcher process" };
+  }
+  return { ok: true, pid };
 }
 
 /**

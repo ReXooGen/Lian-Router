@@ -30,6 +30,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   fireworks: "Fireworks AI",
   nvidia: "NVIDIA NIM",
   gmi: "GMI Cloud",
+  autoclaw: "AutoClaw",
   zai: "Z.AI",
   zcode: "ZCODE",
   hermes: "Nous Research",

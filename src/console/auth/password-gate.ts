@@ -17,6 +17,8 @@
 // absent means `env`, `console` means the hash in `console_users` wins. The
 // gate itself stays a pure value object — the ownership read happens in
 // `resolveEffectiveConsolePassword`, which the routes call once per request.
+import { DEFAULT_CONSOLE_PASSWORD } from "./default-console-password";
+export { DEFAULT_CONSOLE_PASSWORD } from "./default-console-password";
 import { randomUUID } from "node:crypto";
 import { timingSafeEqual } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
@@ -39,18 +41,6 @@ import type { ConsoleCredentialService } from "./service";
 
 /** Username the gate signs in as when the operator did not pick one. */
 const DEFAULT_GATE_USERNAME = "admin";
-
-/**
- * The password a fresh local install starts with, and the one the login screen
- * advertises while it is still in use.
- *
- * The hint describes a credential the operator can actually type, so it is only
- * shown while the environment value is both the default *and* the effective
- * password. Once the console owns the secret the environment value is a
- * rotation trigger, not a credential, and the hint must disappear even if the
- * configured value never changed.
- */
-export const DEFAULT_CONSOLE_PASSWORD = "local-console-2026";
 
 const GATE_SETUP_LOCK = sql`SELECT pg_advisory_xact_lock(hashtext('lianrouter:console_password_gate'))`;
 
