@@ -160,11 +160,26 @@ function resolveMigrationsFolder(): string {
   return folder;
 }
 
+/**
+ * Every runnable migration: the consolidated baseline first, then any
+ * additional top-level numbered files in name order.
+ *
+ * A fresh install's shape lives entirely in `0000_baseline.sql`; when the
+ * shape changes, the baseline is edited and a numbered top-level migration
+ * carries the same delta to databases whose ledger already records the old
+ * baseline. `drizzle/migrations/manual/` is NOT part of this list: it holds
+ * the historical hand-run series for databases created before the
+ * consolidation, and those files assume the enum and column shapes of their
+ * own era — replaying them against a later baseline fails on statements like
+ * a `WHERE strategy = 'sticky'` comparison that coerces a label the current
+ * enum no longer has. The top-level ledger path is the only upgrade path an
+ * npm install has.
+ */
 function migrationFiles(folder: string): readonly string[] {
-  return readdirSync(folder)
-    .filter((file) => /^\d{4}_.+\.sql$/.test(file))
-    .sort()
-    .map((file) => resolve(folder, file));
+  return readdirSync(folder, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^\d{4}_.+\.sql$/.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => resolve(folder, entry.name));
 }
 
 async function createMigrationLedger(client: PoolClient): Promise<void> {

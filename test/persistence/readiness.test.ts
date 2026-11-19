@@ -5,7 +5,10 @@ import { checkReadiness, type ReadinessCheckResult } from "../../src/persistence
 import type { LianRouterDatabase } from "../../src/persistence/postgres";
 import type { RedisClient } from "../../src/persistence/redis";
 
-/** Migration ids discovered on disk — the ledger must contain every one of them. */
+/**
+ * Migration ids the runtime can run: the top-level files only, matching
+ * `migrationFiles()` in postgres.ts — the ledger must contain every one.
+ */
 const expectedMigrationIds = readdirSync(
   resolve(import.meta.dir, "../../drizzle/migrations"),
 ).filter((file) => /^\d{4}_.+\.sql$/.test(file));

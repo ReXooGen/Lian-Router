@@ -11,11 +11,20 @@ async function numberedMigrations(): Promise<string[]> {
 }
 
 describe("SQL migration integrity", () => {
-  test("a single consolidated baseline is the only migration", async () => {
+  test("the baseline plus numbered top-level upgrades is the runnable set", async () => {
+    // Fresh installs get the whole shape from `0000_baseline.sql`; databases
+    // whose ledger already records an older baseline are upgraded by the
+    // numbered top-level files, which the runtime applies in name order
+    // (`migrationFiles()` in postgres.ts). `manual/` is NOT runnable: it is
+    // the frozen historical hand-run series whose files assume the schema
+    // shapes of their own era.
     const files = await numberedMigrations();
-    expect(files).toEqual(["0000_baseline.sql"]);
-    const migration = await readFile(resolve(migrationsDir, "0000_baseline.sql"), "utf8");
-    expect(migration.trim().length).toBeGreaterThan(0);
+    expect(files[0]).toBe("0000_baseline.sql");
+    for (const file of files.slice(1)) {
+      expect(file).toMatch(/^\d{4}_[a-z0-9_]+\.sql$/);
+    }
+    const baseline = await readFile(resolve(migrationsDir, "0000_baseline.sql"), "utf8");
+    expect(baseline.trim().length).toBeGreaterThan(0);
   });
 
 

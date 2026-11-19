@@ -491,6 +491,8 @@ CREATE TABLE "prompt_injections" (
   "turns" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "position" text NOT NULL DEFAULT 'append',
   "enabled" boolean NOT NULL DEFAULT true,
+  "excluded_client_ips" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "excluded_api_key_ids" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "created_at" timestamptz NOT NULL DEFAULT NOW(),
   "updated_at" timestamptz NOT NULL DEFAULT NOW(),
   CONSTRAINT "prompt_injections_scope_check" CHECK ("scope" in ('global', 'key', 'model')),
