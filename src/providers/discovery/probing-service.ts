@@ -43,8 +43,15 @@ import {
   wireContextFrom,
   type ProbeProviderRow,
 } from "./probe-phases";
+import { chatAdapter } from "../../transport/surface/chat/adapter";
+import { messagesAdapter } from "../../transport/surface/messages/adapter";
+import { responsesAdapter } from "../../transport/surface/responses/adapter";
 import { createDefaultProviderRegistry } from "../default-registry";
 import { createProbeFetch } from "../operations/probe-fetch";
+import {
+  captureProviderExchange,
+  type ProviderExchangeCapture,
+} from "../../transport/dispatch/attempt-finalize";
 import { LIANROUTER_PROBE_MARKER } from "../provider-registry";
 import { authHeaders } from "../compatible-adapter";
 import {
@@ -491,6 +498,47 @@ export class ProviderProbingService {
     };
   }
 
+  /**
+   * Shapes the probe's canonical events into the client-facing body the caller
+   * would have received on this surface — the same encoders the dispatch paths
+   * feed, so the drawer's Client Response panel shows the real reply instead of
+   * "No payload captured". Returns `undefined` when nothing meaningful streamed.
+   */
+  /** Bounded wait on the teed provider response; mirrors the dispatch path's
+   * 2s settle so a slow clone never stalls the probe result. */
+  private async resolvedProbeResponse(
+    capture: ProviderExchangeCapture | undefined,
+  ): Promise<unknown> {
+    if (!capture) return null;
+    return await Promise.race([
+      capture.response,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+    ]);
+  }
+
+  private encodeProbeClientBody(
+    events: readonly CanonicalEvent[],
+    sourceSurface: string,
+  ): unknown | undefined {
+    try {
+      if (sourceSurface === "chat") {
+        const out = chatAdapter.encode([...events], { created: Date.now() / 1000 });
+        return new TextDecoder().decode(out.bytes);
+      }
+      if (sourceSurface === "messages") {
+        return messagesAdapter.encodeOutput([...events], {
+          model: "",
+        } as never);
+      }
+      if (sourceSurface === "responses") {
+        return responsesAdapter.encodeOutput([...events], {} as never);
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** One-shot connectivity test: resolves a usable account + the real per-provider
    * adapter, dispatches a minimal canonical request through the model's own wire
    * family/endpoint (never a hardcoded `/v1/chat/completions`), and records the
@@ -592,6 +640,10 @@ export class ProviderProbingService {
       wireFamily,
     });
     let capturedRequest = canonicalRequest;
+    // Last attempt's provider exchange — the probe capture writes whichever
+    // attempt produced the final verdict, matching how `capturedRequest` and
+    // `events` carry the same attempt out of the loop.
+    let lastProviderCapture: ProviderExchangeCapture | undefined;
     const parsedProviderId = parseProviderId(providerId);
     const candidate: AdapterDispatchTarget = {
       provider_id: parsedProviderId,
@@ -649,7 +701,15 @@ export class ProviderProbingService {
             : { provider_id: parsedProviderId, credential_kind: "none" as const };
           const outbound = asOutboundBinding(await this.outboundFetchFor(tenantId, providerId));
           attemptPoolId = outbound.networkPoolId;
-          const probeFetch = createProbeFetch(outbound.fetch);
+          const providerCapture: ProviderExchangeCapture = {
+            request: null,
+            response: Promise.resolve(null),
+          };
+          const probeFetch = captureProviderExchange(
+            createProbeFetch(outbound.fetch),
+            providerCapture,
+          );
+          lastProviderCapture = providerCapture;
           const dispatchProbe = async (request: CanonicalRequest): Promise<void> => {
             capturedRequest = request;
             for await (const event of adapter.dispatch(request, candidate, {
@@ -791,12 +851,23 @@ export class ProviderProbingService {
       ...(tokensPerSec !== undefined ? { tokensPerSec } : {}),
     });
     if (this.telemetryBuffer && payloadCaptureEnabled) {
+      // Capture the whole exchange, not just the canonical pair: the drawer's
+      // Client panel reads clientResponse — leaving it out made probe rows show
+      // "No payload captured" there even with capture on. The canonical events
+      // stay the provider-side body; the client-side body is the surface shape
+      // the caller would actually have received.
+      const clientBody = this.encodeProbeClientBody(events, sourceSurface);
+      const providerRequest = lastProviderCapture?.request ?? null;
+      const providerResponse = await this.resolvedProbeResponse(lastProviderCapture);
       await this.payloadCapture
         .capture({
           tenantId,
           requestId,
           requestBody: capturedRequest,
           responseBody: events,
+          ...(clientBody === undefined ? {} : { clientResponseBody: clientBody }),
+          ...(providerRequest === null ? {} : { providerRequestBody: providerRequest }),
+          ...(providerResponse === null ? {} : { providerResponseBody: providerResponse }),
           scope: "tenant",
           tenantOptIn: true,
         })

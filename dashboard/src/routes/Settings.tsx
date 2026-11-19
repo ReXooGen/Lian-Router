@@ -55,13 +55,14 @@ function PrivacyPanel(): ReactNode {
                   )
                 }
                 options={[
-                  { value: "none", label: "Off — metadata only (default)" },
-                  { value: "bounded", label: "On — temporary bodies, pruned after 15 minutes" },
+                  { value: "bounded", label: "Save payloads — redacted bodies, pruned after 15 minutes (default)" },
+                  { value: "none", label: "Don't save — metadata only; nothing is written to disk" },
                 ]}
               />
               <p style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>
-                Request metadata is always retained. Body capture is opt-in, redacted, and deleted
-                automatically after 15 minutes.
+                "Don't save" keeps request metadata only — request and response bodies are never
+                written to local storage. "Save payloads" stores redacted, size-capped copies that
+                are deleted automatically after 15 minutes.
               </p>
             </div>
             <div>

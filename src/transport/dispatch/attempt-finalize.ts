@@ -43,7 +43,12 @@ async function isPayloadCaptureEnabled(db: LianRouterDatabase, tenantId: string 
   if (!tenantId) return false;
   try {
     const prefs = await preferencesReaderFor(db).readPreferences(tenantId);
-    return prefs?.telemetryPayloads === "bounded";
+    // Absent row = factory default. The request-detail drawer is the operator's
+    // primary debugging surface; shipping it empty by default made every panel
+    // read "No payload captured" with no hint a setting existed. Bounded
+    // capture (redacted, 1MB cap, 15-minute retention) is the default; an
+    // explicit `none` still wins — the Settings switch stays authoritative.
+    return (prefs?.telemetryPayloads ?? "bounded") === "bounded";
   } catch {
     return false;
   }

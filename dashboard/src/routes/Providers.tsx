@@ -695,78 +695,89 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
           <div style={{ minWidth: 0, flex: 1 }}>
             <div
               style={{
-                fontSize: "13px",
-                fontWeight: 600,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                minWidth: 0,
               }}
             >
-              {customProvider.label || customProvider.providerId}
+              <span
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {customProvider.label || customProvider.providerId}
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  background: "var(--kbd-bg)",
+                  padding: "1px 5px",
+                  borderRadius: "4px",
+                  color: "var(--text-secondary)",
+                  flexShrink: 0,
+                }}
+              >
+                {customProvider.providerId}/
+              </span>
             </div>
-            <div style={{ marginTop: "3px", display: "flex", flexWrap: "wrap", gap: "4px" }}>
-              {customProvider.stale ? (
-                <Badge tone="warn" dot>
-                  Removed from bundle — safe to delete
-                </Badge>
-              ) : null}
-              {activeConnections > 0 ? (
-                <Badge tone="ok" dot>
-                  {activeConnections} Connected
-                </Badge>
-              ) : cooldownCount + degradedCount + disabledCount + exhaustedCount > 0 ? (
-                <Badge tone="warn" dot>
-                  {cooldownCount + degradedCount + disabledCount + exhaustedCount} Unhealthy
-                </Badge>
-              ) : (
-                <Badge>No connections</Badge>
-              )}
-              {cooldownCount > 0 ? (
-                <Badge tone="warn" dot>
-                  {cooldownCount} Cooldown
-                </Badge>
-              ) : null}
-              {degradedCount > 0 ? (
-                <Badge tone="warn" dot>
-                  {degradedCount} Degraded
-                </Badge>
-              ) : null}
-              {disabledCount > 0 ? (
-                <Badge>Disabled</Badge>
-              ) : null}
-              {exhaustedCount > 0 ? (
-                <Badge tone="warn" dot>
-                  {exhaustedCount} Exhausted
-                </Badge>
-              ) : null}
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-end",
-              gap: "3px",
-              flexShrink: 0,
-            }}
-          >
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "10px",
-                fontWeight: 600,
-                background: "var(--kbd-bg)",
-                padding: "1px 5px",
-                borderRadius: "4px",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {customProvider.providerId}/
-            </span>
-            {modelCount > 0 ? <Badge tone="info">{modelCount} models</Badge> : null}
           </div>
         </Inline>
+        <div
+          style={{
+            marginTop: "6px",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "4px",
+          }}
+        >
+          {customProvider.stale ? (
+            <Badge tone="warn" dot>
+              Removed from bundle — safe to delete
+            </Badge>
+          ) : null}
+          {activeConnections > 0 ? (
+            <Badge tone="ok" dot>
+              {activeConnections} Connected
+            </Badge>
+          ) : cooldownCount + degradedCount + disabledCount + exhaustedCount > 0 ? (
+            <Badge tone="warn" dot>
+              {cooldownCount + degradedCount + disabledCount + exhaustedCount} Unhealthy
+            </Badge>
+          ) : (
+            <Badge>No connections</Badge>
+          )}
+          {cooldownCount > 0 ? (
+            <Badge tone="warn" dot>
+              {cooldownCount} Cooldown
+            </Badge>
+          ) : null}
+          {degradedCount > 0 ? (
+            <Badge tone="warn" dot>
+              {degradedCount} Degraded
+            </Badge>
+          ) : null}
+          {disabledCount > 0 ? (
+            <Badge>Disabled</Badge>
+          ) : null}
+          {exhaustedCount > 0 ? (
+            <Badge tone="warn" dot>
+              {exhaustedCount} Exhausted
+            </Badge>
+          ) : null}
+          {modelCount > 0 ? (
+            <span style={{ marginLeft: "auto" }}>
+              <Badge tone="info">{modelCount} models</Badge>
+            </span>
+          ) : null}
+        </div>
       </Link>
       <Button
         variant="ghost"

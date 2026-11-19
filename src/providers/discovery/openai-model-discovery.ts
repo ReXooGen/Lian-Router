@@ -66,7 +66,7 @@ export async function fetchOpenAICompatibleModels(
 
       const cost = modelsDevCatalog.costFor(options.providerId ?? "", id);
 
-      // Capability comes from the upstream's own `modality` field, never from
+      // Capability comes from the upstream's own fields, never from
       // the base catalog: that lookup is keyed by bare model id and keeps only
       // the first provider row, so it would attribute a stranger's capabilities
       // to this gateway's serving. An undeclared capability is left to the
@@ -91,6 +91,48 @@ export async function fetchOpenAICompatibleModels(
           output.push(normalized);
         }
       }
+      // Input modalities beyond the `modality` string: OpenRouter-style
+      // `architecture.input_modalities`, Ollama-style
+      // `capabilities: ["vision","tools","thinking"]`, and generic
+      // `input_modalities`. A model the upstream declares image-capable must
+      // not lose that flag just because its `/models` row uses a different
+      // field name than the convention the code happened to read.
+      const archInput = (entry as Record<string, unknown>).architecture;
+      const archInputList = isRecord(archInput) && Array.isArray(archInput.input_modalities)
+        ? archInput.input_modalities.filter((v): v is string => typeof v === "string")
+        : Array.isArray((entry as Record<string, unknown>).input_modalities)
+          ? ((entry as Record<string, unknown>).input_modalities as unknown[]).filter(
+              (v): v is string => typeof v === "string",
+            )
+          : [];
+      const declaredCaps = Array.isArray((entry as Record<string, unknown>).capabilities)
+        ? ((entry as Record<string, unknown>).capabilities as unknown[]).filter(
+            (v): v is string => typeof v === "string",
+          )
+        : [];
+      const supportsImageInput =
+        hasImage ||
+        archInputList.some((v) => v.trim().toLowerCase() === "image") ||
+        declaredCaps.some((v) => v.trim().toLowerCase() === "vision");
+      // Reasoning: `reasoning: true` / `thinking` capability, or OpenRouter's
+      // `supported_parameters` carrying `reasoning`/`include_reasoning`.
+      const supportedParams = Array.isArray((entry as Record<string, unknown>).supported_parameters)
+        ? ((entry as Record<string, unknown>).supported_parameters as unknown[]).filter(
+            (v): v is string => typeof v === "string",
+          )
+        : [];
+      const paramsLower = supportedParams.map((v) => v.trim().toLowerCase());
+      const supportsReasoning =
+        entry.reasoning === true ||
+        (entry as Record<string, unknown>).thinking === true ||
+        declaredCaps.some((v) => v.trim().toLowerCase() === "thinking") ||
+        paramsLower.some((v) => v === "reasoning" || v === "include_reasoning");
+      // Tool calling: explicit flag or the two ecosystem parameter spellings.
+      const supportsTools =
+        entry.tool_call === true ||
+        entry.tools === true ||
+        declaredCaps.some((v) => v.trim().toLowerCase() === "tools") ||
+        paramsLower.some((v) => v === "tools" || v === "tool_call" || v === "function_calling");
       const responsesWire = isResponsesNativeModelId(id);
       byId.set(id, {
         modelId: id,
@@ -98,9 +140,12 @@ export async function fetchOpenAICompatibleModels(
         endpointPath: responsesWire ? "/v1/responses" : "/v1/chat/completions",
         contextLimit: contextWindow,
         outputLimit: outputTokens,
-        modalities: { input: hasImage ? ["text", "image"] : ["text"], output },
-        reasoning: false,
-        toolCall: true,
+        modalities: {
+          input: supportsImageInput ? ["text", "image"] : ["text"],
+          output,
+        },
+        reasoning: supportsReasoning,
+        toolCall: supportsTools,
         webSearch: false,
         cost,
       });

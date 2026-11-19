@@ -367,7 +367,11 @@ export async function loadProbePreferences(args: {
     const raw = preferences?.responsesReasoningSummary;
     const mode: "auto" | "concise" | "detailed" =
       raw === "auto" || raw === "concise" || raw === "detailed" ? raw : "detailed";
-    payloadCaptureEnabled = preferences?.telemetryPayloads === "bounded";
+    // Same factory default as dispatch's `isPayloadCaptureEnabled`: an absent
+    // settings row means bounded capture, an explicit `none` wins. The probe
+    // must agree with live traffic or the drawer shows bodies for one path and
+    // dashes for the other.
+    payloadCaptureEnabled = (preferences?.telemetryPayloads ?? "bounded") === "bounded";
     if (wireFamily === "responses") {
       probeReasoning = {
         effort: request.reasoningEffort ?? "medium",
