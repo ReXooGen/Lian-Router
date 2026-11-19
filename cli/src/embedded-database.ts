@@ -23,7 +23,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type EmbeddedPostgresClient from "embedded-postgres";
 
@@ -116,6 +116,51 @@ async function resolvePlatformBinary(): Promise<{ dir: string } | undefined> {
   }
 }
 
+/**
+ * Live postgres.exe pids, via `tasklist` (fast, no WMI dependency).
+ *
+ * Used only to distinguish a corpse lock — a `postmaster.pid` whose writer is
+ * gone — from a live postmaster the caller must not bulldoze.
+ */
+async function listPostgresProcesses(): Promise<number[]> {
+  try {
+    const result = Bun.spawnSync(["tasklist", "/FI", "IMAGENAME eq postgres.exe", "/FO", "CSV", "/NH"]);
+    const text = result.stdout.toString();
+    const pids: number[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^"postgres\.exe","(\d+)"/.exec(line.trim());
+      if (match) pids.push(Number(match[1]!));
+    }
+    return pids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * True while something still listens on the port.
+ *
+ * A connect probe rather than a bind probe: binding would race the postmaster
+ * for the exact port this process is about to claim. A refused connection is
+ * the free-port answer; a connected socket means wait.
+ */
+async function portIsBusy(port: number): Promise<boolean> {
+  try {
+    const socket = await Bun.connect({
+      hostname: "127.0.0.1",
+      port,
+      socket: {
+        data() {},
+        close() {},
+      },
+    });
+    socket.end();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Stops a postmaster this process did not start. Never throws. */
 async function stopOrphanCluster(databaseDir: string): Promise<boolean> {
   const dataDirectory = databaseDir;
@@ -191,6 +236,35 @@ export async function startEmbeddedDatabase(
     await server.initialise();
   } else if (await stopOrphanCluster(databaseDir)) {
     log?.("[launcher] reaped an embedded PostgreSQL cluster left by a previous run");
+  }
+
+  // The hand-off successor reaches this point while the previous launcher is
+  // still dying. Two lags bite here, and both read as "the database is
+  // unreachable" to the operator when the boot fails on them:
+  //
+  // 1. The postmaster still holds the port after a `pg_ctl stop` reports
+  //    success. Wait for a connect probe to fail before claiming the port.
+  // 2. `postmaster.pid` lingers a few seconds after the process exits (Windows
+  //    delete lag), and `initdb`-created locks make the next start FATAL on a
+  //    file nobody owns. Wait for the file to go; if the wait expires while no
+  //    postgres process is alive, the file is a corpse — remove it, which is
+  //    exactly what a fresh boot needs.
+  if (existsSync(join(databaseDir, "PG_VERSION"))) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && (await portIsBusy(port))) {
+      await Bun.sleep(250);
+    }
+    const lockFile = join(databaseDir, "postmaster.pid");
+    const lockDeadline = Date.now() + 15_000;
+    while (Date.now() < lockDeadline && existsSync(lockFile)) {
+      await Bun.sleep(250);
+    }
+    if (existsSync(lockFile)) {
+      const postmasters = await listPostgresProcesses();
+      if (postmasters.length === 0) {
+        rmSync(lockFile, { force: true });
+      }
+    }
   }
 
   await server.start();

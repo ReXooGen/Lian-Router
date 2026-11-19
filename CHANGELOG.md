@@ -49,6 +49,21 @@ Measured on Windows from a clean global install: after `lianrouter stop` the
 tray and every embedded-postgres process are gone and `/health/ready` stops
 answering.
 
+### A stale `postmaster.pid` no longer blocks the next start
+
+Killing the launcher — a closed console, a crash, `taskkill` — leaves the
+embedded cluster's `postmaster.pid` behind, and the next start died on it:
+`FATAL: lock file "postmaster.pid" already exists`, with a hint pointing at a
+pid that no longer exists. `startEmbeddedDatabase` now waits out the port and
+the lock file for up to fifteen seconds each, and when the wait expires while no
+postgres process is alive, the lock file is a corpse and is removed. A lock held
+by a running postmaster is left alone, because deleting that one would corrupt
+the cluster.
+
+Measured on Windows: after killing the launcher and its postmaster, the next
+`lianrouter` start reaps the dead lock and reaches `200 {"status":"ready",
+"db":"connected"}` instead of the FATAL above.
+
 ### The tray session no longer dies with the launcher
 
 Hiding to the tray left the gateway owned by a process that could vanish at any
