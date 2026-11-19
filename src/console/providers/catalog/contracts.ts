@@ -563,6 +563,14 @@ export interface ProviderResponse {
   compatibilityProfile?: CompatibilityProfile;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * Presentation-only projection of `compatibilityProfile.iconUrl`/`.credentialUrl`,
+   * surfaced on every response (including the secrets-stripped list rows) so
+   * the provider cards can render the operator's icon without the full
+   * profile. Shape-validated at write time by `validateCompatibilityProfile`.
+   */
+  iconUrl?: string;
+  credentialUrl?: string;
   /** Populated from the registered OAuth login clients — undefined means no live OAuth client. */
   oauthFlows?: { readonly browser: boolean; readonly device: boolean };
   /** Whether the provider supports dynamic model discovery. Custom providers always support it. */

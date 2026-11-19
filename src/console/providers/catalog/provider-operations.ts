@@ -64,6 +64,15 @@ export function sanitizeProviderResponse(
   if (includeSecrets && typeof p.baseUrl === "string") response.baseUrl = p.baseUrl;
   if (includeSecrets && p.compatibilityProfile)
     response.compatibilityProfile = p.compatibilityProfile as CompatibilityProfile;
+  // Icon/credential link live inside the profile but are presentation-only —
+  // project them on every response (list rows included) so provider cards can
+  // render the operator's chosen icon without receiving the full profile.
+  const profileForPresentation =
+    (p.compatibilityProfile as CompatibilityProfile | undefined) ?? undefined;
+  if (typeof profileForPresentation?.iconUrl === "string")
+    response.iconUrl = profileForPresentation.iconUrl;
+  if (typeof profileForPresentation?.credentialUrl === "string")
+    response.credentialUrl = profileForPresentation.credentialUrl;
   if (isWireFamily(p.wireFamilyDefault)) response.wireFamilyDefault = p.wireFamilyDefault;
   // Derived policy, not a secret: always projected. Entries are re-validated so
   // a malformed record narrows to the families the vocabulary admits instead of

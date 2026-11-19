@@ -690,6 +690,7 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
             icon={customProvider.wireFamilyDefault === "messages" ? "anthropic" : "openai"}
             name={customProvider.label || customProvider.providerId}
             size={32}
+            iconUrl={customProvider.iconUrl}
           />
           <div style={{ minWidth: 0, flex: 1 }}>
             <div
