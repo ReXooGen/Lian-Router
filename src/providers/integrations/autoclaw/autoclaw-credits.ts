@@ -76,8 +76,9 @@ export type AutoClawCheckinState =
   | "error";
 
 export interface AutoClawWallet {
-  /** Points across every wallet, as the facade reports it. */
-  readonly totalPoints: number | null;
+  /** Points across every wallet, as the facade reports it. Matches the
+   * dashboard's `wallet.totalBalance` field. */
+  readonly totalBalance: number | null;
   /** Points in the daily wallet; `null` when the facade lists no daily wallet. */
   readonly dailyPoints: number | null;
   /** Login email from the profile route; `null` when the account hides it. */
@@ -145,7 +146,7 @@ export async function fetchAutoClawWallet(
   } catch {
     // A profile failure must not hide the wallet numbers; email is decoration.
   }
-  return { totalPoints: total, dailyPoints: daily, email, updatedAt: new Date().toISOString() };
+  return { totalBalance: total, dailyPoints: daily, email, updatedAt: new Date().toISOString() };
 }
 
 /**

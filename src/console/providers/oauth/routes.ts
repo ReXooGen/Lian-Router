@@ -31,6 +31,7 @@ import {
   readAutoClawCaptchaConfig,
   verifyAutoClawToken,
 } from "../../../providers/integrations/autoclaw/oauth-client";
+import { startAutoClawLoopbackBridge } from "../../../providers/integrations/autoclaw/loopback-bridge";
 /** OAuth identity is not exposed by the current exchange contract; the refresh
  * token fingerprint prevents replaying the exact same OAuth credential only. */
 
@@ -697,6 +698,16 @@ export function createOAuthLoginRoutes(config: OAuthLoginConfig): Elysia {
           requireScope(access, "dashboard:write");
           set.status = 201;
           const navigateUri = autoClawCallbackUri();
+          // The vendor redirects the browser to the desktop app's registered
+          // loopback, which only answers when that app runs. Start the
+          // in-process receiver so the callback completes itself; when the
+          // port is taken the paste-the-URL fallback still works.
+          const bridge = startAutoClawLoopbackBridge({
+            gatewayOrigin: new URL(request.url).origin,
+          });
+          if (!bridge.started) {
+            log.info(`autoclaw loopback bridge not started: ${bridge.reason ?? "unknown"}`);
+          }
           const started = await beginAutoClawAuthorize({
             signer: AUTOCLAW_SIGNER,
             deviceId: autoClawDeviceId(),
