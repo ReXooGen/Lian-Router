@@ -25,13 +25,14 @@ export const ZCODE_APP_VERSION = "3.16.3";
  * vendor serves its current marketing deliveries only to a recent client, and
  * an older version is answered `deliveries: []`, which reads as "this account
  * has no campaigns" when the truth is "ask as this client and you are not
- * offered any". Measured live against one start-plan account: 3.16.3 answered
- * empty, 3.17.2 carried the campaign.
+ * offered any". Measured live against one start-plan account: 3.16.3 and
+ * 3.17.2 both answered empty while 3.18.2 carried the weekend campaign, so the
+ * claimed version tracks the installed desktop client (3.18.2).
  *
  * Bumping this changes the claimed identity only on the control faces, so it
  * never touches the system-prompt gate.
  */
-export const ZCODE_CAMPAIGN_APP_VERSION = "3.17.2";
+export const ZCODE_CAMPAIGN_APP_VERSION = "3.18.2";
 
 /** Anthropic protocol headers the captured client sent. */
 export const ZCODE_ANTHROPIC_VERSION = "2023-06-01";
