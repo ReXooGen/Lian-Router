@@ -111,6 +111,24 @@ export interface IpAbuseStore {
    * bounded `admission_unavailable` with zero dispatches.
    */
   checkAndRecord(attempt: IpAbuseAttempt): Promise<IpAbuseOutcome>;
+
+  /**
+   * Lifts one identity's ban and clears its escalation state.
+   *
+   * The escape hatch for a false positive: a shared NAT that carried someone
+   * else's hammering, an operator's own test run, a misconfigured health
+   * checker. A ban lapses on its own after its TTL, but an operator who has
+   * fixed the cause must not wait out the remainder.
+   *
+   * Clearing the ban marker alone is not enough: the identity-wide escalation
+   * counter is a sliding window, so its recent attempts would re-cross the
+   * threshold on the next request and re-ban instantly. Both go.
+   *
+   * Returns `true` when a live ban existed and was lifted, `false` when the
+   * identity was not banned (clearing counters anyway is harmless and keeps
+   * the call idempotent).
+   */
+  unban(identity: string): Promise<boolean>;
 }
 
 export interface IpAbuseProtectionServiceOptions {
@@ -346,6 +364,16 @@ export class InMemoryIpAbuseStore implements IpAbuseStore {
     }
     return { banned: false, count, bannedNow, retryAfterMs };
   }
+
+  async unban(identity: string): Promise<boolean> {
+    this.assertAvailable();
+    const now = this.clock();
+    const until = this.bans.get(identity);
+    const wasBanned = until !== undefined && until > now;
+    this.bans.delete(identity);
+    this.banCounts.delete(this.key(identity, BAN_ROUTE_KEY));
+    return wasBanned;
+  }
 }
 
 /**
@@ -442,6 +470,24 @@ export class IpAbuseProtectionService {
       }
     } catch (err) {
       if (err instanceof GatewayError) throw err;
+      throw new GatewayError("admission_unavailable", 503, "ip abuse store error", {
+        reason: "admission-unavailable",
+        cause: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Lifts one identity's ban (the operator-facing escape hatch).
+   *
+   * Store failures surface as `admission_unavailable` like every other store
+   * touch: an unban that cannot reach the store must not report success, or
+   * the operator walks away believing an IP was lifted while it stays banned.
+   */
+  async unban(ip: string): Promise<boolean> {
+    try {
+      return await this.store.unban(ip);
+    } catch (err) {
       throw new GatewayError("admission_unavailable", 503, "ip abuse store error", {
         reason: "admission-unavailable",
         cause: (err as Error).message,
@@ -546,6 +592,17 @@ export class RedisIpAbuseStore implements IpAbuseStore {
       `${now}:${crypto.randomUUID()}`,
     );
     return decodeAbuseOutcome(raw);
+  }
+
+  async unban(identity: string): Promise<boolean> {
+    // DEL answers `1` when a key existed. The ban marker is the authoritative
+    // signal; the escalation counter is cleared alongside it because its
+    // recent attempts would re-cross the threshold on the next request.
+    const [lifted] = await Promise.all([
+      this.redis.del(this.banMarkerKey(identity)),
+      this.redis.del(this.banKey(identity)),
+    ]);
+    return lifted === 1;
   }
 }
 

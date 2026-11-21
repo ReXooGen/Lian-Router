@@ -56,6 +56,7 @@ const app = boot
               admissionService: boot.deps.admissionService,
               probeDispatcher: boot.deps.probeDispatcher,
               modelStrikes: boot.deps.modelStrikes,
+              ipAbuseProtection: boot.deps.ipAbuseProtection,
             },
           }
         : {}),

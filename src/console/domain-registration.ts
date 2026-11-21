@@ -39,6 +39,7 @@ import { createLogRoutes } from "./domains/logs";
 import { createAuditRoutes } from "./domains/audit/contracts";
 import { DrizzleAuditReadStore } from "./domains/audit/store";
 import { createModelAbuseRoutes } from "./domains/model-abuse/routes";
+import { createSecurityRoutes } from "./domains/security/routes";
 import { createStudioRoutes } from "./domains/studio/routes";
 import { DrizzleStudioSessionStore } from "./domains/studio/store";
 import { createPerformanceRoutes } from "./domains/performance/routes";
@@ -62,6 +63,8 @@ import type { RouteSnapshotService } from "../transport/routing/route-model";
 import type { ApiKeyAdmissionService } from "../security/admission";
 import type { ProbeDispatchFn } from "../providers/discovery/probe-dispatch";
 import type { ModelStrikeService } from "../security/model-abuse";
+import type { IpAbuseProtectionService } from "../security/abuse";
+import type { ConsoleLockoutService } from "./auth/service";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
 import type { OAuthRefreshService } from "../providers/authentication/oauth-refresh-service";
 import type { RedisClient } from "../persistence/redis";
@@ -89,6 +92,10 @@ export interface ConsoleDomainContext {
   readonly probeDispatcher: ProbeDispatchFn;
   /** Graduated model-abuse strikes, for the ban list and its lift action. */
   readonly modelStrikes?: ModelStrikeService;
+  /** The `/v1/*` admission layer: the operator-facing IP-unban clears its store. */
+  readonly ipAbuseProtection?: IpAbuseProtectionService;
+  /** Console login lockouts (per-IP rows in `console_lockouts`); the unban lifts these too. */
+  readonly consoleLockouts?: ConsoleLockoutService;
   /**
    * Loads the signed-in console user, for surfaces that re-authenticate the
    * operator rather than trusting the session alone (backup export/restore).
@@ -162,6 +169,14 @@ export function registerConsoleDomains(
   if (ctx.modelStrikes !== undefined) {
     console.use(createModelAbuseRoutes({
       strikes: ctx.modelStrikes,
+      accessResolver: ctx.accessResolver,
+      auditSink: ctx.auditRecorder,
+    }));
+  }
+  if (ctx.ipAbuseProtection !== undefined || ctx.consoleLockouts !== undefined) {
+    console.use(createSecurityRoutes({
+      ...(ctx.ipAbuseProtection !== undefined ? { ipAbuseProtection: ctx.ipAbuseProtection } : {}),
+      ...(ctx.consoleLockouts !== undefined ? { consoleLockouts: ctx.consoleLockouts } : {}),
       accessResolver: ctx.accessResolver,
       auditSink: ctx.auditRecorder,
     }));

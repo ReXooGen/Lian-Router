@@ -39,3 +39,29 @@ export function useUnbanModel() {
     },
   });
 }
+
+/**
+ * Lifts a network-layer IP ban (`POST /security/ip-unban`).
+ *
+ * Clears every store that may hold the address — the gateway admission layer's
+ * Redis ban and the console login lockout row — so one action unblocks a
+ * client regardless of which layer locked it. A store reporting "not banned"
+ * is fine: the other store's lift is what counts.
+ */
+export function useIpUnban() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    { success: boolean; lifted: readonly string[] },
+    ApiErrorShape,
+    string
+  >({
+    mutationFn: (ip) =>
+      consoleRequest<{ success: boolean; lifted: readonly string[] }>("/security/ip-unban", {
+        method: "POST",
+        body: JSON.stringify({ ip }),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.modelBans.all });
+    },
+  });
+}

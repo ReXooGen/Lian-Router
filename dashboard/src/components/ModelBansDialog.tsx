@@ -8,7 +8,11 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { toast } from "../lib/toast";
 import { getErrorMessage } from "../lib/helpers";
 import type { ModelAbuseBan } from "../lib/contracts";
-import { useModelBans, useUnbanModel } from "../lib/hooks/model-bans";
+import { useIpUnban, useModelBans, useUnbanModel } from "../lib/hooks/model-bans";
+
+/** A plausible client address: IPv4, IPv6, or the IPv4-mapped IPv6 form. */
+const IP_PATTERN =
+  /^(\d{1,3}(\.\d{1,3}){3}|[0-9a-fA-F:]{2,45})$/;
 
 /**
  * The model-abuse ban list, opened from the API Credentials header.
@@ -35,7 +39,10 @@ function lapseLabel(expiresAt: number): string {
 export function ModelBansDialog({ onClose }: { readonly onClose: () => void }): ReactNode {
   const bansQuery = useModelBans(true);
   const unban = useUnbanModel();
+  const ipUnban = useIpUnban();
   const [unbanTarget, setUnbanTarget] = useState<ModelAbuseBan | null>(null);
+  const [manualIp, setManualIp] = useState("");
+  const [manualConfirmOpen, setManualConfirmOpen] = useState(false);
   const bans = bansQuery.data ?? [];
 
   return (
@@ -102,6 +109,65 @@ export function ModelBansDialog({ onClose }: { readonly onClose: () => void }): 
               Close
             </Button>
           </div>
+
+          {/*
+           * Manual unban: the network-layer admission ban (rate-limit
+           * escalation) is not in the list above — that list is model-abuse
+           * strikes only. A locked-out operator knows their own address from
+           * the Access Restricted page, so the field takes it directly.
+           */}
+          <div
+            style={{
+              padding: "14px",
+              borderRadius: "12px",
+              background: "var(--surface-2)",
+              border: "1px solid var(--inner-border)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+            }}
+          >
+            <h4 style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
+              Unblock an address manually
+            </h4>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              Lifts a network lockout for an address: the gateway admission ban
+              (rate-limit escalation) and the console login lockout in one step.
+              Use this when a client shows the Access Restricted page.
+            </p>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <input
+                value={manualIp}
+                onChange={(event) => setManualIp(event.target.value)}
+                placeholder="e.g. 203.0.113.42"
+                style={{
+                  flex: 1,
+                  padding: "7px 10px",
+                  borderRadius: "8px",
+                  border: "1px solid var(--inner-border)",
+                  background: "var(--surface-3, var(--surface-2))",
+                  color: "var(--text-primary)",
+                  fontFamily: "var(--font-mono, monospace)",
+                  fontSize: "12.5px",
+                }}
+                spellCheck={false}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Undo2 size={13} />}
+                disabled={manualIp.trim().length === 0 || !IP_PATTERN.test(manualIp.trim()) || ipUnban.isPending}
+                onClick={() => setManualConfirmOpen(true)}
+              >
+                Unblock
+              </Button>
+            </div>
+            {ipUnban.isError ? (
+              <p style={{ margin: 0, fontSize: "12px", color: "var(--red-soft, var(--text-secondary))" }}>
+                {getErrorMessage(ipUnban.error, "Unban failed.")}
+              </p>
+            ) : null}
+          </div>
         </div>
       </Dialog>
 
@@ -120,6 +186,23 @@ export function ModelBansDialog({ onClose }: { readonly onClose: () => void }): 
             ? `Lift the block on ${unbanTarget.ip}? The address can reach the gateway again immediately.`
             : "Lift this block?"
         }
+        confirmLabel="Unblock"
+        danger
+      />
+      <ConfirmDialog
+        open={manualConfirmOpen}
+        onClose={() => setManualConfirmOpen(false)}
+        onConfirm={async () => {
+          const ip = manualIp.trim();
+          const result = await ipUnban.mutateAsync(ip);
+          toast.success(
+            `Unblocked ${ip} (${result.lifted.join(", ")}).`,
+          );
+          setManualIp("");
+          setManualConfirmOpen(false);
+        }}
+        title="Unblock this address?"
+        message={`Lift every lockout on ${manualIp.trim() || "this address"} — the gateway admission ban and the console login lockout. The address can reach the gateway again immediately.`}
         confirmLabel="Unblock"
         danger
       />

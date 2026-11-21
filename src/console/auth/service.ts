@@ -442,6 +442,22 @@ export class ConsoleLockoutService {
     return (await this.remainingLockSeconds(ip)) > 0;
   }
 
+  /**
+   * Operator-facing escape hatch: drops `ip`'s lock row entirely — the lock,
+   * the failure counter, and the sliding window — so the next attempt starts
+   * from zero instead of inheriting the recent failures.
+   *
+   * Returns `true` when a row existed and was deleted, `false` when the IP had
+   * no row (an idempotent unblock is easier to wire than a 404 to explain).
+   */
+  async liftLockout(ip: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(consoleLockouts)
+      .where(eq(consoleLockouts.ip, ip))
+      .returning({ ip: consoleLockouts.ip });
+    return rows.length > 0;
+  }
+
   async recordFailure(ip: string, reason: string): Promise<boolean> {
     if (await this.isLocked(ip)) return true;
 

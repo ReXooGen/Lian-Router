@@ -18,6 +18,7 @@ import type { ConsoleAccessResolver } from "./auth/access";
 import type { LianRouterDatabase } from "../persistence/postgres";
 import { createAccessDecision, type AccessDecision } from "../security/access-control";
 import { resolveApiKeyAuthorization } from "../security/api-key-auth";
+import type { IpAbuseProtectionService } from "../security/abuse";
 import type { RouteSnapshotService } from "../transport/routing/route-model";
 import type { NetworkPoolSelector } from "../network/pool/selector";
 import type { TelemetryBatchBuffer } from "../observability/telemetry-buffer";
@@ -61,6 +62,12 @@ export interface ConsoleApiCompositionDeps {
    * composition (tests, route-only shells) has no strike layer to administer.
    */
   readonly modelStrikes?: ModelStrikeService;
+  /**
+   * The `/v1/*` admission layer. Its ban store is the one the operator-facing
+   * IP-unban surface clears, so the console lifts a ban in the same store the
+   * data plane consults. Optional for the same reduced compositions.
+   */
+  readonly ipAbuseProtection?: IpAbuseProtectionService;
   readonly resolvePeerAddress?: (request: Request) => string | null;
   readonly trustedProxyBoundary?: TrustedProxyBoundary;
 }
@@ -169,6 +176,8 @@ export function createConsoleRouter(deps: ConsoleApiCompositionDeps): Elysia {
     admissionService: deps.admissionService,
     probeDispatcher: deps.probeDispatcher,
     ...(deps.modelStrikes === undefined ? {} : { modelStrikes: deps.modelStrikes }),
+    ...(deps.ipAbuseProtection === undefined ? {} : { ipAbuseProtection: deps.ipAbuseProtection }),
+    consoleLockouts: lockoutService,
     credentialService,
     // The backup surface re-authenticates the operator, so it needs the current
     // user's hash. Read from the session on the request that asks for it, never

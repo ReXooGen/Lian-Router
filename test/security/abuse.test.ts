@@ -385,3 +385,65 @@ describe("RedisIpAbuseStore", () => {
     ).rejects.toThrow("non-array");
   });
 });
+
+describe("IpAbuseProtectionService.unban", () => {
+  test("in-memory: lifts a live ban and clears the escalation ring so the next request re-admits", async () => {
+    // The store gets the same fake clock as the service: the ban marker stores
+    // an absolute expiry computed from the attempt timestamp, so a mismatched
+    // store clock would read a 1970-era expiry as lapsed.
+    const store = new InMemoryIpAbuseStore({ windowMs: 60_000, clock: () => 1_000 });
+    const svc = new IpAbuseProtectionService(store, () => 1_000, {
+      maxRequestsPerWindow: 2,
+      banThreshold: 3,
+    });
+    const ip = identity("9.9.9.9");
+
+    // Cross the ban threshold: 3 attempts in the identity-wide ring.
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        await svc.checkBeforeAccess({ identity: ip, route: "/v1/chat/completions" });
+      } catch {
+        // attempts past the limit still escalate
+      }
+    }
+    await expect(svc.checkBeforeAccess({ identity: ip, route: "/v1/chat/completions" })).rejects.toMatchObject(
+      { code: "quota_exceeded" } as unknown as GatewayError,
+    );
+
+    // The lift: a live ban existed and the identity-wide ring went with it —
+    // clearing the marker alone would re-ban on the very next attempt. The
+    // per-route window keeps its recent attempts, so admission resumes against
+    // whatever the route budget still has; assert the ban itself is gone.
+    expect(await store.unban(ip.address)).toBe(true);
+    expect(await store.isBanned(ip.address, 1_000)).toBe(false);
+  });
+
+  test("in-memory: unbanning a never-banned identity reports false and stays safe", async () => {
+    const store = new InMemoryIpAbuseStore(60_000);
+    expect(await store.unban("4.4.4.4")).toBe(false);
+  });
+
+  test("redis: deletes the ban marker and the escalation counter, reports what existed", async () => {
+    const deleted: string[] = [];
+    const redis = {
+      del: (key: string) => {
+        deleted.push(key);
+        // A marker exists only until the first DEL removes it.
+        return Promise.resolve(key.endsWith(":ban:8.8.8.8") && !deleted.slice(0, -1).includes(key) ? 1 : 0);
+      },
+    } as unknown as RedisClient;
+    const store = new RedisIpAbuseStore(redis);
+
+    const lifted = await store.unban("8.8.8.8");
+    expect(lifted).toBe(true);
+    expect(deleted).toEqual([
+      "lianrouter:ip:ban:8.8.8.8",
+      "lianrouter:ip:ban-count:8.8.8.8",
+    ]);
+
+    // No marker anywhere: false, but the counters still go (idempotent).
+    const liftedAgain = await store.unban("8.8.8.8");
+    expect(liftedAgain).toBe(false);
+    expect(deleted).toHaveLength(4);
+  });
+});
