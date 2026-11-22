@@ -263,6 +263,13 @@ export interface AutoClawLedgerEntry {
   /** Wallet the movement landed in (`daily`, `monthly`, `annual`, `reward`…). */
   readonly walletScope: string | null;
   readonly direction: "credit" | "debit";
+  /**
+   * When the wallet this movement landed in expires, as epoch seconds — the
+   * vendor expires wallet scopes on their own clocks (a daily check-in grant
+   * measured 2026-11-23 carried `+6 days`), so two grants of the same size can
+   * lapse on different days. `null` when the envelope omitted it.
+   */
+  readonly walletExpiresAt: number | null;
 }
 
 export interface AutoClawLedgerPage {
@@ -314,6 +321,7 @@ export async function fetchAutoClawLedger(
       occurredAt: asText(row["occurred_at"]) ?? asText(row["created_at"]) ?? "",
       walletScope: asText(row["wallet_scope"]),
       direction: amount < 0 || row["mutation_type"] === "debit" ? "debit" : "credit",
+      walletExpiresAt: asNumber(row["wallet_expires_at"]),
     });
   }
   return { entries, nextCursor: asText(data?.["next_page_token"]) };
@@ -380,4 +388,117 @@ function asNumber(value: unknown): number | null {
 
 function asText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/** One bucket of the expiry summary: entries sharing an expiry day. */
+export interface AutoClawExpiringBucket {
+  /** The wallet-scope expiry date, `YYYY-MM-DD` in UTC. */
+  readonly expiresOn: string;
+  /** Epoch seconds of the (max) expiry in this bucket. */
+  readonly expiresAt: number;
+  /** Sum of the credit grants still attributable to this expiry. */
+  readonly points: number;
+  /** The grants themselves, newest first. */
+  readonly entries: readonly AutoClawLedgerEntry[];
+}
+
+/** The expiry summary for one account: lapsed points and the soon-to-lapse ones. */
+export interface AutoClawExpirySummary {
+  /** Grants whose expiry already passed, newest first. */
+  readonly expired: readonly AutoClawExpiringBucket[];
+  /** Live grants expiring within `withinDays`, soonest first. */
+  readonly expiringSoon: readonly AutoClawExpiringBucket[];
+  /** Total credit points that already lapsed (sum over `expired`). */
+  readonly expiredPoints: number;
+  /** Total credit points lapsing within the window (sum over `expiringSoon`). */
+  readonly expiringSoonPoints: number;
+}
+
+/**
+ * Walks the ledger far enough back to cover every grant that could still be
+ * described as "expired this month" or "expiring soon", and buckets the credit
+ * grants by their wallet expiry.
+ *
+ * The ledger is newest-first and debits carry the same `wallet_expires_at` as
+ * the wallet they spent from, so the balance attributable to one expiry day is
+ * `sum(credits) - sum(debits)` across the entries sharing it — a debit can push
+ * a bucket to zero, never negative, because a wallet cannot pay out more than
+ * it was granted.
+ *
+ * Pages until the oldest entry is older than `lookbackDays` (default 45: past
+ * the longest realistic daily-grant TTL) or the pages run out.
+ */
+export async function fetchAutoClawExpirySummary(
+  credential: string,
+  fetcher: typeof fetch = fetch,
+  options: { readonly withinDays?: number; readonly lookbackDays?: number; readonly pageSize?: number } = {},
+): Promise<AutoClawExpirySummary> {
+  // The envelope's `wallet_expires_at` is epoch SECONDS; Date.now() is
+  // milliseconds. Mixing them makes every future expiry read as already
+  // lapsed (seconds are always below the millisecond clock), so `now` is
+  // seconds for the rest of this function.
+  const now = Math.floor(Date.now() / 1000);
+  const lookbackCutoffMs = now - (options.lookbackDays ?? 45) * 86_400;
+  const soonCutoffMs = now + (options.withinDays ?? 7) * 86_400;
+
+  /** Per expiry-day: net points and the entries behind them. */
+  const buckets = new Map<string, { expiresAt: number; points: number; entries: AutoClawLedgerEntry[] }>();
+  let cursor: string | undefined;
+  let oldestSeenMs = Number.POSITIVE_INFINITY;
+  for (let page = 0; page < 12; page += 1) {
+    const ledgerPage = await fetchAutoClawLedger(
+      credential,
+      { pageSize: options.pageSize ?? 100, ...(cursor !== undefined ? { cursor } : {}) },
+      fetcher,
+    );
+    if (ledgerPage.entries.length === 0) break;
+    for (const entry of ledgerPage.entries) {
+      const occurred = Math.floor(Date.parse(entry.occurredAt) / 1000);
+      if (Number.isFinite(occurred)) oldestSeenMs = Math.min(oldestSeenMs, occurred);
+      if (entry.walletExpiresAt === null) continue;
+      // A grant that was fully spent before lapsing is not "expired points":
+      // net the debits into the same bucket, floored at zero at read time.
+      const expiresOn = new Date(entry.walletExpiresAt * 1000).toISOString().slice(0, 10);
+      let bucket = buckets.get(expiresOn);
+      if (bucket === undefined || bucket.expiresAt < entry.walletExpiresAt) {
+        const prior = bucket;
+        bucket = { expiresAt: entry.walletExpiresAt, points: 0, entries: [] };
+        buckets.set(expiresOn, bucket);
+        if (prior !== undefined) {
+          bucket.points = prior.points;
+          bucket.entries = prior.entries;
+        }
+      }
+      bucket.points += entry.amount;
+      if (entry.direction === "credit") bucket.entries.push(entry);
+    }
+    if (ledgerPage.nextCursor === null || ledgerPage.nextCursor.length === 0) break;
+    if (oldestSeenMs < lookbackCutoffMs) break;
+    cursor = ledgerPage.nextCursor;
+  }
+
+  const expired: AutoClawExpiringBucket[] = [];
+  const expiringSoon: AutoClawExpiringBucket[] = [];
+  for (const bucket of buckets.values()) {
+    // Net the debits: a wallet can lapse with points unspent, or drained to zero.
+    if (bucket.points <= 0) continue;
+    const netted: AutoClawExpiringBucket = {
+      expiresOn: new Date(bucket.expiresAt * 1000).toISOString().slice(0, 10),
+      expiresAt: bucket.expiresAt,
+      points: bucket.points,
+      entries: [...bucket.entries].sort((left, right) =>
+        right.occurredAt.localeCompare(left.occurredAt),
+      ),
+    };
+    if (bucket.expiresAt <= now) expired.push(netted);
+    else if (bucket.expiresAt <= soonCutoffMs) expiringSoon.push(netted);
+  }
+  expired.sort((left, right) => right.expiresAt - left.expiresAt);
+  expiringSoon.sort((left, right) => left.expiresAt - right.expiresAt);
+  return {
+    expired,
+    expiringSoon,
+    expiredPoints: expired.reduce((sum, b) => sum + b.points, 0),
+    expiringSoonPoints: expiringSoon.reduce((sum, b) => sum + b.points, 0),
+  };
 }

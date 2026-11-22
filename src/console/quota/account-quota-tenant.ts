@@ -10,6 +10,7 @@ import { requireTenantScope } from "../shared/errors";
 import { vendorDayKey } from "../../providers/integrations/autoclaw/vendor-day-key";
 import {
   claimAutoClawCheckin,
+  fetchAutoClawExpirySummary,
   fetchAutoClawLedger,
   fetchAutoClawWallet,
   reportAutoClawActivity,
@@ -1150,6 +1151,52 @@ export function registerAccountQuotaTenantRoutes(
      * I earn" one; `direction` narrows it upstream rather than filtering here,
      * because the page the operator sees must match the page the vendor paged.
      */
+    .get("/accounts/:id/credits/expiring", async ({ request, params, set }) => {
+      const access = requireTenantScope(accessResolver(request), "dashboard:read");
+      const rows = await db
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(
+            eq(providerAccounts.id, params.id),
+            or(isNull(providerAccounts.tenantId), eq(providerAccounts.tenantId, access.tenantId)),
+          ),
+        )
+        .limit(1);
+      const account = rows[0];
+      if (!account) {
+        set.status = 404;
+        return { error: `Account ${params.id} not found`, code: "not_found" };
+      }
+      if (account.providerId !== "autoclaw") {
+        set.status = 400;
+        return {
+          ok: false,
+          error: `Point expiry is not exposed for provider ${account.providerId}`,
+          code: "credits_unsupported",
+        };
+      }
+      const url = new URL(request.url);
+      const rawWithin = Number(url.searchParams.get("withinDays") ?? "7");
+      const withinDays = Number.isFinite(rawWithin)
+        ? Math.min(Math.max(Math.trunc(rawWithin), 1), 60)
+        : 7;
+      try {
+        const credential = await refreshDeps.resolveCredential(
+          account.providerId as ProviderId,
+          account.id,
+        );
+        const summary = await fetchAutoClawExpirySummary(credential, fetch, { withinDays });
+        return { ok: true, ...summary };
+      } catch (err) {
+        set.status = 502;
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Expiry summary read failed",
+          code: "credits_expiry_failed",
+        };
+      }
+    })
     .get("/accounts/:id/credits/history", async ({ request, params, set }) => {
       const access = requireTenantScope(accessResolver(request), "dashboard:read");
       const rows = await db

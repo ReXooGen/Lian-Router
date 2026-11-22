@@ -1,4 +1,4 @@
-import { Check, Coins, History, Loader2, LogIn } from "lucide-react";
+import { Check, Coins, History, Hourglass, Loader2, LogIn } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -8,6 +8,7 @@ import { useAutoClawCredits, useTriggerAutoClawCheckin } from "../../lib/hooks/q
 import { toast } from "../../lib/toast";
 import { getErrorMessage } from "../../lib/helpers";
 import { AutoClawCreditsHistoryDialog } from "./AutoClawCreditsHistoryDialog";
+import { AutoClawExpiryDialog } from "./AutoClawExpiryDialog";
 
 /** Providers whose points live on a billing facade this card knows how to read. */
 const CREDITS_PROVIDER_IDS: Readonly<Record<string, true>> = { autoclaw: true };
@@ -89,6 +90,7 @@ function CreditBalanceRow({
     checkin.data?.data?.state === "already_claimed" ||
     checkin.data?.data?.state === "claimed";
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [expiryOpen, setExpiryOpen] = useState(false);
 
   const runCheckin = () => {
     checkin.mutate(undefined, {
@@ -185,6 +187,15 @@ function CreditBalanceRow({
         <Button
           variant="ghost"
           size="sm"
+          icon={<Hourglass size={13} />}
+          onClick={() => setExpiryOpen(true)}
+          title="Points the vendor already expired, and grants lapsing within 7 days"
+        >
+          Expired
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           icon={<History size={13} />}
           onClick={() => setHistoryOpen(true)}
           title="Every grant and model charge on this account's points ledger"
@@ -221,6 +232,12 @@ function CreditBalanceRow({
         accountId={account.id}
         accountLabel={account.label}
         onClose={() => setHistoryOpen(false)}
+      />
+      <AutoClawExpiryDialog
+        open={expiryOpen}
+        accountId={account.id}
+        accountLabel={account.label}
+        onClose={() => setExpiryOpen(false)}
       />
     </div>
   );

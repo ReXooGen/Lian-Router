@@ -134,6 +134,8 @@ export const queryKeys = {
     credits: (accountId: string) => ["console", "quota", "account", accountId, "credits"] as const,
     creditsHistory: (accountId: string, direction: string) =>
       ["console", "quota", "account", accountId, "credits", direction] as const,
+    creditsExpiring: (accountId: string) =>
+      ["console", "quota", "account", accountId, "credits-expiring"] as const,
   },
   studio: {
     sessions: ["console", "studio", "sessions"] as const,

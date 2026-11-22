@@ -645,3 +645,50 @@ export function useTriggerAutoClawCheckin(accountId: string) {
     },
   });
 }
+
+/** One expiry-day bucket of the account's point ledger. */
+export interface AutoClawExpiringBucket {
+  readonly expiresOn: string;
+  readonly expiresAt: number;
+  readonly points: number;
+  readonly entries: readonly {
+    readonly id: string;
+    readonly amount: number;
+    readonly description: string;
+    readonly occurredAt: string;
+    readonly walletScope: string | null;
+    readonly direction: "credit" | "debit";
+    readonly walletExpiresAt: number | null;
+  }[];
+}
+
+/** The account's lapsed and soon-to-lapse point grants. */
+export interface AutoClawExpirySummary {
+  readonly ok: boolean;
+  readonly expired: readonly AutoClawExpiringBucket[];
+  readonly expiringSoon: readonly AutoClawExpiringBucket[];
+  readonly expiredPoints: number;
+  readonly expiringSoonPoints: number;
+  readonly error?: string;
+}
+
+/**
+ * Reads the account's point-expiry summary: grants the vendor already lapsed,
+ * plus the ones lapsing within the next week.
+ *
+ * `enabled` gates it like the history read — the route is per account and the
+ * dialog is the only consumer, so the summary fetches when the operator asks.
+ */
+export function useAutoClawExpiry(accountId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.quota.creditsExpiring(accountId),
+    queryFn: (context) =>
+      consoleRequest<AutoClawExpirySummary>(
+        `/accounts/${encodeURIComponent(accountId)}/credits/expiring?withinDays=7`,
+        { signal: querySignal(context) },
+      ),
+    enabled: Boolean(accountId) && enabled,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
