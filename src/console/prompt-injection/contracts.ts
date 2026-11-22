@@ -25,7 +25,7 @@ import {
 export type { PromptInjectionInput };
 
 export const PROMPT_INJECTION_MODES = ["prompt", "script"] as const;
-export const PROMPT_INJECTION_PRESETS = ["custom", "assistant", "uncensored"] as const;
+export const PROMPT_INJECTION_PRESETS = ["custom", "assistant", "uncensored", "lian"] as const;
 export const PROMPT_INJECTION_POSITIONS = ["prepend", "append"] as const;
 
 /** Exclusion lists are bounded so one save cannot grow unbounded. */
@@ -165,7 +165,7 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
   }
   const preset = record["preset"] ?? "custom";
   if (!PROMPT_INJECTION_PRESETS.includes(preset as PromptInjectionPreset)) {
-    invalid("preset must be custom, assistant, or uncensored");
+    invalid("preset must be custom, assistant, uncensored, or lian");
   }
   const position = record["position"] ?? "append";
   if (!PROMPT_INJECTION_POSITIONS.includes(position as PromptInjectionPosition)) {

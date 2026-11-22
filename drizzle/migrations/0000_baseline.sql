@@ -499,7 +499,7 @@ CREATE TABLE "prompt_injections" (
   "updated_at" timestamptz NOT NULL DEFAULT NOW(),
   CONSTRAINT "prompt_injections_scope_check" CHECK ("scope" in ('global', 'key', 'model')),
   CONSTRAINT "prompt_injections_mode_check" CHECK ("mode" in ('prompt', 'script')),
-  CONSTRAINT "prompt_injections_preset_check" CHECK ("preset" in ('custom', 'assistant', 'uncensored')),
+  CONSTRAINT "prompt_injections_preset_check" CHECK ("preset" in ('custom', 'assistant', 'uncensored', 'lian')),
   CONSTRAINT "prompt_injections_position_check" CHECK ("position" in ('prepend', 'append'))
 );
 --> statement-breakpoint

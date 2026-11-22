@@ -167,7 +167,7 @@ export type {
 // authority and `prompt-injection` parity stays structural because the page
 // only reads and writes these shapes.
 export type PromptInjectionMode = "prompt" | "script";
-export type PromptInjectionPreset = "custom" | "assistant" | "uncensored";
+export type PromptInjectionPreset = "custom" | "assistant" | "uncensored" | "lian";
 export type PromptInjectionPosition = "prepend" | "append";
 
 export interface PromptInjectionTurn {

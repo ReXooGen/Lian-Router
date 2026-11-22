@@ -33,6 +33,7 @@ import {
   useSavePromptInjection,
   type SavePromptInjectionRequest,
 } from "../lib/hooks/prompt-injection";
+import { LIAN_PERSONA_CONTENT } from "../lib/personas/lian-persona";
 import { toast } from "../lib/toast";
 import {
   deleteInjectionTemplate,
@@ -83,7 +84,7 @@ const EMPTY_DRAFT: PromptInjectionInput = {
  * editor produces a working entry instead of a copy the operator must repair.
  */
 const PRESET_SEEDS: Readonly<
-  Record<"assistant" | "uncensored", Pick<PromptInjectionInput, "mode" | "position" | "content" | "turns">>
+  Record<"assistant" | "uncensored" | "lian", Pick<PromptInjectionInput, "mode" | "position" | "content" | "turns">>
 > = {
   assistant: {
     mode: "prompt",
@@ -119,6 +120,12 @@ const PRESET_SEEDS: Readonly<
       },
     ],
   },
+  lian: {
+    mode: "prompt",
+    position: "prepend",
+    content: LIAN_PERSONA_CONTENT,
+    turns: [],
+  },
 };
 
 const MODE_OPTIONS = [
@@ -130,6 +137,7 @@ const PRESET_OPTIONS = [
   { value: "custom", label: "Custom" },
   { value: "assistant", label: "Assistant" },
   { value: "uncensored", label: "Uncensored" },
+  { value: "lian", label: "Lian (operator persona)" },
 ];
 
 const POSITION_OPTIONS = [

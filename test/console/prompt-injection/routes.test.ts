@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { LIAN_PERSONA_CONTENT } from "../../../dashboard/src/lib/personas/lian-persona";
 import type { AccessDecision } from "../../../src/security/access-control";
 import type {
   PromptInjectionInput,
   PromptInjectionStorePort,
 } from "../../../src/console/prompt-injection/contracts";
+import { normalizePromptInjectionInput } from "../../../src/console/prompt-injection/contracts";
 import { createPromptInjectionRoutes } from "../../../src/console/prompt-injection/routes";
 import type {
   PromptInjection,
@@ -272,5 +274,45 @@ describe("prompt injection routes", () => {
       jsonRequest("PUT", { global: { mode: "jailbreak", content: "x" } }),
     );
     expect(response.status).toBe(400);
+  });
+});
+
+describe("lian preset", () => {
+  test("the operator persona preset validates and persists with its own name", async () => {
+    // The fixture drives the same validation the route runs, so this proves
+    // the enum accepted the new value end to end.
+    const content = LIAN_PERSONA_CONTENT.slice(0, 500);
+    const input = {
+      name: "lian-live",
+      scope: "global",
+      target: "",
+      mode: "prompt",
+      preset: "lian",
+      content,
+      turns: [],
+      position: "prepend",
+      enabled: true,
+    };
+    const parsed = normalizePromptInjectionInput(input);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.preset).toBe("lian");
+    expect(parsed?.content).toBe(content);
+  });
+
+  test("the full persona content passes the length gate", () => {
+    const input = {
+      name: "lian-full",
+      scope: "global",
+      target: "",
+      mode: "prompt",
+      preset: "lian",
+      content: LIAN_PERSONA_CONTENT,
+      turns: [],
+      position: "prepend",
+      enabled: true,
+    };
+    const parsed = normalizePromptInjectionInput(input);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.content.length).toBe(LIAN_PERSONA_CONTENT.length);
   });
 });

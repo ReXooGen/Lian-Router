@@ -951,7 +951,7 @@ export const studioSessions = pgTable(
  */
 export type PromptInjectionScope = "global" | "key" | "model";
 export type PromptInjectionMode = "prompt" | "script";
-export type PromptInjectionPreset = "custom" | "assistant" | "uncensored";
+export type PromptInjectionPreset = "custom" | "assistant" | "uncensored" | "lian";
 export type PromptInjectionPosition = "prepend" | "append";
 
 export interface PromptInjectionTurn {
