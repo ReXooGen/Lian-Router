@@ -34,6 +34,12 @@ import {
   type SavePromptInjectionRequest,
 } from "../lib/hooks/prompt-injection";
 import { toast } from "../lib/toast";
+import {
+  deleteInjectionTemplate,
+  listInjectionTemplates,
+  saveInjectionTemplate,
+  type InjectionTemplate,
+} from "../lib/injection-templates";
 
 /**
  * Prompt Injection.
@@ -767,6 +773,12 @@ export default function PromptInjection(): ReactNode {
   const [settingsKeyIds, setSettingsKeyIds] = useState<readonly string[]>([]);
   const [ipDraft, setIpDraft] = useState("");
   const [loadedKey, setLoadedKey] = useState("");
+  // Operator-owned template library: named drafts saved in this browser.
+  const [templates, setTemplates] = useState<readonly InjectionTemplate[]>(() =>
+    listInjectionTemplates(),
+  );
+  const [templatePick, setTemplatePick] = useState("");
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
   const [previewLoadedKey, setPreviewLoadedKey] = useState("");
   const [shareChildId, setShareChildId] = useState("");
 
@@ -1368,6 +1380,55 @@ export default function PromptInjection(): ReactNode {
     }));
   };
 
+  /** Loads one operator template into the draft (substance only; scoping stays). */
+  const applyTemplate = (id: string): void => {
+    setTemplatePick(id);
+    const template = templates.find((t) => t.id === id);
+    if (template === undefined) return;
+    setDraft((current) => ({
+      ...current,
+      preset: "custom",
+      mode: template.mode,
+      position: template.position,
+      content: template.content,
+      turns: [...template.turns],
+    }));
+    setTemplateNotice(`Template "${template.name}" loaded — review the scope and name before saving.`);
+  };
+
+  /** Saves the current draft substance as a named, reusable template. */
+  const handleSaveTemplate = (): void => {
+    if (draft.content.trim().length === 0 && draft.turns.length === 0) {
+      toast.error("Nothing to save", "Write the injection text first.");
+      return;
+    }
+    const name = draft.name.trim() || saveName.trim();
+    const template = saveInjectionTemplate({
+      name: name.length > 0 ? name : `${draft.mode === "prompt" ? "Prompt" : "Script"} template`,
+      mode: draft.mode,
+      position: draft.position,
+      content: draft.content,
+      turns: draft.turns,
+    });
+    setTemplates(listInjectionTemplates());
+    setTemplatePick(template.id);
+    setTemplateNotice(`Template "${template.name}" saved in this browser.`);
+    toast.success("Template saved", template.name);
+  };
+
+  const handleDeleteTemplate = (id: string): void => {
+    const removed = templates.find((t) => t.id === id);
+    deleteInjectionTemplate(id);
+    setTemplates(listInjectionTemplates());
+    if (templatePick === id) setTemplatePick("");
+    if (removed !== undefined) toast.success("Template deleted", removed.name);
+  };
+
+  const templateOptions = [
+    { value: "", label: templates.length === 0 ? "No templates saved yet" : "Choose a template…" },
+    ...templates.map((t) => ({ value: t.id, label: `${t.name} (${t.mode})` })),
+  ];
+
   const updateTurn = (index: number, patch: Partial<PromptInjectionTurn>): void => {
     setDraft((current) => ({
       ...current,
@@ -1654,6 +1715,49 @@ export default function PromptInjection(): ReactNode {
                   />
                 </div>
               </Inline>
+
+              <Inline gap="8px" wrap align="flex-end">
+                <div style={{ minWidth: "240px", flex: "2 1 240px" }}>
+                  <SearchableSelect
+                    label="My templates"
+                    value={templatePick}
+                    onValueChange={(value) => {
+                      if (value.length > 0) applyTemplate(value);
+                      else setTemplatePick("");
+                    }}
+                    options={templateOptions}
+                    placeholder="Choose a template…"
+                    searchPlaceholder="Search templates…"
+                    emptyMessage="No templates match"
+                  />
+                </div>
+                <div style={{ paddingBottom: "8px", display: "flex", gap: "6px" }}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={draft.content.trim().length === 0 && draft.turns.length === 0}
+                    onClick={handleSaveTemplate}
+                    title="Save the current text/turns as a named template in this browser"
+                  >
+                    Save as template
+                  </Button>
+                  {templatePick.length > 0 ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDeleteTemplate(templatePick)}
+                      title="Delete the selected template from this browser"
+                    >
+                      Delete
+                    </Button>
+                  ) : null}
+                </div>
+              </Inline>
+              {templateNotice !== null ? (
+                <p role="status" style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                  {templateNotice}
+                </p>
+              ) : null}
 
               {draft.preset === "custom" ? (
                 <SearchableSelect
