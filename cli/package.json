@@ -1,6 +1,6 @@
 {
   "name": "lianrouter",
-  "version": "2.4.5",
+  "version": "2.4.6",
   "description": "LianRouter launcher: install, run and control the gateway from one command",
   "type": "module",
   "bin": {
