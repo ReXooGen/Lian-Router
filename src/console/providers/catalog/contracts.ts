@@ -657,6 +657,7 @@ export interface ProviderCatalogStore {
     providerId: string,
     modelIds: readonly string[],
     wireFamily?: string,
+    limits?: { readonly contextLimit?: number; readonly outputLimit?: number },
   ): Promise<void>;
   syncModels(tenantId: string, providerId: string): Promise<{ synced: number }>;
   listAccounts(tenantId: string, providerId: string): Promise<readonly ProviderAccountResponse[]>;

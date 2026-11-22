@@ -99,16 +99,23 @@ describe("resolveManualModelMetadata", () => {
     expect(meta.webSearch).toBe(false);
   });
 
-  test("leaves limits null rather than borrowing another provider's", () => {
-    // `hy4-preview` is recorded under ~20 providers with three different
-    // context limits. A bare lookup cannot say which is this model's, so the
-    // manual-add path reports null and the console shows its own default —
-    // never a stranger's number.
+  test("hy4 family falls to the family table when the bare lookup is ambiguous", () => {
+    // `hy4-preview` is recorded under ~20 providers whose signatures disagree
+    // only in snapshot rounding (1024000 / 1048576 / 1000000 ctx, 64K out) —
+    // the bare lookup cannot pick one, so it yields undefined and the manual
+    // add falls to the family table. Every vendor filing agrees on 1M-class
+    // context and 64K output, so the family answer is a vendor-consensus
+    // number, not a stranger's.
     const meta = resolveManualModelMetadata("cb", "hy4-preview");
-    expect(meta.contextLimit).toBeNull();
-    expect(meta.outputLimit).toBeNull();
+    expect(meta.contextLimit).toBe(1_048_576);
+    expect(meta.outputLimit).toBe(64_000);
     // Capability is still declared up front, independent of the lookup.
     expect(meta.toolCall).toBe(true);
     expect(meta.reasoning).toBe(true);
+    // An id the catalog AND the family table both miss still stays null:
+    // a wrong guess must never fill the columns.
+    const stranger = resolveManualModelMetadata("cb", "never-heard-of-this-one");
+    expect(stranger.contextLimit).toBeNull();
+    expect(stranger.outputLimit).toBeNull();
   });
 });

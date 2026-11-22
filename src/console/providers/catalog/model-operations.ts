@@ -141,11 +141,18 @@ export function createModelCatalogOperations(config: ProviderCatalogConfig) {
         providerId: string,
         modelIds: readonly string[],
         wireFamily?: string,
+        limits?: { readonly contextLimit?: number; readonly outputLimit?: number },
       ): Promise<{ registered: number }> {
         const a = requireTenantAnyScope(access, MODEL_WRITE_SCOPES);
         if (modelIds.length === 0)
           throw new ConsoleDomainError("invalid_request", 400, "modelIds must be non-empty");
-        await config.store.registerModels(a.tenantId, providerId, modelIds, wireFamily);
+        await config.store.registerModels(
+          a.tenantId,
+          providerId,
+          modelIds,
+          wireFamily,
+          limits,
+        );
         await config.auditSink?.record({
           access: a,
           action: "provider.models.registered",

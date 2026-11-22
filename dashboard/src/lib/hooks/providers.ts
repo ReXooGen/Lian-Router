@@ -59,14 +59,25 @@ export function useRegisterProviderModels() {
   return useMutation<
     { registered: number },
     ApiErrorShape,
-    { providerId: string; modelIds: readonly string[]; wireFamily?: string }
+    {
+      providerId: string;
+      modelIds: readonly string[];
+      wireFamily?: string;
+      contextLimit?: number;
+      outputLimit?: number;
+    }
   >({
-    mutationFn: ({ providerId, modelIds, wireFamily }) =>
+    mutationFn: ({ providerId, modelIds, wireFamily, contextLimit, outputLimit }) =>
       consoleRequest<{ registered: number }>(
         `/providers/${encodeURIComponent(providerId)}/models`,
         {
           method: "POST",
-          body: JSON.stringify({ modelIds, ...(wireFamily ? { wireFamily } : {}) }),
+          body: JSON.stringify({
+            modelIds,
+            ...(wireFamily ? { wireFamily } : {}),
+            ...(contextLimit !== undefined ? { contextLimit } : {}),
+            ...(outputLimit !== undefined ? { outputLimit } : {}),
+          }),
         },
       ),
     onSuccess: async (_result, variables) => {

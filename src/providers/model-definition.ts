@@ -170,6 +170,37 @@ export interface ManualModelMetadata {
 }
 
 /**
+ * Family fallbacks for model ids the base catalog does not know. Vendors ship
+ * new model ids faster than the models.dev snapshot refreshes — a manually
+ * registered id that only exists upstream would otherwise land with `n/a ctx •
+ * n/a out`. Matched by prefix, longest first; `null` means "unknown, leave the
+ * column null" so a wrong guess never overwrites a real vendor answer.
+ */
+const MANUAL_MODEL_FAMILY_FALLBACKS: readonly {
+  readonly prefix: string;
+  readonly contextLimit: number;
+  readonly outputLimit: number | null;
+}[] = [
+  // Hunyuan Hy4 family: the vendor's own product.json and live gateway
+  // answers (measured 2026-11-22/23) agree on 1M-class contexts and 64K out.
+  { prefix: "hy4-flash", contextLimit: 1_048_576, outputLimit: 64_000 },
+  { prefix: "hy4-preview", contextLimit: 1_048_576, outputLimit: 64_000 },
+  { prefix: "hy4", contextLimit: 1_048_576, outputLimit: 64_000 },
+  { prefix: "hy3", contextLimit: 192_000, outputLimit: 64_000 },
+];
+
+function familyFallbackFor(modelId: string): { contextLimit: number; outputLimit: number | null } | undefined {
+  const bare = modelId.trim().toLowerCase();
+  const stripped = bare.includes(":") ? bare.slice(0, bare.indexOf(":")) : bare;
+  for (const family of MANUAL_MODEL_FAMILY_FALLBACKS) {
+    if (stripped === family.prefix || stripped.startsWith(`${family.prefix}-`) || stripped.startsWith(`${family.prefix}_`)) {
+      return { contextLimit: family.contextLimit, outputLimit: family.outputLimit };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Resolves capability metadata for a manually registered model id.
  *
  * A manual add performs no upstream probe and has no static catalog row. Its
@@ -179,17 +210,19 @@ export interface ManualModelMetadata {
  * and silently strips `tools` from the request, so a manually added model
  * would appear unable to call tools at all. The prebuilt base catalog still
  * supplies the non-capability facts (context/output limits, cost) when it
- * knows the id.
+ * knows the id; unknown ids fall to the family table, and only ids neither
+ * knows stay null.
  */
 export function resolveManualModelMetadata(
   providerId: string,
   modelId: string,
 ): ManualModelMetadata {
   const meta = modelsDevCatalog.resolve(providerId, modelId);
+  const fallback = meta === undefined ? familyFallbackFor(modelId) : undefined;
   const catalogInput = meta?.modalities.input ?? [];
   return {
-    contextLimit: meta?.contextLimit ?? null,
-    outputLimit: meta?.outputLimit ?? null,
+    contextLimit: meta?.contextLimit ?? fallback?.contextLimit ?? null,
+    outputLimit: meta?.outputLimit ?? fallback?.outputLimit ?? null,
     modalities: {
       input: ["text", "image", ...catalogInput.filter((m) => m !== "text" && m !== "image")],
       output: meta?.modalities.output ?? ["text"],

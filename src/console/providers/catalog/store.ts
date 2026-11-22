@@ -359,6 +359,7 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     providerId: string,
     modelIds: readonly string[],
     wireFamily?: string,
+    limits?: { readonly contextLimit?: number; readonly outputLimit?: number },
   ): Promise<void> {
     const owner = await this.db
       .select({
@@ -392,21 +393,28 @@ export class DrizzleProviderCatalogStore implements ProviderCatalogStore {
     // (and `reasoning`) was seeded false — a manual add previously persisted
     // schema defaults, which capability preflight reads as "route cannot use
     // tools" and silently strips `tools` from every request. `enabled` stays
-    // operator-owned; `source` is refreshed to `manual`.
+    // operator-owned; `source` is refreshed to `manual`. Operator-supplied
+    // limits win over the resolver's answers: the vendor's own panel is the
+    // better source for an id no snapshot knows.
+    const resolved = modelIds.map((modelId) => ({
+      providerId,
+      modelId,
+      wireFamily: family,
+      endpointPath,
+      ...resolveManualModelMetadata(providerId, modelId),
+      source: "manual",
+      sourceUpdatedAt: new Date(),
+      enabled: true,
+    }));
+    if (limits?.contextLimit !== undefined || limits?.outputLimit !== undefined) {
+      for (const row of resolved) {
+        if (limits.contextLimit !== undefined) row.contextLimit = limits.contextLimit;
+        if (limits.outputLimit !== undefined) row.outputLimit = limits.outputLimit;
+      }
+    }
     await this.db
       .insert(models)
-      .values(
-        modelIds.map((modelId) => ({
-          providerId,
-          modelId,
-          wireFamily: family,
-          endpointPath,
-          ...resolveManualModelMetadata(providerId, modelId),
-          source: "manual",
-          sourceUpdatedAt: new Date(),
-          enabled: true,
-        })),
-      )
+      .values(resolved)
       .onConflictDoUpdate({
         target: [models.providerId, models.modelId, models.endpointPath],
         set: {

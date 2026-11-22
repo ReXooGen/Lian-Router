@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { activeProviderPromotions } from "../../src/providers/provider-metadata";
+import { resolveManualModelMetadata } from "../../src/providers/model-definition";
 import {
   boundedUpstreamArray,
   boundedUpstreamNumber,
@@ -109,5 +110,26 @@ describe("provider promotions", () => {
       activeProviderPromotions("workbuddy", new Date("2026-12-01T00:00:00Z")),
     ).toEqual([]);
     expect(activeProviderPromotions("openai", new Date("2026-11-22T00:00:00Z"))).toEqual([]);
+  });
+});
+
+describe("manual model metadata fallbacks", () => {
+  test("hy4-family ids unknown to the snapshot resolve from the family table", () => {
+    const flash = resolveManualModelMetadata("cent", "hy4-flash:free");
+    expect(flash.contextLimit).toBe(1_048_576);
+    expect(flash.outputLimit).toBe(64_000);
+    const preview = resolveManualModelMetadata("anywhere", "hy4-preview-v2");
+    expect(preview.contextLimit).toBe(1_048_576);
+    expect(preview.outputLimit).toBe(64_000);
+    const hy3 = resolveManualModelMetadata("x", "hy3");
+    expect(hy3.contextLimit).toBe(192_000);
+    expect(hy3.outputLimit).toBe(64_000);
+    // Unknown ids stay null — a wrong guess must never fill the columns.
+    const unknown = resolveManualModelMetadata("x", "totally-unrelated-model");
+    expect(unknown.contextLimit).toBeNull();
+    expect(unknown.outputLimit).toBeNull();
+    // Known snapshot ids still win over the fallback.
+    const known = resolveManualModelMetadata("openai", "gpt-5.4");
+    expect(known.contextLimit).not.toBeNull();
   });
 });

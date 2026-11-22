@@ -90,6 +90,13 @@ export function AddModelModal({
   const [wireFamily, setWireFamily] = useState(
     lockedWire ?? preferredWire ?? "chat",
   );
+  // Optional operator-supplied limits: the vendor's own panel is the better
+  // source for an id the offline snapshot does not know, and empty fields keep
+  // the resolver's answers (family fallback first, null last).
+  const [contextLimitInput, setContextLimitInput] = useState("");
+  const [outputLimitInput, setOutputLimitInput] = useState("");
+  const parsedContextLimit = Number(contextLimitInput.trim());
+  const parsedOutputLimit = Number(outputLimitInput.trim());
   const [testState, setTestState] = useState<"idle" | "testing" | "passed" | "failed">("idle");
   const [testError, setTestError] = useState("");
 
@@ -129,7 +136,17 @@ export function AddModelModal({
   const handleAdd = () => {
     if (!normalized) return;
     register.mutate(
-      { providerId, modelIds: [normalized], wireFamily },
+      {
+        providerId,
+        modelIds: [normalized],
+        wireFamily,
+        ...(contextLimitInput.trim().length > 0 && Number.isFinite(parsedContextLimit)
+          ? { contextLimit: parsedContextLimit }
+          : {}),
+        ...(outputLimitInput.trim().length > 0 && Number.isFinite(parsedOutputLimit)
+          ? { outputLimit: parsedOutputLimit }
+          : {}),
+      },
       {
         onSuccess: () => {
           toast.success("Custom model added", `Sent to ${providerId}/${normalized}`);
@@ -201,6 +218,26 @@ export function AddModelModal({
             )}
           />
         ) : null}
+        <Inline gap="8px">
+          <Input
+            label="Context limit (optional)"
+            id="add-model-context-limit"
+            placeholder="e.g. 1048576"
+            value={contextLimitInput}
+            onChange={(event) => setContextLimitInput(event.target.value.replace(/[^\d]/g, ""))}
+            inputMode="numeric"
+            style={{ flex: 1 }}
+          />
+          <Input
+            label="Output limit (optional)"
+            id="add-model-output-limit"
+            placeholder="e.g. 65536"
+            value={outputLimitInput}
+            onChange={(event) => setOutputLimitInput(event.target.value.replace(/[^\d]/g, ""))}
+            inputMode="numeric"
+            style={{ flex: 1 }}
+          />
+        </Inline>
         {testState === "passed" && (
           <div
             style={{

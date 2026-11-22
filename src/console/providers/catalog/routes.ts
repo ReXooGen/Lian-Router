@@ -107,6 +107,8 @@ const updateAccountBody = t.Object({
 const registerModelsBody = t.Object({
   modelIds: t.Array(t.String()),
   wireFamily: t.Optional(t.String()),
+  contextLimit: t.Optional(t.Number()),
+  outputLimit: t.Optional(t.Number()),
 });
 const probeModelBody = t.Object({
   modelId: t.String(),
@@ -205,12 +207,21 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
       "/:providerId/models",
       { body: registerModelsBody },
       async ({ request, params, body }) => {
-        const b = body as { modelIds: readonly string[]; wireFamily?: string };
+        const b = body as {
+          modelIds: readonly string[];
+          wireFamily?: string;
+          contextLimit?: number;
+          outputLimit?: number;
+        };
         return await modelFactory.registerModels(
           config.accessResolver(request),
           params.providerId,
           b.modelIds,
           b.wireFamily,
+          {
+            ...(b.contextLimit !== undefined ? { contextLimit: b.contextLimit } : {}),
+            ...(b.outputLimit !== undefined ? { outputLimit: b.outputLimit } : {}),
+          },
         );
 },
     )
