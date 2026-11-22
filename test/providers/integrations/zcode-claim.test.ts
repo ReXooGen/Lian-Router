@@ -263,15 +263,17 @@ describe("claimZcodePlan", () => {
     expect(seen).toHaveLength(2);
     // Pinned to the literal, not to the constant: the version is the vendor's
     // gate, so a test that compares the constant to itself would pass no matter
-    // which value the constant held. 3.16.3 is the value measured to be refused.
+    // which value the constant held. 3.17.2 is measured refused on 2026-11-20
+    // (deliveries: 0) where 3.18.2 — the installed desktop client — carried
+    // the weekend campaign.
     for (const headers of seen) {
-      expect(headers["x-zcode-app-version"]).toBe("3.17.2");
-      expect(headers["user-agent"]).toBe("ZCode/3.17.2");
+      expect(headers["x-zcode-app-version"]).toBe("3.18.2");
+      expect(headers["user-agent"]).toBe("ZCode/3.18.2");
     }
     // The campaign identity must stay ahead of the inference identity, because
     // the inference lane is locked to a captured system prompt and cannot be
     // raised to satisfy the campaign gate.
-    expect(ZCODE_CAMPAIGN_APP_VERSION).toBe("3.17.2");
+    expect(ZCODE_CAMPAIGN_APP_VERSION).toBe("3.18.2");
     expect(ZCODE_CAMPAIGN_APP_VERSION).not.toBe(ZCODE_APP_VERSION);
   });
 

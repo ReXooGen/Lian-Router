@@ -329,11 +329,13 @@ export const PROVIDER_PROMOTIONS: Record<string, readonly ProviderPromotion[]> =
   workbuddy: [
     {
       label: "Free now",
-      // The WorkBuddy client config marks both of these at x0.00 credits;
-      // Step-5-Preview is server-listed only and has no catalog row here.
-      modelIds: ["deepseek-v4.1-flash", "hy3"],
-      startsAt: "2026-09-11",
-      endsAt: "2026-10-31",
+      // The desktop picker marks this at x0.00 credits with the vendor's own
+      // copy: "Nov 16-30: Receive a daily free allowance" (measured off the
+      // running client, 2026-11-22). The previous window (deepseek-v4.1-flash
+      // + hy3, Sep 11 - Oct 31) lapsed and was replaced by this one.
+      modelIds: ["hy4-flash"],
+      startsAt: "2026-11-16",
+      endsAt: "2026-11-30",
     },
   ],
 };

@@ -102,12 +102,12 @@ describe("validateUpstreamBaseUrl", () => {
 
 describe("provider promotions", () => {
   test("the WorkBuddy free window is active inside it and gone afterwards", () => {
-    const active = activeProviderPromotions("workbuddy", new Date("2026-10-22T00:00:00Z"));
+    const active = activeProviderPromotions("workbuddy", new Date("2026-11-22T00:00:00Z"));
     expect(active.map((p) => p.label)).toEqual(["Free now"]);
-    expect(active[0]?.modelIds).toEqual(["deepseek-v4.1-flash", "hy3"]);
+    expect(active[0]?.modelIds).toEqual(["hy4-flash"]);
     expect(
-      activeProviderPromotions("workbuddy", new Date("2026-11-01T00:00:00Z")),
+      activeProviderPromotions("workbuddy", new Date("2026-12-01T00:00:00Z")),
     ).toEqual([]);
-    expect(activeProviderPromotions("openai", new Date("2026-10-22T00:00:00Z"))).toEqual([]);
+    expect(activeProviderPromotions("openai", new Date("2026-11-22T00:00:00Z"))).toEqual([]);
   });
 });

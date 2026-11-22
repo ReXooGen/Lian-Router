@@ -137,6 +137,11 @@ const WORKBUDDY_RAW: readonly BuddyRawEntry[] = [
   ["hy3", "Hy3", true, false, 192_000, 64_000],
   ["hy4-preview", "Hy4 Preview", true, false, 1_000_000, 64_000],
   ["hy4-preview-f", "Hy4 Preview F", true, false, 1_000_000, 64_000],
+  // The desktop picker's "Hy4 flash" — the free-window model. The client
+  // renders it at 0.00x consumption with a 960K effective context; the row
+  // keeps the family's 1M/64K shape and inherits the free-window promotion
+  // from `PROVIDER_PROMOTIONS` while the vendor's window is live.
+  ["hy4-flash", "Hy4 Flash", true, false, 1_000_000, 64_000],
   ["kimi-k2.5", "Kimi K2.5", true, false, 164_000, 262_144],
   ["kimi-k2.6", "Kimi K2.6", true, false, 256_000, 262_144],
   ["kimi-k2.7", "Kimi K2.7", true, false, 256_000, 65_536],
