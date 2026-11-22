@@ -195,13 +195,17 @@ function useSafeSystemHealth() {
  * The shell renders without a `QueryClient` in some embeds (and in the shell's
  * own markup tests). The brand badge reads the update status for the live
  * gateway version, so the read must degrade to `undefined` rather than throw
- * through the whole navigation tree. `poll: false` keeps the badge a one-shot
- * reader: the modal already owns the polling loop, and both share one cache
- * entry, so the badge updates whenever that loop refreshes it.
+ * through the whole navigation tree.
+ *
+ * The badge polls: the launcher publishes its release snapshot asynchronously
+ * after boot (`control.checkUpdate()` is deliberately unawaited), and a console
+ * opened before that snapshot lands would otherwise show a stale
+ * "current-only" badge until a manual reload. The modal shares this cache
+ * entry, so its own loop and the badge's agree on whatever is newest.
  */
-function useSafeUpdateStatus(): UpdateStatus | undefined {
+function useSafeUpdateStatus(options: { poll?: boolean } = {}): UpdateStatus | undefined {
   try {
-    return useUpdateStatus({ poll: false }).data;
+    return useUpdateStatus(options).data;
   } catch {
     return undefined;
   }
@@ -892,7 +896,7 @@ export function DashboardShell({
   const hasQueryClient = useHasQueryClient();
   // One owner for the update surface: the brand-header button opens it and the
   // modal closes it, so the two controls cannot disagree about visibility.
-  const updateStatus = useSafeUpdateStatus();
+  const updateStatus = useSafeUpdateStatus({ poll: true });
   const updateButton = hasQueryClient
     ? updateButtonState(updateStatus)
     : {
