@@ -114,17 +114,17 @@ export function workbuddyPrePayload(
 // declared reasoning-effort scale.
 const WORKBUDDY_RAW: readonly BuddyRawEntry[] = [
   ["auto", "Auto", true, true, 168_000, null],
-  ["default-model", "Default Model", true, false, 128_000, 64_000],
-  ["fast-model", "Fast Model", true, false, 128_000, 64_000],
-  ["balanced-model", "Balanced Model", true, false, 128_000, 64_000],
-  ["deep-model", "Deep Model", true, false, 128_000, 64_000],
+  ["default-model", "Default Model", true, true, 128_000, 64_000],
+  ["fast-model", "Fast Model", true, true, 128_000, 64_000],
+  ["balanced-model", "Balanced Model", true, true, 128_000, 64_000],
+  ["deep-model", "Deep Model", true, true, 128_000, 64_000],
   ["deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true, 1_000_000, 384_000],
-  ["deepseek-v4-pro", "DeepSeek V4 Pro", true, false, 1_000_000, 384_000],
-  ["deepseek-v4-flash", "DeepSeek V4 Flash", true, false, 1_000_000, 384_000],
-  ["glm-5.1", "GLM-5.1", true, false, 200_000, 131_072],
-  ["glm-5.2", "GLM-5.2", true, false, 1_000_000, 131_072],
-  ["glm-5.3", "GLM-5.3", true, false, 1_000_000, 131_072],
-  ["glm-5.3-flash", "GLM-5.3 Flash", true, false, 1_000_000, 131_072],
+  ["deepseek-v4-pro", "DeepSeek V4 Pro", true, true, 1_000_000, 384_000],
+  ["deepseek-v4-flash", "DeepSeek V4 Flash", true, true, 1_000_000, 384_000],
+  ["glm-5.1", "GLM-5.1", true, true, 200_000, 131_072],
+  ["glm-5.2", "GLM-5.2", true, true, 1_000_000, 131_072],
+  ["glm-5.3", "GLM-5.3", true, true, 1_000_000, 131_072],
+  ["glm-5.3-flash", "GLM-5.3 Flash", true, true, 1_000_000, 131_072],
   ["glm-5v-turbo", "GLM-5V Turbo", true, true, 200_000, 131_072],
   ["gpt-5.3-codex", "GPT-5.3 Codex", true, true, 400_000, 128_000],
   ["gpt-5.4", "GPT-5.4", true, true, 1_050_000, 128_000],
@@ -134,19 +134,19 @@ const WORKBUDDY_RAW: readonly BuddyRawEntry[] = [
   ["gpt-5.6-terra", "GPT-5.6 Terra", true, true, 1_050_000, 128_000],
   ["gpt-6-astra", "GPT-6 Astra", true, true, 1_050_000, 128_000],
   ["gemini-3.5-flash", "Gemini 3.5 Flash", true, true, 1_048_576, 65_536],
-  ["hy3", "Hy3", true, false, 192_000, 64_000],
-  ["hy4-preview", "Hy4 Preview", true, false, 1_000_000, 64_000],
-  ["hy4-preview-f", "Hy4 Preview F", true, false, 1_000_000, 64_000],
+  ["hy3", "Hy3", true, true, 192_000, 64_000],
+  ["hy4-preview", "Hy4 Preview", true, true, 1_000_000, 64_000],
+  ["hy4-preview-f", "Hy4 Preview F", true, true, 1_000_000, 64_000],
   // The desktop picker's "Hy4 flash" — the free-window model. The client
   // renders it at 0.00x consumption with a 960K effective context; the row
   // keeps the family's 1M/64K shape and inherits the free-window promotion
   // from `PROVIDER_PROMOTIONS` while the vendor's window is live.
-  ["hy4-flash", "Hy4 Flash", true, false, 1_000_000, 64_000],
-  ["kimi-k2.5", "Kimi K2.5", true, false, 164_000, 262_144],
-  ["kimi-k2.6", "Kimi K2.6", true, false, 256_000, 262_144],
-  ["kimi-k2.7", "Kimi K2.7", true, false, 256_000, 65_536],
-  ["kimi-k3", "Kimi K3", true, false, 1_048_576, 131_072],
-  ["minimax-m3", "MiniMax-M3", true, false, 512_000, 512_000],
+  ["hy4-flash", "Hy4 Flash", true, true, 1_000_000, 64_000],
+  ["kimi-k2.5", "Kimi K2.5", true, true, 164_000, 262_144],
+  ["kimi-k2.6", "Kimi K2.6", true, true, 256_000, 262_144],
+  ["kimi-k2.7", "Kimi K2.7", true, true, 256_000, 65_536],
+  ["kimi-k3", "Kimi K3", true, true, 1_048_576, 131_072],
+  ["minimax-m3", "MiniMax-M3", true, true, 512_000, 512_000],
 ];
 
 export const WORKBUDDY_MODELS = WORKBUDDY_RAW.map((entry) => makeBuddyModel(entry, "workbuddy", WORKBUDDY_CHAT_PATH));
