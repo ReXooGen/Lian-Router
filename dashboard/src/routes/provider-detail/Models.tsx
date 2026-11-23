@@ -30,7 +30,7 @@ import {
   useSetModelEnabled,
 } from "../../lib/hooks/providers";
 import { UNKNOWN_LIMITS_TOOLTIP } from "../../lib/model-limits";
-import { probeRowView, type ProbeRowResult } from "../../lib/probe-view";
+import { type ProbeRowResult } from "../../lib/probe-view";
 import { toast } from "../../lib/toast";
 import { useTrackedTimeout } from "../../lib/use-timeout";
 import type { ModelCatalogEntry } from "../../lib/contracts";
@@ -301,7 +301,6 @@ function ModelCard({
   const setEnabled = useSetModelEnabled();
   const [copied, setCopied] = useState(false);
   const [probeResult, setProbeResult] = useState<ProbeRowResult | null>(null);
-  const probeView = probeRowView(probeResult, probe.isPending);
   const scheduleCopyReset = useTrackedTimeout();
 
 
@@ -574,79 +573,10 @@ function ModelCard({
         </div>
 
         {/*
-          The probe's answer lands here, not in a toast: a toast is gone in four
-          seconds and the operator is reading a classified refusal he has to act
-          on. A listing gets the secondary control beside it because "run a real
-          dispatch" was advice with no button behind it.
+          The probe's answer lands in the button state (✓/latency), not in a
+          panel: the operator asked for the card to stay clean — a toast covers
+          the classified refusal, and the button keeps the re-test affordance.
         */}
-        {probeResult === null ? null : (
-          <div
-            style={{
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "flex-start",
-              gap: "8px",
-              minWidth: 0,
-              padding: "6px 8px",
-              borderRadius: "8px",
-              fontSize: "11px",
-              lineHeight: 1.45,
-              ...(probeView.tone === "bad"
-                ? {
-                    color: "var(--red)",
-                    background: "color-mix(in srgb, var(--red) 8%, transparent)",
-                  }
-                : probeView.tone === "ok"
-                  ? {
-                      color: "var(--green)",
-                      background: "color-mix(in srgb, var(--green) 8%, transparent)",
-                    }
-                  : { color: "var(--text-secondary)", background: "var(--surface-1)" }),
-            }}
-          >
-            <div
-              style={{
-                flex: "1 1 200px",
-                minWidth: 0,
-                display: "flex",
-                alignItems: "flex-start",
-                gap: "8px",
-              }}
-            >
-              <span
-                style={{ display: "inline-flex", flexShrink: 0, marginTop: "1px" }}
-                aria-hidden="true"
-              >
-                {probeView.tone === "bad" ? (
-                  <AlertTriangle size={12} />
-                ) : probeView.tone === "ok" ? (
-                  <CheckCircle2 size={12} />
-                ) : (
-                  <Check size={12} />
-                )}
-              </span>
-              <div
-                style={{
-                  flex: "1 1 auto",
-                  minWidth: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "2px",
-                }}
-              >
-                <span style={{ fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
-                  {model.modelId} · {probeView.headline}
-                  {probeView.allowanceNote === undefined ? null : ` · ${probeView.allowanceNote}`}
-                </span>
-                {probeView.detail === undefined ? null : (
-                  <span style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}>
-                    {probeView.detail}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Actions: single row, equal weights — delete is a quiet icon, not a full-width alarm */}
         <div style={{ display: "flex", gap: "6px" }}>

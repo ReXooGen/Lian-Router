@@ -24,7 +24,12 @@ export function Atmosphere(): ReactNode {
       delete root.dataset.glassEnabled;
       delete root.dataset.glassDepth;
     }
-  }, [settings.glassDepth, settings.glassEnabled]);
+    if (settings.contentWidth === "full") {
+      root.dataset.contentWidth = "full";
+    } else {
+      delete root.dataset.contentWidth;
+    }
+  }, [settings.contentWidth, settings.glassDepth, settings.glassEnabled]);
 
   // Only an operator-supplied asset is a background. `backgroundEnabled` with
   // no asset means the switch was left on from an earlier selection; painting

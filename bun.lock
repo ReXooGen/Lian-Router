@@ -30,14 +30,17 @@
     },
     "cli": {
       "name": "lianrouter",
-      "version": "2.3.3",
+      "version": "2.4.7",
       "bin": {
         "lianrouter": "dist/cli.js",
+      },
+      "dependencies": {
+        "embedded-postgres": "18.6.0-beta.19",
       },
     },
     "dashboard": {
       "name": "lianrouter-dashboard",
-      "version": "2.3.0",
+      "version": "2.4.7",
       "dependencies": {
         "@radix-ui/react-select": "^2.3.7",
         "@tanstack/react-query": "5.102.8",

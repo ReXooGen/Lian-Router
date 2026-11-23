@@ -958,6 +958,12 @@ html[data-glass-enabled="true"] .card-solid {
   box-sizing: border-box;
 }
 
+/* Full-width mode: the shell and its gutter padding stretch edge to edge
+   instead of centering inside the 1560px cap. Toggled from Customization. */
+html[data-content-width="full"] .app-shell-root {
+  max-width: none;
+}
+
 @media (max-width: 1024px) {
   .app-shell-root {
     grid-template-columns: minmax(0, 1fr);

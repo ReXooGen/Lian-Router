@@ -1,0 +1,231 @@
+diff --git a/dashboard/src/styles.css b/dashboard/src/styles.css
+index 2af9229..c85e08f 100644
+--- a/dashboard/src/styles.css
++++ b/dashboard/src/styles.css
+@@ -958,6 +958,12 @@ html[data-glass-enabled="true"] .card-solid {
+   box-sizing: border-box;
+ }
+ 
++/* Full-width mode: the shell and its gutter padding stretch edge to edge
++   instead of centering inside the 1560px cap. Toggled from Customization. */
++html[data-content-width="full"] .app-shell-root {
++  max-width: none;
++}
++
+ @media (max-width: 1024px) {
+   .app-shell-root {
+     grid-template-columns: minmax(0, 1fr);
+@@ -1090,6 +1096,86 @@ html[data-glass-enabled="true"] .card-solid {
+   margin-top: 1px;
+ }
+ 
++/* Badge and update control share one row under the brand name. `min-width: 0`
++ * plus the truncating button label keep the pair inside the collapsed drawer
++ * and the mobile rail instead of pushing "LianRouter" out of the header. */
++.brand-subline {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  min-width: 0;
++}
++
++/* The badge is short and must never wrap or shrink; the button yields first so
++ * the version stays readable in the narrow drawer. */
++.brand-version-badge {
++  flex: none;
++}
++
++/* The control only renders when it can act (see `updateButtonState().hidden`),
++ * so it has no neutral idle look: every rendered state is green. The green is
++ * mixed toward `--text-primary` because the raw token fails contrast as 10px
++ * text on the light sidebar — `#4c9368` on the composited glass surface
++ * (`#fefcf7`) is 3.6:1, while the 65/35 mix reaches 4.9:1 resting and 4.5:1 on
++ * the stronger available background. The hue is unchanged; only luminance
++ * moves, so both themes stay green rather than drifting to a different colour. */
++.brand-update-button {
++  display: inline-flex;
++  align-items: center;
++  gap: 3px;
++  min-width: 0;
++  padding: 1px 5px;
++  border-radius: 999px;
++  border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
++  background: color-mix(in srgb, var(--green) 14%, transparent);
++  color: color-mix(in srgb, var(--green) 65%, var(--text-primary));
++  font-size: 10px;
++  font-weight: 600;
++  line-height: 1.4;
++  transition: all var(--dur-micro) var(--ease-spring);
++}
++
++.brand-update-button:hover:not(:disabled) {
++  background: color-mix(in srgb, var(--green) 22%, transparent);
++  border-color: color-mix(in srgb, var(--green) 48%, transparent);
++}
++
++.brand-update-button:active:not(:disabled) {
++  transform: scale(0.94);
++}
++
++.brand-update-button:disabled {
++  opacity: 0.45;
++  cursor: not-allowed;
++}
++
++/* Accent tone is the only signal an update exists without opening the modal.
++ * Same green as the resting state, raised in weight — background and border
++ * get stronger, not a different hue. */
++.brand-update-button--available {
++  border-color: var(--green);
++  background: color-mix(in srgb, var(--green) 22%, transparent);
++}
++
++.brand-update-button--available:hover:not(:disabled) {
++  background: color-mix(in srgb, var(--green) 30%, transparent);
++}
++
++.brand-update-button-label {
++  min-width: 0;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.brand-update-dot {
++  width: 5px;
++  height: 5px;
++  border-radius: 999px;
++  background: var(--green);
++  flex: none;
++}
++
+ /* Navigation Groups */
+ .nav-group-section {
+   margin-top: 14px;
+@@ -1156,6 +1242,22 @@ html[data-glass-enabled="true"] .card-solid {
+   transform: scale(0.98);
+ }
+ 
++/* Nested Automation submenu (Growth Activity / Appeal) */
++.nav-subitems {
++  display: flex;
++  flex-direction: column;
++  gap: 1px;
++  margin: 1px 0 3px 0;
++  padding-left: 20px;
++}
++
++.nav-subitem {
++  padding: 5px 10px;
++  font-size: 12.5px;
++  font-weight: 500;
++  border-radius: 9px;
++}
++
+ /* Sidebar provider-quota mini rows */
+ .sidebar-quota-list {
+   display: flex;
+@@ -3063,69 +3165,6 @@ main > .state-viewport {
+   color: #ffffff;
+ }
+ 
+-/* Escape hatch to the public landing page. It is a sibling of the card, not a
+-   child: fixed, so the viewport grid keeps one in-flow item and `place-items:
+-   center` still owns the card's position. The colour ramp is the branded
+-   surface's own (`.auth-viewport--brand` is black in *both* console themes),
+-   so palette tokens such as `--text-secondary` or `--inner-border` would
+-   render a brown-grey or a near-black edge on black in one theme or the
+-   other. Structural tokens are shared. */
+-.auth-back {
+-  position: fixed;
+-  top: 18px;
+-  left: 18px;
+-  z-index: 2;
+-  display: inline-flex;
+-  align-items: center;
+-  gap: .4rem;
+-  height: 32px;
+-  padding: 0 .8rem;
+-  border: 1px solid rgba(255, 255, 255, .12);
+-  border-radius: var(--radius-pill);
+-  background: rgba(255, 255, 255, .04);
+-  color: rgba(226, 234, 250, .62);
+-  font: 500 11.5px/1 var(--font-sans);
+-  letter-spacing: .01em;
+-  text-decoration: none;
+-  transition: color var(--dur-micro) ease, border-color var(--dur-micro) ease,
+-    background-color var(--dur-micro) ease;
+-}
+-
+-.auth-back svg { flex: 0 0 auto; }
+-
+-.auth-back:hover {
+-  border-color: rgba(255, 255, 255, .28);
+-  background: rgba(255, 255, 255, .08);
+-  color: #f4f7ff;
+-}
+-
+-/* The global ring resolves to `--focus-ring`, which is dark ink in the light
+-   console theme and would disappear on this always-black surface. */
+-.auth-back:focus-visible {
+-  outline-color: #c2cad6;
+-}
+-
+-/* The card runs ~580px, and ~640px once the default-password hint or a login
+-   error is on screen. Below ~760px of viewport its centred top edge reaches the
+-   fixed link, so top-align it and reserve the link's strip instead of letting
+-   the two overlap. `:has` keeps the shared setup card, which also uses
+-   `--brand` but carries no link, exactly where it is. Only `align-items` is
+-   overridden, so `justify-items: center` from `place-items` still centres the
+-   card horizontally. */
+-@media (max-height: 760px) {
+-  .auth-viewport--brand:has(> .auth-back) {
+-    align-items: start;
+-    padding-top: 64px;
+-    /* `html`/`body`/`#root` clip overflow, so a top-aligned card taller than
+-       the viewport would lose its submit button. Let this one surface scroll. */
+-    overflow-y: auto;
+-  }
+-}
+-
+-@media (prefers-reduced-motion: reduce) {
+-  .auth-back { transition: none; }
+-}
+-
+ .auth-window--glass {
+   border: 1px solid rgba(255, 255, 255, .12);
+   background: rgba(255, 255, 255, .04);
+@@ -3631,10 +3670,6 @@ main > .state-viewport {
+   .share-event-card > header { flex-wrap: wrap; }
+ }
+ 
+-.share-event-prompt { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--inner-border); }
+-.share-event-prompt-label { display: block; margin-bottom: 6px; color: var(--text-tertiary); font-size: 10px; font-weight: 600; }
+-.share-event-prompt-text { max-height: 10.5em; overflow-y: auto; margin: 0; color: var(--text-primary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+-
+ .share-recipient-main { display: grid; gap: 12px; min-width: 0; padding: 14px; }
+ .share-recipient-identity { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+ .share-recipient-key { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--text-primary); font-size: 14px; font-weight: 700; text-align: left; cursor: pointer; }
+@@ -3789,22 +3824,3 @@ main > .state-viewport {
+   letter-spacing: .06em;
+   text-transform: none;
+ }
+-
+-/* Blocked-users console page: addresses refused shared access. */
+-.blocked-shell { display: grid; gap: 14px; }
+-.blocked-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+-.blocked-table th {
+-  text-align: left;
+-  padding: 8px 10px;
+-  color: var(--text-tertiary);
+-  font-size: 10.5px;
+-  font-weight: 600;
+-  text-transform: uppercase;
+-  letter-spacing: .04em;
+-  border-bottom: 1px solid var(--inner-border);
+-}
+-.blocked-table td { padding: 10px; border-bottom: 1px solid var(--inner-border); vertical-align: middle; }
+-.blocked-table tr:last-child td { border-bottom: none; }
+-.blocked-ip { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); }
+-.blocked-meta { color: var(--text-tertiary); font-size: 11px; }
+-.blocked-empty { padding: 28px 12px; text-align: center; color: var(--text-tertiary); font-size: 12.5px; }

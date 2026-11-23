@@ -1,0 +1,36 @@
+diff --git a/dashboard/src/lib/customization.ts b/dashboard/src/lib/customization.ts
+index 2386a24..bb674a9 100644
+--- a/dashboard/src/lib/customization.ts
++++ b/dashboard/src/lib/customization.ts
+@@ -8,6 +8,7 @@ import {
+ export type CustomAssetKind = "image" | "video";
+ export type ThemeChoice = "system" | "light" | "dark";
+ export type AmbientGlowChoice = "on" | "off";
++export type ContentWidthChoice = "fit" | "full";
+ 
+ export interface CustomAsset {
+   readonly kind: CustomAssetKind;
+@@ -24,6 +25,7 @@ export interface CustomizationSettings {
+   readonly backgroundBlur: number;
+   readonly glassEnabled: boolean;
+   readonly glassDepth: 1 | 2;
++  readonly contentWidth: ContentWidthChoice;
+ }
+ 
+ export interface BrandingSettings {
+@@ -52,6 +54,7 @@ const DEFAULTS: CustomizationSettings = {
+   backgroundBlur: 2,
+   glassEnabled: false,
+   glassDepth: 1,
++  contentWidth: "fit",
+ };
+ 
+ // Branding cache — populated by loadBranding() and updated on write.
+@@ -105,6 +108,7 @@ function parseSettings(value: unknown): CustomizationSettings | null {
+     backgroundBlur: clamp(obj.backgroundBlur, DEFAULTS.backgroundBlur, 0, 18),
+     glassEnabled: obj.glassEnabled === true,
+     glassDepth: obj.glassDepth === 2 ? 2 : 1,
++    contentWidth: obj.contentWidth === "full" ? "full" : "fit",
+   };
+ }
+ function applyDomAppearance(settings: CustomizationSettings): void {

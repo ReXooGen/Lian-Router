@@ -1,0 +1,693 @@
+diff --git a/dashboard/src/components/Atmosphere.tsx b/dashboard/src/components/Atmosphere.tsx
+index a4b1a7e..f770dfc 100644
+--- a/dashboard/src/components/Atmosphere.tsx
++++ b/dashboard/src/components/Atmosphere.tsx
+@@ -24,7 +24,12 @@ export function Atmosphere(): ReactNode {
+       delete root.dataset.glassEnabled;
+       delete root.dataset.glassDepth;
+     }
+-  }, [settings.glassDepth, settings.glassEnabled]);
++    if (settings.contentWidth === "full") {
++      root.dataset.contentWidth = "full";
++    } else {
++      delete root.dataset.contentWidth;
++    }
++  }, [settings.contentWidth, settings.glassDepth, settings.glassEnabled]);
+ 
+   // Only an operator-supplied asset is a background. `backgroundEnabled` with
+   // no asset means the switch was left on from an earlier selection; painting
+diff --git a/dashboard/src/lib/customization.ts b/dashboard/src/lib/customization.ts
+index 2386a24..bb674a9 100644
+--- a/dashboard/src/lib/customization.ts
++++ b/dashboard/src/lib/customization.ts
+@@ -8,6 +8,7 @@ import {
+ export type CustomAssetKind = "image" | "video";
+ export type ThemeChoice = "system" | "light" | "dark";
+ export type AmbientGlowChoice = "on" | "off";
++export type ContentWidthChoice = "fit" | "full";
+ 
+ export interface CustomAsset {
+   readonly kind: CustomAssetKind;
+@@ -24,6 +25,7 @@ export interface CustomizationSettings {
+   readonly backgroundBlur: number;
+   readonly glassEnabled: boolean;
+   readonly glassDepth: 1 | 2;
++  readonly contentWidth: ContentWidthChoice;
+ }
+ 
+ export interface BrandingSettings {
+@@ -52,6 +54,7 @@ const DEFAULTS: CustomizationSettings = {
+   backgroundBlur: 2,
+   glassEnabled: false,
+   glassDepth: 1,
++  contentWidth: "fit",
+ };
+ 
+ // Branding cache — populated by loadBranding() and updated on write.
+@@ -105,6 +108,7 @@ function parseSettings(value: unknown): CustomizationSettings | null {
+     backgroundBlur: clamp(obj.backgroundBlur, DEFAULTS.backgroundBlur, 0, 18),
+     glassEnabled: obj.glassEnabled === true,
+     glassDepth: obj.glassDepth === 2 ? 2 : 1,
++    contentWidth: obj.contentWidth === "full" ? "full" : "fit",
+   };
+ }
+ function applyDomAppearance(settings: CustomizationSettings): void {
+diff --git a/dashboard/src/lib/injection-templates.ts b/dashboard/src/lib/injection-templates.ts
+new file mode 100644
+index 0000000..2a7756d
+--- /dev/null
++++ b/dashboard/src/lib/injection-templates.ts
+@@ -0,0 +1,168 @@
++/**
++ * Operator-owned injection templates, stored in this browser's localStorage.
++ *
++ * A template is a named snapshot of one injection draft: mode, position, text,
++ * and any scripted turns. The server stays out of it on purpose — templates are
++ * personal starting points, not entries, and a saved entry already covers the
++ * "use this exact thing everywhere" case. Storage lives with the browser, so
++ * nothing sensitive is pushed to the gateway, and an operator who shares the
++ * dashboard URL does not share their template set.
++ *
++ * Shape matches `PromptInjectionInput` minus the identity/exclusion fields a
++ * template has no opinion about: loading one fills the editor's substance
++ * (mode/position/content/turns) and leaves scoping exactly where the operator
++ * set it.
++ */
++
++import { LIAN_PERSONA_CONTENT } from "./personas/lian-persona";
++
++export interface InjectionTemplate {
++  readonly id: string;
++  readonly name: string;
++  readonly mode: "prompt" | "script";
++  readonly position: "prepend" | "append";
++  readonly content: string;
++  readonly turns: readonly { readonly role: "user" | "assistant"; readonly content: string }[];
++  readonly createdAt: string;
++}
++
++/**
++ * The template every install ships with, before the operator saves anything.
++ *
++ * Shipped verbatim from the operator's validated "Lian" persona so a fresh
++ * install shows a working, loadable template in "My templates" instead of an
++ * empty list. A user who deletes it stays deleted: the seeded entry is added
++ * only when no template with this id exists yet.
++ */
++const BUILT_IN_TEMPLATES: readonly InjectionTemplate[] = [
++  {
++    id: "built-in-lian-persona",
++    name: "Lian (built-in persona)",
++    mode: "prompt",
++    position: "prepend",
++    content: LIAN_PERSONA_CONTENT,
++    turns: [],
++    createdAt: "2026-11-23T00:00:00.000Z",
++  },
++];
++
++const STORAGE_KEY = "lianrouter.injection-templates.v1";
++const MAX_TEMPLATES = 100;
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null;
++}
++
++function asTemplate(value: unknown): InjectionTemplate | null {
++  if (!isRecord(value)) return null;
++  const id = typeof value["id"] === "string" ? value["id"] : null;
++  const name = typeof value["name"] === "string" ? value["name"] : null;
++  const mode = value["mode"] === "prompt" || value["mode"] === "script" ? value["mode"] : null;
++  const position =
++    value["position"] === "prepend" || value["position"] === "append" ? value["position"] : null;
++  const content = typeof value["content"] === "string" ? value["content"] : null;
++  if (id === null || name === null || mode === null || position === null || content === null) {
++    return null;
++  }
++  const rawTurns = Array.isArray(value["turns"]) ? value["turns"] : [];
++  const turns = rawTurns.flatMap((turn) => {
++    if (!isRecord(turn)) return [];
++    const role = turn["role"] === "user" || turn["role"] === "assistant" ? turn["role"] : null;
++    const turnContent = typeof turn["content"] === "string" ? turn["content"] : null;
++    if (role === null || turnContent === null) return [];
++    return [{ role: role as "user" | "assistant", content: turnContent }];
++  });
++  const createdAt = typeof value["createdAt"] === "string" ? value["createdAt"] : "";
++  return { id, name, mode, position, content, turns, createdAt };
++}
++
++export function listInjectionTemplates(): readonly InjectionTemplate[] {
++  const builtIn = BUILT_IN_TEMPLATES.filter(
++    (builtIn) => !deletedBuiltInIds().has(builtIn.id),
++  );
++  const builtInIds = new Set(builtIn.map((t) => t.id));
++  try {
++    const raw = window.localStorage.getItem(STORAGE_KEY);
++    if (raw === null) return builtIn;
++    const parsed: unknown = JSON.parse(raw);
++    if (!Array.isArray(parsed)) return builtIn;
++    return [
++      ...builtIn,
++      ...parsed
++        .map(asTemplate)
++        .filter((t): t is InjectionTemplate => t !== null && !builtInIds.has(t.id)),
++    ]
++      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
++  } catch {
++    return builtIn;
++  }
++}
++
++/** Built-in template ids the operator has explicitly deleted, persisted per browser. */
++const DELETED_BUILT_IN_KEY = "lianrouter.injection-templates.deleted-built-in.v1";
++
++function deletedBuiltInIds(): Set<string> {
++  try {
++    const raw = window.localStorage.getItem(DELETED_BUILT_IN_KEY);
++    if (raw === null) return new Set();
++    const parsed: unknown = JSON.parse(raw);
++    if (!Array.isArray(parsed)) return new Set();
++    return new Set(parsed.filter((id): id is string => typeof id === "string"));
++  } catch {
++    return new Set();
++  }
++}
++
++function persist(templates: readonly InjectionTemplate[]): void {
++  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
++}
++
++/** Saves the current draft as a template; returns the stored template. */
++export function saveInjectionTemplate(
++  draft: {
++    readonly name: string;
++    readonly mode: "prompt" | "script";
++    readonly position: "prepend" | "append";
++    readonly content: string;
++    readonly turns: readonly { readonly role: "user" | "assistant"; readonly content: string }[];
++  },
++): InjectionTemplate {
++  const templates = listInjectionTemplates();
++  // Same name replaces: a template is a reusable shape, and two templates
++  // differing only in the timestamp are indistinguishable in the picker.
++  const existing = templates.find((t) => t.name === draft.name.trim());
++  const template: InjectionTemplate = {
++    id: existing?.id ?? crypto.randomUUID(),
++    name: draft.name.trim() || `Template ${new Date().toISOString().slice(0, 10)}`,
++    mode: draft.mode,
++    position: draft.position,
++    content: draft.content,
++    turns: draft.turns,
++    createdAt: new Date().toISOString(),
++  };
++  // A save whose name matches the built-in entry replaces it in storage with
++  // the operator's own copy, so the edited text wins from then on. The
++  // built-in constant is suppressed for this browser; the stored copy (same
++  // id) is what the list shows.
++  if (template.id === "built-in-lian-persona") {
++    const deleted = deletedBuiltInIds();
++    deleted.add(template.id);
++    window.localStorage.setItem(DELETED_BUILT_IN_KEY, JSON.stringify([...deleted]));
++  }
++  const next = [
++    template,
++    ...templates.filter((t) => t.id !== template.id && t.id !== "built-in-lian-persona"),
++  ].slice(0, MAX_TEMPLATES);
++  persist(next);
++  return template;
++}
++
++export function deleteInjectionTemplate(id: string): void {
++  if (BUILT_IN_TEMPLATES.some((t) => t.id === id)) {
++    const deleted = deletedBuiltInIds();
++    deleted.add(id);
++    window.localStorage.setItem(DELETED_BUILT_IN_KEY, JSON.stringify([...deleted]));
++    return;
++  }
++  persist(listInjectionTemplates().filter((t) => t.id !== id));
++}
+diff --git a/dashboard/src/routes/Customization.tsx b/dashboard/src/routes/Customization.tsx
+index 778dbf1..63a6ebc 100644
+--- a/dashboard/src/routes/Customization.tsx
++++ b/dashboard/src/routes/Customization.tsx
+@@ -4,6 +4,7 @@ import {
+   Palette,
+   RotateCcw,
+   Sparkles,
++  StretchHorizontal,
+   Sun,
+   Trash2,
+   Upload,
+@@ -620,6 +621,45 @@ export default function Customization(): ReactNode {
+             </Stack>
+           </CardBody>
+         </Card>
++        <Card className="grid-span-full">
++          <CardHeader
++            title="Content Width"
++            subtitle="How far the layout stretches on wide screens"
++            icon={<StretchHorizontal size={16} />}
++          />
++          <CardBody>
++            <Stack gap="14px">
++              <div
++                style={{
++                  display: "flex",
++                  alignItems: "center",
++                  justifyContent: "space-between",
++                  gap: "12px",
++                  padding: "10px 12px",
++                  borderRadius: "10px",
++                  background: "var(--surface-2)",
++                  border: "1px solid var(--inner-border)",
++                }}
++              >
++                <div>
++                  <div style={{ fontSize: "12.5px", fontWeight: 600 }}>Full-width layout</div>
++                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
++                    Stretch content edge to edge, no side gaps
++                  </div>
++                </div>
++                <Switch
++                  checked={settings.contentWidth === "full"}
++                  onChange={(full) => setSettings({ contentWidth: full ? "full" : "fit" })}
++                  label="Full-width layout"
++                />
++              </div>
++              <p style={{ fontSize: "11px", color: "var(--text-tertiary)", padding: "2px 2px" }}>
++                Off keeps the centered layout with side gaps (capped at 1560px). On stretches the
++                sidebar and content across the whole window.
++              </p>
++            </Stack>
++          </CardBody>
++        </Card>
+       </div>
+ 
+       <div className="two-column-grid">
+diff --git a/dashboard/src/routes/provider-detail/Models.tsx b/dashboard/src/routes/provider-detail/Models.tsx
+index 9493b00..de38ba4 100644
+--- a/dashboard/src/routes/provider-detail/Models.tsx
++++ b/dashboard/src/routes/provider-detail/Models.tsx
+@@ -30,6 +30,7 @@ import {
+   useSetModelEnabled,
+ } from "../../lib/hooks/providers";
+ import { UNKNOWN_LIMITS_TOOLTIP } from "../../lib/model-limits";
++import { type ProbeRowResult } from "../../lib/probe-view";
+ import { toast } from "../../lib/toast";
+ import { useTrackedTimeout } from "../../lib/use-timeout";
+ import type { ModelCatalogEntry } from "../../lib/contracts";
+@@ -89,6 +90,13 @@ export function AddModelModal({
+   const [wireFamily, setWireFamily] = useState(
+     lockedWire ?? preferredWire ?? "chat",
+   );
++  // Optional operator-supplied limits: the vendor's own panel is the better
++  // source for an id the offline snapshot does not know, and empty fields keep
++  // the resolver's answers (family fallback first, null last).
++  const [contextLimitInput, setContextLimitInput] = useState("");
++  const [outputLimitInput, setOutputLimitInput] = useState("");
++  const parsedContextLimit = Number(contextLimitInput.trim());
++  const parsedOutputLimit = Number(outputLimitInput.trim());
+   const [testState, setTestState] = useState<"idle" | "testing" | "passed" | "failed">("idle");
+   const [testError, setTestError] = useState("");
+ 
+@@ -128,7 +136,17 @@ export function AddModelModal({
+   const handleAdd = () => {
+     if (!normalized) return;
+     register.mutate(
+-      { providerId, modelIds: [normalized], wireFamily },
++      {
++        providerId,
++        modelIds: [normalized],
++        wireFamily,
++        ...(contextLimitInput.trim().length > 0 && Number.isFinite(parsedContextLimit)
++          ? { contextLimit: parsedContextLimit }
++          : {}),
++        ...(outputLimitInput.trim().length > 0 && Number.isFinite(parsedOutputLimit)
++          ? { outputLimit: parsedOutputLimit }
++          : {}),
++      },
+       {
+         onSuccess: () => {
+           toast.success("Custom model added", `Sent to ${providerId}/${normalized}`);
+@@ -156,7 +174,7 @@ export function AddModelModal({
+               setModelId(event.target.value);
+               setTestState("idle");
+               setTestError("");
+-            }}
++                      }}
+             onKeyDown={(event) => {
+               if (event.key === "Enter" && normalized.length > 0) runTest();
+             }}
+@@ -194,12 +212,32 @@ export function AddModelModal({
+               setWireFamily(value);
+               setTestState("idle");
+               setTestError("");
+-            }}
++                      }}
+             options={(selectableWires ?? ["chat", "responses", "messages", "embeddings", "native"]).map(
+               (value) => ({ value, label: wireLabel(value) }),
+             )}
+           />
+         ) : null}
++        <Inline gap="8px">
++          <Input
++            label="Context limit (optional)"
++            id="add-model-context-limit"
++            placeholder="e.g. 1048576"
++            value={contextLimitInput}
++            onChange={(event) => setContextLimitInput(event.target.value.replace(/[^\d]/g, ""))}
++            inputMode="numeric"
++            style={{ flex: 1 }}
++          />
++          <Input
++            label="Output limit (optional)"
++            id="add-model-output-limit"
++            placeholder="e.g. 65536"
++            value={outputLimitInput}
++            onChange={(event) => setOutputLimitInput(event.target.value.replace(/[^\d]/g, ""))}
++            inputMode="numeric"
++            style={{ flex: 1 }}
++          />
++        </Inline>
+         {testState === "passed" && (
+           <div
+             style={{
+@@ -262,23 +300,51 @@ function ModelCard({
+   const probe = useProbeModel();
+   const setEnabled = useSetModelEnabled();
+   const [copied, setCopied] = useState(false);
+-  const [probeResult, setProbeResult] = useState<{ ok: boolean; latencyMs: number } | null>(null);
++  const [probeResult, setProbeResult] = useState<ProbeRowResult | null>(null);
+   const scheduleCopyReset = useTrackedTimeout();
+ 
+ 
+   const runProbe = () => {
+     probe.mutate(
+-      { providerId, request: { modelId: model.modelId, route: model.route } },
++      {
++        providerId,
++        request: {
++          modelId: model.modelId,
++          route: model.route,
++        },
++      },
+       {
+         onSuccess: (result) => {
+-          setProbeResult({ ok: result.ok, latencyMs: result.latencyMs });
++          setProbeResult({
++            ok: result.ok,
++            latencyMs: result.latencyMs,
++            ...(result.kind ? { kind: result.kind } : {}),
++            ...(result.poolHost ? { poolHost: result.poolHost } : {}),
++            ...(result.sample ? { sample: result.sample } : {}),
++            ...(result.code ? { code: result.code } : {}),
++            ...(result.reason ? { reason: result.reason } : {}),
++            ...(result.errorOrigin ? { errorOrigin: result.errorOrigin } : {}),
++            ...(result.error ? { error: result.error } : {}),
++            ...(result.allowanceSpent ? { allowanceSpent: result.allowanceSpent } : {}),
++          });
++          // The exit is the point of a free-tier probe: the same account can
++          // fail on one address and succeed on the next, so the operator needs
++          // to see which pool answered instead of reading the result as a
++          // provider-wide verdict.
++          const via = result.poolHost ? `via ${result.poolHost}` : "direct";
+           if (!result.ok) {
+-            toast.error(`${model.modelId} probe failed`, result.error ?? "Unknown error");
++            // The code and the sub-reason are the actionable part: a
++            // `proxy_pool_unhealthy` refusal is a routing fault the operator
++            // fixes in provider settings, not a provider outage.
++            toast.error(
++              `${model.modelId} · refused · ${result.code ?? "unknown_error"} · ${via}`,
++              result.error ?? "Unknown error",
++            );
+             return;
+           }
+           const sample = result.sample?.trim() ?? "";
+           toast.success(
+-            `${model.modelId} · END ${formatProbeDuration(result.latencyMs)}`,
++            `${model.modelId} · END ${formatProbeDuration(result.latencyMs)} · ${via}`,
+             sample || "No sample text in the response.",
+           );
+         },
+@@ -506,21 +572,27 @@ function ModelCard({
+           </span>
+         </div>
+ 
++        {/*
++          The probe's answer lands in the button state (✓/latency), not in a
++          panel: the operator asked for the card to stay clean — a toast covers
++          the classified refusal, and the button keeps the re-test affordance.
++        */}
++
+         {/* Actions: single row, equal weights — delete is a quiet icon, not a full-width alarm */}
+         <div style={{ display: "flex", gap: "6px" }}>
+           <Button
+             variant="secondary"
+             size="sm"
+             disabled={probe.isPending}
+-            onClick={runProbe}
++            onClick={() => runProbe()}
+             aria-label={`Test ${model.modelId}`}
+             title={
+               probe.isPending
+                 ? `Probing ${model.modelId}…`
+                 : probeResult?.ok
+-                  ? `Last probe OK in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
++                  ? `Last probe generated in ${formatProbeDuration(probeResult.latencyMs)} — click to re-test`
+                   : probeResult
+-                    ? "Last probe failed — click to retry"
++                    ? "Last probe was refused — click to retry"
+                     : `Test ${model.modelId}`
+             }
+             style={{ flex: 1, justifyContent: "center" }}
+diff --git a/dashboard/src/styles.css b/dashboard/src/styles.css
+index 2af9229..c85e08f 100644
+--- a/dashboard/src/styles.css
++++ b/dashboard/src/styles.css
+@@ -958,6 +958,12 @@ html[data-glass-enabled="true"] .card-solid {
+   box-sizing: border-box;
+ }
+ 
++/* Full-width mode: the shell and its gutter padding stretch edge to edge
++   instead of centering inside the 1560px cap. Toggled from Customization. */
++html[data-content-width="full"] .app-shell-root {
++  max-width: none;
++}
++
+ @media (max-width: 1024px) {
+   .app-shell-root {
+     grid-template-columns: minmax(0, 1fr);
+@@ -1090,6 +1096,86 @@ html[data-glass-enabled="true"] .card-solid {
+   margin-top: 1px;
+ }
+ 
++/* Badge and update control share one row under the brand name. `min-width: 0`
++ * plus the truncating button label keep the pair inside the collapsed drawer
++ * and the mobile rail instead of pushing "LianRouter" out of the header. */
++.brand-subline {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  min-width: 0;
++}
++
++/* The badge is short and must never wrap or shrink; the button yields first so
++ * the version stays readable in the narrow drawer. */
++.brand-version-badge {
++  flex: none;
++}
++
++/* The control only renders when it can act (see `updateButtonState().hidden`),
++ * so it has no neutral idle look: every rendered state is green. The green is
++ * mixed toward `--text-primary` because the raw token fails contrast as 10px
++ * text on the light sidebar — `#4c9368` on the composited glass surface
++ * (`#fefcf7`) is 3.6:1, while the 65/35 mix reaches 4.9:1 resting and 4.5:1 on
++ * the stronger available background. The hue is unchanged; only luminance
++ * moves, so both themes stay green rather than drifting to a different colour. */
++.brand-update-button {
++  display: inline-flex;
++  align-items: center;
++  gap: 3px;
++  min-width: 0;
++  padding: 1px 5px;
++  border-radius: 999px;
++  border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
++  background: color-mix(in srgb, var(--green) 14%, transparent);
++  color: color-mix(in srgb, var(--green) 65%, var(--text-primary));
++  font-size: 10px;
++  font-weight: 600;
++  line-height: 1.4;
++  transition: all var(--dur-micro) var(--ease-spring);
++}
++
++.brand-update-button:hover:not(:disabled) {
++  background: color-mix(in srgb, var(--green) 22%, transparent);
++  border-color: color-mix(in srgb, var(--green) 48%, transparent);
++}
++
++.brand-update-button:active:not(:disabled) {
++  transform: scale(0.94);
++}
++
++.brand-update-button:disabled {
++  opacity: 0.45;
++  cursor: not-allowed;
++}
++
++/* Accent tone is the only signal an update exists without opening the modal.
++ * Same green as the resting state, raised in weight — background and border
++ * get stronger, not a different hue. */
++.brand-update-button--available {
++  border-color: var(--green);
++  background: color-mix(in srgb, var(--green) 22%, transparent);
++}
++
++.brand-update-button--available:hover:not(:disabled) {
++  background: color-mix(in srgb, var(--green) 30%, transparent);
++}
++
++.brand-update-button-label {
++  min-width: 0;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.brand-update-dot {
++  width: 5px;
++  height: 5px;
++  border-radius: 999px;
++  background: var(--green);
++  flex: none;
++}
++
+ /* Navigation Groups */
+ .nav-group-section {
+   margin-top: 14px;
+@@ -1156,6 +1242,22 @@ html[data-glass-enabled="true"] .card-solid {
+   transform: scale(0.98);
+ }
+ 
++/* Nested Automation submenu (Growth Activity / Appeal) */
++.nav-subitems {
++  display: flex;
++  flex-direction: column;
++  gap: 1px;
++  margin: 1px 0 3px 0;
++  padding-left: 20px;
++}
++
++.nav-subitem {
++  padding: 5px 10px;
++  font-size: 12.5px;
++  font-weight: 500;
++  border-radius: 9px;
++}
++
+ /* Sidebar provider-quota mini rows */
+ .sidebar-quota-list {
+   display: flex;
+@@ -3063,69 +3165,6 @@ main > .state-viewport {
+   color: #ffffff;
+ }
+ 
+-/* Escape hatch to the public landing page. It is a sibling of the card, not a
+-   child: fixed, so the viewport grid keeps one in-flow item and `place-items:
+-   center` still owns the card's position. The colour ramp is the branded
+-   surface's own (`.auth-viewport--brand` is black in *both* console themes),
+-   so palette tokens such as `--text-secondary` or `--inner-border` would
+-   render a brown-grey or a near-black edge on black in one theme or the
+-   other. Structural tokens are shared. */
+-.auth-back {
+-  position: fixed;
+-  top: 18px;
+-  left: 18px;
+-  z-index: 2;
+-  display: inline-flex;
+-  align-items: center;
+-  gap: .4rem;
+-  height: 32px;
+-  padding: 0 .8rem;
+-  border: 1px solid rgba(255, 255, 255, .12);
+-  border-radius: var(--radius-pill);
+-  background: rgba(255, 255, 255, .04);
+-  color: rgba(226, 234, 250, .62);
+-  font: 500 11.5px/1 var(--font-sans);
+-  letter-spacing: .01em;
+-  text-decoration: none;
+-  transition: color var(--dur-micro) ease, border-color var(--dur-micro) ease,
+-    background-color var(--dur-micro) ease;
+-}
+-
+-.auth-back svg { flex: 0 0 auto; }
+-
+-.auth-back:hover {
+-  border-color: rgba(255, 255, 255, .28);
+-  background: rgba(255, 255, 255, .08);
+-  color: #f4f7ff;
+-}
+-
+-/* The global ring resolves to `--focus-ring`, which is dark ink in the light
+-   console theme and would disappear on this always-black surface. */
+-.auth-back:focus-visible {
+-  outline-color: #c2cad6;
+-}
+-
+-/* The card runs ~580px, and ~640px once the default-password hint or a login
+-   error is on screen. Below ~760px of viewport its centred top edge reaches the
+-   fixed link, so top-align it and reserve the link's strip instead of letting
+-   the two overlap. `:has` keeps the shared setup card, which also uses
+-   `--brand` but carries no link, exactly where it is. Only `align-items` is
+-   overridden, so `justify-items: center` from `place-items` still centres the
+-   card horizontally. */
+-@media (max-height: 760px) {
+-  .auth-viewport--brand:has(> .auth-back) {
+-    align-items: start;
+-    padding-top: 64px;
+-    /* `html`/`body`/`#root` clip overflow, so a top-aligned card taller than
+-       the viewport would lose its submit button. Let this one surface scroll. */
+-    overflow-y: auto;
+-  }
+-}
+-
+-@media (prefers-reduced-motion: reduce) {
+-  .auth-back { transition: none; }
+-}
+-
+ .auth-window--glass {
+   border: 1px solid rgba(255, 255, 255, .12);
+   background: rgba(255, 255, 255, .04);
+@@ -3631,10 +3670,6 @@ main > .state-viewport {
+   .share-event-card > header { flex-wrap: wrap; }
+ }
+ 
+-.share-event-prompt { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--inner-border); }
+-.share-event-prompt-label { display: block; margin-bottom: 6px; color: var(--text-tertiary); font-size: 10px; font-weight: 600; }
+-.share-event-prompt-text { max-height: 10.5em; overflow-y: auto; margin: 0; color: var(--text-primary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+-
+ .share-recipient-main { display: grid; gap: 12px; min-width: 0; padding: 14px; }
+ .share-recipient-identity { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+ .share-recipient-key { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--text-primary); font-size: 14px; font-weight: 700; text-align: left; cursor: pointer; }
+@@ -3789,22 +3824,3 @@ main > .state-viewport {
+   letter-spacing: .06em;
+   text-transform: none;
+ }
+-
+-/* Blocked-users console page: addresses refused shared access. */
+-.blocked-shell { display: grid; gap: 14px; }
+-.blocked-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+-.blocked-table th {
+-  text-align: left;
+-  padding: 8px 10px;
+-  color: var(--text-tertiary);
+-  font-size: 10.5px;
+-  font-weight: 600;
+-  text-transform: uppercase;
+-  letter-spacing: .04em;
+-  border-bottom: 1px solid var(--inner-border);
+-}
+-.blocked-table td { padding: 10px; border-bottom: 1px solid var(--inner-border); vertical-align: middle; }
+-.blocked-table tr:last-child td { border-bottom: none; }
+-.blocked-ip { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); }
+-.blocked-meta { color: var(--text-tertiary); font-size: 11px; }
+-.blocked-empty { padding: 28px 12px; text-align: center; color: var(--text-tertiary); font-size: 12.5px; }

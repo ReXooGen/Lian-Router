@@ -14,6 +14,8 @@
  * set it.
  */
 
+import { LIAN_PERSONA_CONTENT } from "./personas/lian-persona";
+
 export interface InjectionTemplate {
   readonly id: string;
   readonly name: string;
@@ -23,6 +25,26 @@ export interface InjectionTemplate {
   readonly turns: readonly { readonly role: "user" | "assistant"; readonly content: string }[];
   readonly createdAt: string;
 }
+
+/**
+ * The template every install ships with, before the operator saves anything.
+ *
+ * Shipped verbatim from the operator's validated "Lian" persona so a fresh
+ * install shows a working, loadable template in "My templates" instead of an
+ * empty list. A user who deletes it stays deleted: the seeded entry is added
+ * only when no template with this id exists yet.
+ */
+const BUILT_IN_TEMPLATES: readonly InjectionTemplate[] = [
+  {
+    id: "built-in-lian-persona",
+    name: "Lian (built-in persona)",
+    mode: "prompt",
+    position: "prepend",
+    content: LIAN_PERSONA_CONTENT,
+    turns: [],
+    createdAt: "2026-11-23T00:00:00.000Z",
+  },
+];
 
 const STORAGE_KEY = "lianrouter.injection-templates.v1";
 const MAX_TEMPLATES = 100;
@@ -55,17 +77,39 @@ function asTemplate(value: unknown): InjectionTemplate | null {
 }
 
 export function listInjectionTemplates(): readonly InjectionTemplate[] {
+  const builtIn = BUILT_IN_TEMPLATES.filter(
+    (builtIn) => !deletedBuiltInIds().has(builtIn.id),
+  );
+  const builtInIds = new Set(builtIn.map((t) => t.id));
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return [];
+    if (raw === null) return builtIn;
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map(asTemplate)
-      .filter((t): t is InjectionTemplate => t !== null)
+    if (!Array.isArray(parsed)) return builtIn;
+    return [
+      ...builtIn,
+      ...parsed
+        .map(asTemplate)
+        .filter((t): t is InjectionTemplate => t !== null && !builtInIds.has(t.id)),
+    ]
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   } catch {
-    return [];
+    return builtIn;
+  }
+}
+
+/** Built-in template ids the operator has explicitly deleted, persisted per browser. */
+const DELETED_BUILT_IN_KEY = "lianrouter.injection-templates.deleted-built-in.v1";
+
+function deletedBuiltInIds(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(DELETED_BUILT_IN_KEY);
+    if (raw === null) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set();
   }
 }
 
@@ -96,11 +140,29 @@ export function saveInjectionTemplate(
     turns: draft.turns,
     createdAt: new Date().toISOString(),
   };
-  const next = [template, ...templates.filter((t) => t.id !== template.id)].slice(0, MAX_TEMPLATES);
+  // A save whose name matches the built-in entry replaces it in storage with
+  // the operator's own copy, so the edited text wins from then on. The
+  // built-in constant is suppressed for this browser; the stored copy (same
+  // id) is what the list shows.
+  if (template.id === "built-in-lian-persona") {
+    const deleted = deletedBuiltInIds();
+    deleted.add(template.id);
+    window.localStorage.setItem(DELETED_BUILT_IN_KEY, JSON.stringify([...deleted]));
+  }
+  const next = [
+    template,
+    ...templates.filter((t) => t.id !== template.id && t.id !== "built-in-lian-persona"),
+  ].slice(0, MAX_TEMPLATES);
   persist(next);
   return template;
 }
 
 export function deleteInjectionTemplate(id: string): void {
+  if (BUILT_IN_TEMPLATES.some((t) => t.id === id)) {
+    const deleted = deletedBuiltInIds();
+    deleted.add(id);
+    window.localStorage.setItem(DELETED_BUILT_IN_KEY, JSON.stringify([...deleted]));
+    return;
+  }
   persist(listInjectionTemplates().filter((t) => t.id !== id));
 }

@@ -1,0 +1,18 @@
+diff --git a/dashboard/src/components/Atmosphere.tsx b/dashboard/src/components/Atmosphere.tsx
+index a4b1a7e..f770dfc 100644
+--- a/dashboard/src/components/Atmosphere.tsx
++++ b/dashboard/src/components/Atmosphere.tsx
+@@ -24,7 +24,12 @@ export function Atmosphere(): ReactNode {
+       delete root.dataset.glassEnabled;
+       delete root.dataset.glassDepth;
+     }
+-  }, [settings.glassDepth, settings.glassEnabled]);
++    if (settings.contentWidth === "full") {
++      root.dataset.contentWidth = "full";
++    } else {
++      delete root.dataset.contentWidth;
++    }
++  }, [settings.contentWidth, settings.glassDepth, settings.glassEnabled]);
+ 
+   // Only an operator-supplied asset is a background. `backgroundEnabled` with
+   // no asset means the switch was left on from an earlier selection; painting

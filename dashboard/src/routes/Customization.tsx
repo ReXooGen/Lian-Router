@@ -4,6 +4,7 @@ import {
   Palette,
   RotateCcw,
   Sparkles,
+  StretchHorizontal,
   Sun,
   Trash2,
   Upload,
@@ -617,6 +618,45 @@ export default function Customization(): ReactNode {
                   Turn on glass to choose depth. Works best with a background image.
                 </p>
               )}
+            </Stack>
+          </CardBody>
+        </Card>
+        <Card className="grid-span-full">
+          <CardHeader
+            title="Content Width"
+            subtitle="How far the layout stretches on wide screens"
+            icon={<StretchHorizontal size={16} />}
+          />
+          <CardBody>
+            <Stack gap="14px">
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  padding: "10px 12px",
+                  borderRadius: "10px",
+                  background: "var(--surface-2)",
+                  border: "1px solid var(--inner-border)",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: "12.5px", fontWeight: 600 }}>Full-width layout</div>
+                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+                    Stretch content edge to edge, no side gaps
+                  </div>
+                </div>
+                <Switch
+                  checked={settings.contentWidth === "full"}
+                  onChange={(full) => setSettings({ contentWidth: full ? "full" : "fit" })}
+                  label="Full-width layout"
+                />
+              </div>
+              <p style={{ fontSize: "11px", color: "var(--text-tertiary)", padding: "2px 2px" }}>
+                Off keeps the centered layout with side gaps (capped at 1560px). On stretches the
+                sidebar and content across the whole window.
+              </p>
             </Stack>
           </CardBody>
         </Card>
