@@ -20,6 +20,7 @@ import {
 } from "./paths";
 import { startEmbeddedDatabase } from "./embedded-database";
 import type { EmbeddedDatabase } from "./embedded-database";
+import { describePortConflict, findFreePort, isPortBusy } from "./ports";
 import {
   installShutdownHandlers,
   resolveHeadlessEntry,
@@ -55,6 +56,17 @@ export interface CliOptions {
   readonly version: boolean;
   /** Bare subcommand, when one was given. */
   readonly command: string | undefined;
+  /**
+   * Walk to the next free port instead of refusing to start.
+   *
+   * Off by default and opt-in by flag, because the port is part of the address
+   * the operator already published: a bookmark, a reverse-proxy upstream, a
+   * tunnel origin, a base URL pasted into another tool. Moving it silently turns
+   * "it started" into "nothing I have points at it any more", which is a worse
+   * failure than a refusal that names a free port. With the flag the operator has
+   * said the address is disposable, and the chosen port is printed.
+   */
+  readonly autoPort: boolean;
 }
 
 const USAGE = `lianrouter v${CLI_VERSION}
@@ -72,6 +84,7 @@ Commands:
 
 Options:
   --port <n>       Gateway port (default ${DEFAULT_PORT}, or $PORT)
+  --auto-port      If that port is taken, use the next free one and print it
   --host <addr>    Host used in URLs (default localhost)
   --no-open        Never open the browser
   --background     Start detached and return
@@ -105,6 +118,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   let headless = false;
   let help = false;
   let version = false;
+  let autoPort = false;
   let command: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -130,6 +144,10 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     }
     if (arg === "--headless") {
       headless = true;
+      continue;
+    }
+    if (arg === "--auto-port") {
+      autoPort = true;
       continue;
     }
     if (arg === "--port" || arg === "--host") {
@@ -170,6 +188,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     help,
     version,
     command,
+    autoPort,
   };
 }
 
@@ -259,7 +278,11 @@ async function ensureInstalledGateway(installRoot: string): Promise<void> {
 }
 
 export async function run(argv: readonly string[]): Promise<number> {
-  const options = parseArgs(argv);
+  // Reassignable because `--auto-port` resolves the port once, before anything
+  // binds: the supervisor, the control server, the printed console URL and the
+  // child's `PORT` all read this one value, so they cannot disagree about which
+  // port this invocation chose.
+  let options = parseArgs(argv);
 
   if (options.help) {
     console.log(USAGE);
@@ -288,6 +311,11 @@ export async function run(argv: readonly string[]): Promise<number> {
     );
     return 0;
   }
+
+  // Resolution happens before the gateway-config repair and the handshake check:
+  // both print a console URL, and a URL naming the refused port would send the
+  // operator to the other instance.
+  options = await applyAutoPort(options);
 
   // A checkout lets Bun load the repository's `.env` for the gateway child; an
   // install has no such file in its working directory, so the launcher supplies
@@ -717,12 +745,69 @@ function openBrowser(url: string): void {
 }
 
 /**
+ * Applies `--auto-port` to the parsed options, once, before anything binds.
+ *
+ * Returns the options unchanged unless the flag is set and the port is already
+ * taken. The scan starts at `port + 1` rather than `port` because the caller
+ * only gets here after establishing that `port` itself is busy; a scan from
+ * `port` would waste one probe and, worse, could return `port` if the busy
+ * listener exited between the two probes — handing the child a port the operator
+ * was just told was taken.
+ *
+ * When nothing is free the original options come back unchanged and the existing
+ * conflict message does its job: a boot that refuses is better than a boot on a
+ * port the operator cannot find.
+ */
+export async function applyAutoPort(options: CliOptions): Promise<CliOptions> {
+  if (!options.autoPort) {
+    return options;
+  }
+  // Only commands that bring a gateway up may move. `stop` and `status` answer a
+  // question about a machine, and `update` replaces an executable; a move there
+  // would report on — or act on — a port nobody asked about.
+  const startShaped =
+    options.command === undefined ||
+    options.command === "start" ||
+    options.command === "tray" ||
+    options.command === "tui";
+  if (!startShaped) {
+    return options;
+  }
+  if (!(await isPortBusy(options.port))) {
+    return options;
+  }
+  const found = await findFreePort(options.port + 1);
+  if (found === undefined) {
+    console.error(
+      `port ${options.port} is already in use and no free port was found above it; ` +
+        "stop the other process or pass an explicit --port",
+    );
+    return options;
+  }
+  console.log(`Port ${options.port} is already in use; using ${found} instead (--auto-port).`);
+  return { ...options, port: found };
+}
+
+/**
  * Brings the gateway up when it is not already serving. Adoption is tried
  * first so a second `lianrouter` from another terminal never races the port.
+ *
+ * The port probe sits between adoption and spawn, and it is the only guard that
+ * can see a conflict on Windows: the gateway binds with `reusePort`, which lets
+ * two processes share `:12800` with no error at all and routes every connection
+ * to whichever bound first. Without this check a second install root boots a
+ * gateway that never receives a request, and the health wait succeeds against
+ * the *other* instance's process — the operator's console then talks to a
+ * gateway they did not start, with nothing in any log saying so.
  */
 async function ensureStarted(supervisor: GatewaySupervisor): Promise<ServerStatus> {
   if (await supervisor.adoptExisting()) {
     return supervisor.status;
+  }
+  const port = supervisor.status.port;
+  if (await isPortBusy(port)) {
+    const suggestion = await findFreePort(port + 1);
+    throw new Error(describePortConflict(port, suggestion));
   }
   const status = await supervisor.start();
   if (status.state === "crashed") {
@@ -853,6 +938,16 @@ async function dispatch(
       // the owner's boot, so the dashboard never sees a gap. After the exit no
       // console window is load-bearing: closing any cmd kills a process that
       // owns nothing, and the tray Exit menu is the only stop switch.
+      //
+      // A live host already answers this menu item. Spawning a second one is not
+      // harmless: the child's very first act is `claimTrayPidFile`, which sees a
+      // live pid it did not write and exits with a modal "A tray host is already
+      // running" dialog — a scary box for what was a no-op click. Reporting the
+      // existing tray instead keeps the operator's click honest.
+      if (await isTrayRunning(runtime.installRoot)) {
+        console.log("LianRouter is already running in the tray. Use the icon to open the console.");
+        return 0;
+      }
       const handoff = spawnTrayOwner(runtime, options);
       if (!handoff.ok) {
         console.error(handoff.error);

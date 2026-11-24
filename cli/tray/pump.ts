@@ -396,7 +396,9 @@ export async function startTrayPump(options: TrayPumpOptions): Promise<TrayPumpH
       }
       return user32.DefWindowProcW(hWnd, message, wParam, lParam);
     },
-    { args: ["ptr", "u32", "u64", "i64"], returns: "i64" },
+    // `u64` for the HWND: a pointer-sized handle, and the only spelling every
+    // Bun release converts (see the FFI table comment in `win32.ts`).
+    { args: ["u64", "u32", "u64", "i64"], returns: "i64" },
   );
   callbackKeepAlive.push(windowProc);
 
@@ -421,7 +423,7 @@ export async function startTrayPump(options: TrayPumpOptions): Promise<TrayPumpH
   // A message-only window (HWND_MESSAGE) cannot own a tray icon, so this is a
   // normal hidden window: no WS_VISIBLE, zero size, no parent.
   const window = toHandle(
-    user32.CreateWindowExW(0, ptr(className), ptr(title), WS_OVERLAPPED, 0, 0, 0, 0, null, null, moduleHandle, null),
+    user32.CreateWindowExW(0, ptr(className), ptr(title), WS_OVERLAPPED, 0, 0, 0, 0, 0n, 0n, moduleHandle, 0n),
   );
   if (window === undefined) {
     user32.UnregisterClassW(ptr(className), moduleHandle);
@@ -445,7 +447,7 @@ export async function startTrayPump(options: TrayPumpOptions): Promise<TrayPumpH
   const exited = (async (): Promise<void> => {
     try {
       for (;;) {
-        if (user32.PeekMessageW(ptr(messageBuffer), null, 0, 0, PM_REMOVE) !== 0) {
+        if (user32.PeekMessageW(ptr(messageBuffer), 0n, 0, 0, PM_REMOVE) !== 0) {
           if (messageView.getUint32(MSG_MESSAGE_OFFSET, true) === WM_QUIT) break;
           user32.TranslateMessage(ptr(messageBuffer));
           user32.DispatchMessageW(ptr(messageBuffer));

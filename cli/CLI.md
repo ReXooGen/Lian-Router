@@ -115,6 +115,7 @@ Subcommands skip the menu:
 
 ```bash
 lianrouter start --port 12810     # foreground, then the menu
+lianrouter --auto-port            # take the next free port when 12800 is taken
 lianrouter status                 # print state and exit
 lianrouter stop                   # stop the supervised gateway
 lianrouter update                 # check, install, restart
@@ -431,6 +432,21 @@ detached from the console, not hidden with it.
 - **A bind conflict is named.** `EADDRINUSE` on stderr becomes
   `port <n> is already in use; stop the other process or pass --port` instead
   of a stack trace the operator has to find in a file.
+- **The port is probed before the child is spawned.** That is not redundant
+  with the line above, because the gateway binds with `reusePort: true` — and on
+  Windows that lets two separate processes both bind `:12800` with no error at
+  all, routing every connection to whichever bound first. The child then boots
+  fine, the health wait succeeds against the *other* instance, and the operator's
+  console silently talks to a gateway they did not start. `isPortBusy()` asks the
+  one question with a stable answer: does something already accept connections
+  here. A bind probe does not — `SO_REUSEPORT` also lets a plain listener share
+  the port, which is why the probe connects instead of binding.
+- **`--auto-port` moves, and only on request.** Refusing to start is the default
+  because the port is part of an address the operator published: a bookmark, a
+  reverse-proxy upstream, a tunnel origin. Silent movement turns "it started" into
+  "nothing I have points at it any more". With the flag the move is announced on
+  stdout, and it is limited to commands that bring a gateway up — `status`,
+  `stop` and `update` always answer about the port they were asked about.
 
 ## Control plane
 
@@ -784,8 +800,22 @@ Two Win32 facts cost real debugging time and will cost it again:
   (1410). The class name therefore carries a per-instance sequence number, so a
   tray can be stopped and started again in one process (tests do exactly that).
 
-`startTray()` spawns `cli/dist/tray.js` detached with all three stdio handles
-ignored. Detached plus ignored stdio is what lets `lianrouter` return the shell
+And one that cost a customer their tray, so it is a rule now:
+
+- **Handle-typed FFI arguments are declared `u64`, not `ptr`.** A Win32 handle is
+  a 64-bit integer on x64 and the register is the same either way, so both
+  spellings are ABI-correct — but the *conversion* differs by Bun release. An
+  older Bun rejects a `bigint` in a `ptr` slot with
+  `Unable to convert 140698721517568 to a pointer`, and above 2^32 is exactly
+  where a module handle lives (`GetModuleHandleW` returns `0x7FF6…`). The tray
+  then dies on `CreateWindowExW` and the operator gets a modal error instead of an
+  icon. `u64` accepts a `bigint`, a `number`, and `0n` on every release with
+  `bun:ffi`; it rejects `null`, so a null handle is spelled `0n`. Buffer arguments
+  (`LPWSTR`, `MSG*`, `POINT*`) stay `ptr` — that is the one place a pointer
+  conversion is meant.
+
+`startTray()` spawns `cli/dist/tray.js` detached, windowless (`windowsHide`), and
+with all three stdio handles ignored. Detached plus ignored stdio is what lets `lianrouter` return the shell
 prompt while the icon stays alive — a child holding the parent's pipes would
 keep the prompt from ever coming back. The tray pid lands in `run/tray.pid`;
 `stopTray()` signals it, waits, then escalates, and cleans up a pid file that

@@ -61,44 +61,60 @@ const DIB_RGB_COLORS = 0;
 
 /**
  * Signatures are declared exactly as the Win32 prototypes in the SDK:
- * pointer-sized handles are `ptr`, `LRESULT`/`LPARAM`/`WPARAM` are 64-bit on
- * x64, and `BOOL` returns are `i32` because Win32 defines `BOOL` as a signed int
- * (a failed call can return -1, which a `bool`/`u32` binding would misreport).
+ * `LRESULT`/`LPARAM`/`WPARAM` are 64-bit on x64, and `BOOL` returns are `i32`
+ * because Win32 defines `BOOL` as a signed int (a failed call can return -1,
+ * which a `bool`/`u32` binding would misreport).
  *
- * Bun's `dlopen` has no symbol-alias field, so every name here is the real
- * export name.
+ * # Why handles are `u64` and not `ptr`
+ *
+ * A Win32 handle (`HWND`, `HMENU`, `HICON`, `HDC`, `HBITMAP`, `hInstance`) is a
+ * 64-bit integer on x64, so `ptr` looks like the honest declaration — and on
+ * Bun 1.4.2 it accepts a `bigint` there. Older Bun releases reject it:
+ * `Unable to convert 140698721517568 to a pointer` — a module handle is well
+ * above 2^32, and those builds only convert a `ptr` argument from a buffer,
+ * `null`, or a small `number`. The tray crashes on `CreateWindowExW` with that
+ * error and the operator gets an error dialog instead of an icon.
+ *
+ * `u64` is the portable spelling: the x64 calling convention places an integer
+ * handle and a pointer in the same register, so the ABI is identical while the
+ * conversion is `BigInt`/`Number` → `u64` on every Bun release that has `ffi` at
+ * all. Measured on 1.4.2: `u64` takes a `bigint`, a `number`, and `0n`; it
+ * rejects `null`, so a null handle is spelled `0n`.
+ *
+ * Buffer arguments (`LPWSTR`, `WNDCLASSEXW*`, `MSG*`, `POINT*`, `NOTIFYICONDATAW*`)
+ * stay `ptr`: that is the one place a pointer conversion is what is meant.
  */
 function openUser32() {
   return dlopen("user32.dll", {
     RegisterClassExW: { args: ["ptr"], returns: "u16" },
-    UnregisterClassW: { args: ["ptr", "ptr"], returns: "i32" },
+    UnregisterClassW: { args: ["ptr", "u64"], returns: "i32" },
     CreateWindowExW: {
-      args: ["u32", "ptr", "ptr", "u32", "i32", "i32", "i32", "i32", "ptr", "ptr", "ptr", "ptr"],
-      returns: "ptr",
+      args: ["u32", "ptr", "ptr", "u32", "i32", "i32", "i32", "i32", "u64", "u64", "u64", "u64"],
+      returns: "u64",
     },
-    DefWindowProcW: { args: ["ptr", "u32", "u64", "i64"], returns: "i64" },
-    DestroyWindow: { args: ["ptr"], returns: "i32" },
-    PeekMessageW: { args: ["ptr", "ptr", "u32", "u32", "u32"], returns: "i32" },
+    DefWindowProcW: { args: ["u64", "u32", "u64", "i64"], returns: "i64" },
+    DestroyWindow: { args: ["u64"], returns: "i32" },
+    PeekMessageW: { args: ["ptr", "u64", "u32", "u32", "u32"], returns: "i32" },
     TranslateMessage: { args: ["ptr"], returns: "i32" },
     DispatchMessageW: { args: ["ptr"], returns: "i64" },
     PostQuitMessage: { args: ["i32"], returns: "void" },
-    PostMessageW: { args: ["ptr", "u32", "u64", "i64"], returns: "i32" },
-    SetForegroundWindow: { args: ["ptr"], returns: "i32" },
+    PostMessageW: { args: ["u64", "u32", "u64", "i64"], returns: "i32" },
+    SetForegroundWindow: { args: ["u64"], returns: "i32" },
     GetCursorPos: { args: ["ptr"], returns: "i32" },
-    CreatePopupMenu: { args: [], returns: "ptr" },
-    AppendMenuW: { args: ["ptr", "u32", "u64", "ptr"], returns: "i32" },
-    TrackPopupMenu: { args: ["ptr", "u32", "i32", "i32", "i32", "ptr", "ptr"], returns: "i32" },
-    DestroyMenu: { args: ["ptr"], returns: "i32" },
-    LoadImageW: { args: ["ptr", "ptr", "u32", "i32", "i32", "u32"], returns: "ptr" },
-    LoadIconW: { args: ["ptr", "ptr"], returns: "ptr" },
-    CreateIconIndirect: { args: ["ptr"], returns: "ptr" },
-    DestroyIcon: { args: ["ptr"], returns: "i32" },
-    GetDC: { args: ["ptr"], returns: "ptr" },
-    ReleaseDC: { args: ["ptr", "ptr"], returns: "i32" },
+    CreatePopupMenu: { args: [], returns: "u64" },
+    AppendMenuW: { args: ["u64", "u32", "u64", "ptr"], returns: "i32" },
+    TrackPopupMenu: { args: ["u64", "u32", "i32", "i32", "i32", "u64", "ptr"], returns: "i32" },
+    DestroyMenu: { args: ["u64"], returns: "i32" },
+    LoadImageW: { args: ["u64", "ptr", "u32", "i32", "i32", "u32"], returns: "u64" },
+    LoadIconW: { args: ["u64", "u64"], returns: "u64" },
+    CreateIconIndirect: { args: ["ptr"], returns: "u64" },
+    DestroyIcon: { args: ["u64"], returns: "i32" },
+    GetDC: { args: ["u64"], returns: "u64" },
+    ReleaseDC: { args: ["u64", "u64"], returns: "i32" },
     GetSystemMetrics: { args: ["i32"], returns: "i32" },
-    IsWindowVisible: { args: ["ptr"], returns: "i32" },
-    ShowWindow: { args: ["ptr", "i32"], returns: "i32" },
-    MessageBoxW: { args: ["ptr", "ptr", "ptr", "u32"], returns: "i32" },
+    IsWindowVisible: { args: ["u64"], returns: "i32" },
+    ShowWindow: { args: ["u64", "i32"], returns: "i32" },
+    MessageBoxW: { args: ["u64", "ptr", "ptr", "u32"], returns: "i32" },
   } as const);
 }
 
@@ -110,31 +126,38 @@ function openShell32() {
 
 function openKernel32() {
   return dlopen("kernel32.dll", {
-    GetModuleHandleW: { args: ["ptr"], returns: "ptr" },
+    GetModuleHandleW: { args: ["ptr"], returns: "u64" },
     GetLastError: { args: [], returns: "u32" },
-    GetConsoleWindow: { args: [], returns: "ptr" },
+    GetConsoleWindow: { args: [], returns: "u64" },
   } as const);
 }
 
 function openGdi32() {
   return dlopen("gdi32.dll", {
-    CreateCompatibleDC: { args: ["ptr"], returns: "ptr" },
-    DeleteDC: { args: ["ptr"], returns: "i32" },
-    CreateDIBSection: { args: ["ptr", "ptr", "u32", "ptr", "ptr", "u32"], returns: "ptr" },
-    SelectObject: { args: ["ptr", "ptr"], returns: "ptr" },
-    DeleteObject: { args: ["ptr"], returns: "i32" },
+    CreateCompatibleDC: { args: ["u64"], returns: "u64" },
+    DeleteDC: { args: ["u64"], returns: "i32" },
+    CreateDIBSection: { args: ["u64", "ptr", "u32", "ptr", "ptr", "u32"], returns: "u64" },
+    SelectObject: { args: ["u64", "u64"], returns: "u64" },
+    DeleteObject: { args: ["u64"], returns: "i32" },
   } as const);
 }
 
-/** An argument position declared `ptr` in the FFI table. */
-type PtrArg = Pointer | NodeJS.TypedArray | bigint | null;
+/** An argument position declared `ptr` in the FFI table: a buffer, or null. */
+type PtrArg = NodeJS.TypedArray | null;
 
-/** A `ptr` return, which Bun reports as a `Pointer`, a `bigint`, or NULL. */
-type PtrReturn = Pointer | bigint | null;
+/**
+ * An argument position declared `u64`: a handle.
+ *
+ * BigInt is what the call sites already hold ({@link NativeHandle}), and a
+ * `number` above 2^32 loses precision — a module handle on Windows is routinely
+ * `0x7FF6…`, so the bigint is not a convenience here, it is the only exact
+ * representation.
+ */
+type HandleArg = bigint;
 
 export interface User32Api {
   RegisterClassExW(classStruct: PtrArg): number;
-  UnregisterClassW(className: PtrArg, instance: PtrArg): number;
+  UnregisterClassW(className: PtrArg, instance: HandleArg): number;
   CreateWindowExW(
     exStyle: number,
     className: PtrArg,
@@ -144,42 +167,42 @@ export interface User32Api {
     y: number,
     width: number,
     height: number,
-    parent: PtrArg,
-    menu: PtrArg,
-    instance: PtrArg,
-    param: PtrArg,
-  ): PtrReturn;
-  DefWindowProcW(window: PtrArg, message: number, wParam: bigint, lParam: bigint): bigint;
-  DestroyWindow(window: PtrArg): number;
-  PeekMessageW(message: PtrArg, window: PtrArg, filterMin: number, filterMax: number, removeMsg: number): number;
+    parent: HandleArg,
+    menu: HandleArg,
+    instance: HandleArg,
+    param: HandleArg,
+  ): HandleArg;
+  DefWindowProcW(window: HandleArg, message: number, wParam: bigint, lParam: bigint): bigint;
+  DestroyWindow(window: HandleArg): number;
+  PeekMessageW(message: PtrArg, window: HandleArg, filterMin: number, filterMax: number, removeMsg: number): number;
   TranslateMessage(message: PtrArg): number;
   DispatchMessageW(message: PtrArg): bigint;
   PostQuitMessage(exitCode: number): void;
-  PostMessageW(window: PtrArg, message: number, wParam: bigint, lParam: bigint): number;
-  SetForegroundWindow(window: PtrArg): number;
+  PostMessageW(window: HandleArg, message: number, wParam: bigint, lParam: bigint): number;
+  SetForegroundWindow(window: HandleArg): number;
   GetCursorPos(point: PtrArg): number;
-  CreatePopupMenu(): PtrReturn;
-  AppendMenuW(menu: PtrArg, flags: number, itemId: bigint, item: PtrArg): number;
+  CreatePopupMenu(): HandleArg;
+  AppendMenuW(menu: HandleArg, flags: number, itemId: bigint, item: PtrArg): number;
   TrackPopupMenu(
-    menu: PtrArg,
+    menu: HandleArg,
     flags: number,
     x: number,
     y: number,
     reserved: number,
-    window: PtrArg,
+    window: HandleArg,
     rect: PtrArg,
   ): number;
-  DestroyMenu(menu: PtrArg): number;
-  LoadImageW(instance: PtrArg, name: PtrArg, type: number, cx: number, cy: number, load: number): PtrReturn;
-  LoadIconW(instance: PtrArg, name: PtrArg): PtrReturn;
-  CreateIconIndirect(info: PtrArg): PtrReturn;
-  DestroyIcon(icon: PtrArg): number;
-  GetDC(window: PtrArg): PtrReturn;
-  ReleaseDC(window: PtrArg, deviceContext: PtrArg): number;
+  DestroyMenu(menu: HandleArg): number;
+  LoadImageW(instance: HandleArg, name: PtrArg, type: number, cx: number, cy: number, load: number): HandleArg;
+  LoadIconW(instance: HandleArg, name: HandleArg): HandleArg;
+  CreateIconIndirect(info: PtrArg): HandleArg;
+  DestroyIcon(icon: HandleArg): number;
+  GetDC(window: HandleArg): HandleArg;
+  ReleaseDC(window: HandleArg, deviceContext: HandleArg): number;
   GetSystemMetrics(index: number): number;
-  IsWindowVisible(window: PtrArg): number;
-  ShowWindow(window: PtrArg, cmdShow: number): number;
-  MessageBoxW(window: PtrArg, text: PtrArg, caption: PtrArg, type: number): number;
+  IsWindowVisible(window: HandleArg): number;
+  ShowWindow(window: HandleArg, cmdShow: number): number;
+  MessageBoxW(window: HandleArg, text: PtrArg, caption: PtrArg, type: number): number;
 }
 
 export interface Shell32Api {
@@ -187,24 +210,24 @@ export interface Shell32Api {
 }
 
 export interface Kernel32Api {
-  GetModuleHandleW(moduleName: PtrArg): PtrReturn;
+  GetModuleHandleW(moduleName: PtrArg): HandleArg;
   GetLastError(): number;
-  GetConsoleWindow(): PtrReturn;
+  GetConsoleWindow(): HandleArg;
 }
 
 export interface Gdi32Api {
-  CreateCompatibleDC(deviceContext: PtrArg): PtrReturn;
-  DeleteDC(deviceContext: PtrArg): number;
+  CreateCompatibleDC(deviceContext: HandleArg): HandleArg;
+  DeleteDC(deviceContext: HandleArg): number;
   CreateDIBSection(
-    deviceContext: PtrArg,
+    deviceContext: HandleArg,
     header: PtrArg,
     usage: number,
     bits: PtrArg,
-    section: PtrArg,
+    section: HandleArg,
     offset: number,
-  ): PtrReturn;
-  SelectObject(deviceContext: PtrArg, object: PtrArg): PtrReturn;
-  DeleteObject(object: PtrArg): number;
+  ): HandleArg;
+  SelectObject(deviceContext: HandleArg, object: HandleArg): HandleArg;
+  DeleteObject(object: HandleArg): number;
 }
 
 export interface Win32Api {
@@ -239,17 +262,18 @@ export function getWin32(): Win32Api {
 /**
  * A Win32 handle carried as a 64-bit integer.
  *
- * Bun types every `ptr` return as `Pointer | bigint | null`, so a `bigint` is
- * the one representation that survives every signature without a cast: it is a
- * legal `ptr` argument and it is exact for the sign-extended 32-bit user
- * handles Windows actually hands out.
+ * A `u64` return may arrive as a `bigint` or as a `number` (measured on Bun
+ * 1.4.2: a `ptr` return is a `number`, even above 2^32). Both are exact here,
+ * because every value a `u64` slot can hand back that fits a JS number is a
+ * value Windows also fits in one — but `BigInt(value)` on a `number` throws for
+ * a non-integer, so the conversion is guarded rather than implicit.
  */
 export type NativeHandle = bigint;
 
-/** Narrows an FFI pointer return, treating NULL as "no handle". */
-export function toHandle(value: Pointer | bigint | null | undefined): NativeHandle | undefined {
+/** Narrows an FFI `u64` return, treating NULL as "no handle". */
+export function toHandle(value: number | bigint | null | undefined): NativeHandle | undefined {
   if (value === null || value === undefined) return undefined;
-  const handle = typeof value === "bigint" ? value : BigInt(value);
+  const handle = typeof value === "bigint" ? value : BigInt(Math.trunc(value));
   return handle === 0n ? undefined : handle;
 }
 
@@ -275,7 +299,7 @@ export function writeWideString(target: Buffer, byteOffset: number, maxChars: nu
  */
 export function showTrayError(message: string, caption = "LianRouter"): void {
   const { user32 } = getWin32();
-  user32.MessageBoxW(null, ptr(wideString(message)), ptr(wideString(caption)), MB_OK | MB_ICONERROR);
+  user32.MessageBoxW(0n, ptr(wideString(message)), ptr(wideString(caption)), MB_OK | MB_ICONERROR);
 }
 
 /**
@@ -326,7 +350,7 @@ export function resolveTrayIconHandle(iconPath: string | undefined): NativeHandl
   }
   const drawn = createTrayIcon();
   if (drawn !== undefined) return drawn;
-  return toHandle(user32.LoadIconW(null, IDI_APPLICATION));
+  return toHandle(user32.LoadIconW(0n, IDI_APPLICATION));
 }
 
 /** Frees a tray icon handle produced by the factory or `LoadImageW`. */
@@ -339,7 +363,7 @@ export function destroyTrayIcon(handle: NativeHandle | undefined): void {
 /** Loads an icon from a `.ico` file, or `undefined` when the path is unusable. */
 export function loadIconFile(iconPath: string): NativeHandle | undefined {
   const { user32 } = getWin32();
-  return toHandle(user32.LoadImageW(null, ptr(wideString(iconPath)), IMAGE_ICON, 0, 0, LR_LOADFROMFILE));
+  return toHandle(user32.LoadImageW(0n, ptr(wideString(iconPath)), IMAGE_ICON, 0, 0, LR_LOADFROMFILE));
 }
 
 /** Notification-area icon size for the current DPI; 0 when the metric is unavailable. */
@@ -384,13 +408,13 @@ export function createDibSection(width: number, height: number, bitsPerPixel: 32
 
   // CreateDIBSection writes the pixel base address through this out-parameter.
   const out = Buffer.alloc(8);
-  const deviceContext = toHandle(user32.GetDC(null));
+  const deviceContext = toHandle(user32.GetDC(0n));
   if (deviceContext === undefined) throw new Error("GetDC(NULL) returned NULL");
   let bitmap: NativeHandle | undefined;
   try {
-    bitmap = toHandle(gdi32.CreateDIBSection(deviceContext, ptr(header), DIB_RGB_COLORS, ptr(out), null, 0));
+    bitmap = toHandle(gdi32.CreateDIBSection(deviceContext, ptr(header), DIB_RGB_COLORS, ptr(out), 0n, 0));
   } finally {
-    user32.ReleaseDC(null, deviceContext);
+    user32.ReleaseDC(0n, deviceContext);
   }
   if (bitmap === undefined) throw new Error("CreateDIBSection failed");
 

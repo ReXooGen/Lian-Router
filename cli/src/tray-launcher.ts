@@ -152,7 +152,15 @@ export async function startTray(options: TrayLaunchOptions): Promise<TrayStartRe
       // must not share the console's lifetime: without this the icon vanishes
       // with the window that spawned it, which is the exact failure the tray
       // exists to prevent.
+      //
+      // `windowsHide` is the other half and it is not cosmetic: `detached` alone
+      // reaches Windows as `DETACHED_PROCESS`, which creates no console for the
+      // child — but Bun still starts the process as a console application and
+      // the host allocates one, flashing a window titled with the tray entry's
+      // path on every start. It is also what the icon's own resurrection path
+      // relies on, so both spellings agree.
       detached: true,
+      windowsHide: true,
     });
     child.unref();
     pid = child.pid;
