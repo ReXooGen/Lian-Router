@@ -7,9 +7,11 @@
  */
 import {
   getCodexVersion,
+  getHermesVersion,
   getOmpAgentVersion,
   resolveClaudeCliVersion,
   resolveCodexVersion,
+  resolveHermesVersion,
   resolveOmpAgentVersion,
 } from "./client-versions";
 import {
@@ -39,12 +41,15 @@ export function buildOmpAgentHeaders(): Record<string, string> {
 /**
  * Hermes Agent identity headers.
  *
- * Nous Research's inference API attributes calls through its own agent face;
- * the client tag mirrors the shipped Hermes desktop client version.
+ * Nous Research's inference API attributes calls through its own agent face,
+ * and the version is the client's own release — Hermes sources it from
+ * `hermes_cli.__version__` at runtime, so a literal here starts lying the day
+ * the next release ships. Resolver reads the warm cache; the pinned value in
+ * `client-versions.ts` is only the offline fallback.
  */
 export function buildHermesAgentHeaders(): Record<string, string> {
   return {
-    "user-agent": "hermes-agent/0.13.0",
+    "user-agent": `hermes-agent/${getHermesVersion()}`,
     "x-product": "hermes-agent",
   };
 }
@@ -163,6 +168,9 @@ export async function resolveIdentityHeadersAsync(
     case "omp":
       await resolveOmpAgentVersion(fetcher);
       return buildOmpAgentHeaders();
+    case "hermes":
+      await resolveHermesVersion(fetcher);
+      return buildHermesAgentHeaders();
     default:
       return resolveIdentityHeaders(preset, wireFamily);
   }

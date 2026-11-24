@@ -22,6 +22,7 @@ import {
   useCreateProvider,
   useCreateProviderAccount,
   useDeleteProvider,
+  useIdentityVersions,
   useProviderAccounts,
   useProviderDetail,
   useProviderModels,
@@ -30,6 +31,7 @@ import {
   useTestByokConnection,
   useUpdateProvider,
 } from "../lib/hooks/providers";
+import type { IdentityVersions } from "../lib/hooks/providers";
 import { providerDisplayName } from "../lib/provider-names";
 import { getErrorMessage } from "../lib/helpers";
 
@@ -37,15 +39,47 @@ const wireFamilies = ["chat", "responses", "messages", "embeddings", "native"] a
 type WireFamily = (typeof wireFamilies)[number];
 
 const IDENTITY_PRESETS = [
-  { value: "codex", label: "Codex CLI (codex_cli_rs/<version>)" },
-  { value: "claude", label: "Claude Code CLI (claude-cli/<version>)" },
-  { value: "omp", label: "OMP Agent (omp/<version>)" },
-  { value: "hermes", label: "Hermes Agent (hermes-agent/0.13.0)" },
-  { value: "gateway", label: "Gateway (LianRouter/<version>)" },
+  { value: "codex", label: "Codex CLI" },
+  { value: "claude", label: "Claude Code CLI" },
+  { value: "omp", label: "OMP Agent" },
+  { value: "hermes", label: "Hermes Agent" },
+  { value: "gateway", label: "Gateway (LianRouter)" },
   { value: "custom", label: "Custom user-agent…" },
   { value: "none", label: "None (runtime default)" },
 ] as const;
 type IdentityPreset = (typeof IDENTITY_PRESETS)[number]["value"];
+
+/**
+ * Builds the dropdown option list, with the header each preset will send.
+ *
+ * The alternatives are a bare name ("Claude Code CLI") and a frozen literal
+ * ("hermes-agent/0.13.0"). The first hides the claim the upstream will read; the
+ * second becomes a lie the moment a release ships — which is exactly how the
+ * Hermes preset drifted eight minor versions behind its own client. So the
+ * number comes from the gateway (`GET /providers/identity-versions`, the same
+ * values the dispatch path stamps), and only the bare name remains while that
+ * loads or if the route is unavailable.
+ */
+function identityOptions(versions: IdentityVersions | undefined) {
+  return IDENTITY_PRESETS.map((preset) => ({
+    value: preset.value,
+    label:
+      versions === undefined || preset.value === "custom" || preset.value === "none"
+        ? preset.label
+        : `${preset.label} (${stripIdentityProduct(versions[preset.value])})`,
+  }));
+}
+
+/**
+ * Trims a full header down to the product/version token for a label.
+ *
+ * `claude-cli/2.1.331 (external, cli)` is the wire value; the parenthetical is a
+ * spoofing detail that makes the dropdown unreadable and is preserved on save.
+ */
+function stripIdentityProduct(header: string): string {
+  const token = header.split(" ")[0] ?? header;
+  return token;
+}
 
 /** Maps a stored userAgent value onto the dropdown + literal input state. */
 function identityStateFrom(value: string | undefined): {
@@ -374,6 +408,9 @@ export function EditProviderModal({
   // config. The detail endpoint projects the full row; while it loads, the
   // list row still renders the trigger UI but the form stays inert.
   const detail = useProviderDetail(open ? provider.providerId : undefined);
+  // Loaded once and cached; the labels fall back to the bare preset names when
+  // this is unavailable, so the form stays usable against an older gateway.
+  const identityVersions = useIdentityVersions();
   const fullProvider = detail.data ?? undefined;
   const source = fullProvider ?? provider;
   const hasFullRow = detail.data !== undefined;
@@ -536,7 +573,7 @@ export function EditProviderModal({
               setEditIdentityPreset(value as IdentityPreset);
               setIdentityDirty(true);
             }}
-            options={IDENTITY_PRESETS.map((p) => ({ value: p.value, label: p.label }))}
+            options={identityOptions(identityVersions.data).map((p) => ({ value: p.value, label: p.label }))}
           />
           {editIdentityPreset === "custom" ? (
             <div style={{ marginTop: "6px" }}>

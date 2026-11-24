@@ -356,11 +356,12 @@ export default function ProviderDetail(): ReactNode {
             icon={provider.providerId}
             name={providerDisplayName(provider.providerId, provider.label)}
             size={28}
-            iconUrl={
-              typeof provider.compatibilityProfile?.iconUrl === "string"
-                ? provider.compatibilityProfile.iconUrl
-                : undefined
-            }
+            // The top-level field, not `compatibilityProfile.iconUrl`: this page
+            // reads the list row, and only the detail endpoint projects the full
+            // profile. `sanitizeProviderResponse` lifts the icon onto every row
+            // for exactly this reason, so reading the nested path here showed the
+            // initials badge on a provider whose card had the operator's icon.
+            iconUrl={typeof provider.iconUrl === "string" ? provider.iconUrl : undefined}
           />
         }
         back={{ to: "/providers", label: "Back to Providers" }}

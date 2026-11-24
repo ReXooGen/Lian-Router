@@ -18,8 +18,11 @@ describe("Codex CLI client version", () => {
   });
 
   test("pinned fallback is used before discovery", () => {
-    expect(VERSION_SOURCES.codex.fallback).toBe("0.156.1");
+    // Relationship, not the literal: the fallback moves with every release
+    // refresh, and pinning it here turned each bump into a test edit — the same
+    // edit as deleting the assertion.
     expect(getCodexVersion()).toBe(VERSION_SOURCES.codex.fallback);
+    expect(VERSION_SOURCES.codex.fallback).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   test("resolves from the npm registry", async () => {

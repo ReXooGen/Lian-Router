@@ -18,8 +18,9 @@ describe("CommandCode client version", () => {
   });
 
   test("pinned fallback is used before discovery", () => {
+    // Relationship, not the literal — see the note in the codex suite.
     expect(getCommandCodeVersion()).toBe(VERSION_SOURCES.commandcode.fallback);
-    expect(VERSION_SOURCES.commandcode.fallback).toBe("1.64.0");
+    expect(VERSION_SOURCES.commandcode.fallback).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   test("resolves from the npm registry", async () => {

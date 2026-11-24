@@ -4,6 +4,7 @@ import type { LianRouterDatabase } from "../persistence/postgres";
 import { getRedis } from "../persistence/redis";
 import type { RedisClient } from "../persistence/redis";
 import { seedBundledProviders, registerByokProviders, liveProviderUpstreamHosts, bundledModelCatalog } from "../providers/operations/provider-catalog-service";
+import { startIdentityVersionRefresh, warmIdentityVersions } from "../providers/operations/client-versions";
 import type { BundledProviderCatalog } from "../providers/operations/provider-catalog-service";
 import { createDefaultProviderRegistry } from "../providers/default-registry";
 import { OAuthRefreshService, loadDueOAuthAccounts } from "../providers/authentication/oauth-refresh-service";
@@ -106,6 +107,16 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // Live view, not a snapshot: custom providers registered after boot (or
   // edited from the console) must resolve their SSRF binding immediately.
   const byokUpstreamHosts = liveProviderUpstreamHosts(registry);
+  // Fill the identity-version cache before the listener opens: the preset
+  // resolvers are synchronous by design (a dispatch must never wait on a
+  // registry), so without this the first request after every restart advertises
+  // the pinned fallback while the real release sits one fetch away. Best-effort
+  // and bounded — `warmIdentityVersions` never throws and the fallback is a
+  // working answer, so an offline deploy boots unchanged.
+  await warmIdentityVersions();
+  // Then keep it current for the life of the process: the presets read the
+  // cache synchronously, so nothing else would ever move them again.
+  startIdentityVersionRefresh();
   await registerByokProviders(registry, db, ssrfPolicy);
   const bundledCatalog = await bundledModelCatalog(registry);
   await seedBundledModels(db, bundledCatalog.modelsByProvider);

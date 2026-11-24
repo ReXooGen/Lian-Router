@@ -33,7 +33,7 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function invalidResponse(message: string): ApiErrorShape {
+export function invalidResponse(message: string): ApiErrorShape {
   return { status: 500, code: "invalid_response", message };
 }
 

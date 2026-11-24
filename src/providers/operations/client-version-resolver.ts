@@ -118,7 +118,12 @@ export function createClientVersionResolver(
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const sources = options.sources;
   let discovered: string | null = null;
-  let seeded = false;
+  // `resolvedAt` rather than a plain "already ran" latch: a boot-time warm that
+  // latched forever froze every preset at whatever the registry said at start,
+  // so a client shipping a new release kept seeing the old number until the
+  // gateway restarted. Re-checking once per TTL window keeps the identity
+  // honest without adding a request to every dispatch.
+  let resolvedAt = 0;
 
   function meetsMinimum(version: string, min: string | undefined): boolean {
     if (min === undefined) return true;
@@ -136,7 +141,7 @@ export function createClientVersionResolver(
   }
 
   async function ensure(fetcher: typeof fetch = globalThis.fetch, signal?: AbortSignal): Promise<void> {
-    if (seeded) return;
+    if (resolvedAt !== 0 && Date.now() - resolvedAt < ttlMs) return;
     const resolved = await getCachedVersion(
       options.key,
       async () => {
@@ -158,6 +163,9 @@ export function createClientVersionResolver(
       // belongs where a source can actually fail loudly, not here.
       { ttlMs },
     ).catch(() => null);
+    // Stamp even on failure: a registry that is down must not make every
+    // dispatch retry it. The next TTL window is the retry.
+    resolvedAt = Date.now();
     if (resolved !== null && meetsMinimum(resolved, options.minVersion)) discovered = resolved;
   }
 
@@ -177,7 +185,10 @@ export function createClientVersionResolver(
     },
     reset(version: string | null = null): void {
       discovered = version;
-      seeded = version !== null;
+      // A pinned value is a deliberate override, so it must survive the next
+      // TTL window: stamp it as just-resolved and let the clock expire it the
+      // same way a discovery would. `null` clears both so the next call probes.
+      resolvedAt = version === null ? 0 : Date.now();
       resetVersionCacheForTesting();
     },
   };

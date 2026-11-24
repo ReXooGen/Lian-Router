@@ -3,12 +3,55 @@ import type { ApiErrorShape } from "../api";
 // Console-owned device-poll DTO; token material remains provider-internal.
 import type { AccountHealthEventRecord, ByokConnectionTestRequest, ByokConnectionTestResult, CreateProviderAccountRequest, CreateProviderRequest, OAuthDevicePollResponse as OAuthDevicePollResult, ProbeAllAccountsResult, ProbeModelRequest, ProbeModelResult, ProviderAccountResponse, ProviderAccountsExportResponse, ProviderResponse, SetModelEnabledRequest, UpdateProviderAccountRequest, UpdateProviderRequest } from "../contracts";
 import { queryKeys } from "../query-keys";
-import { QUERY_OPTIONS, assertModels, assertProviderDetail, assertProviders, querySignal } from "./common";
+import { QUERY_OPTIONS, assertModels, assertProviderDetail, assertProviders, invalidResponse, querySignal } from "./common";
 import { getErrorMessage } from "../helpers";
 import { toast } from "../toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 
+
+/** Resolved identity headers, per preset — the same strings dispatch stamps. */
+export interface IdentityVersions {
+  readonly codex: string;
+  readonly claude: string;
+  readonly hermes: string;
+  readonly omp: string;
+  readonly gateway: string;
+}
+
+/** Validates the identity-version map; every key the dropdown needs must exist. */
+export function assertIdentityVersions(value: unknown): IdentityVersions {
+  if (typeof value !== "object" || value === null) throw invalidResponse("Invalid identity versions");
+  const record = value as Record<string, unknown>;
+  for (const key of ["codex", "claude", "hermes", "omp", "gateway"] as const) {
+    if (typeof record[key] !== "string" || record[key].length === 0) {
+      throw invalidResponse("Invalid identity versions");
+    }
+  }
+  return record as unknown as IdentityVersions;
+}
+
+/**
+ * Loads the identity headers behind the User-Agent preset dropdown.
+ *
+ * The labels need the real numbers: a static `<version>` placeholder hides
+ * whether discovery is working, and a baked-in literal goes stale the day the
+ * client ships. A failed load is not fatal — the presets still work, they just
+ * render without the resolved value.
+ */
+export function useIdentityVersions() {
+  return useQuery({
+    queryKey: queryKeys.providers.identityVersions,
+    queryFn: (context) =>
+      consoleRequest<unknown>("/providers/identity-versions", { signal: querySignal(context) }).then(
+        assertIdentityVersions,
+      ),
+    ...QUERY_OPTIONS,
+    // Long-lived: the gateway refreshes these on its own TTL, and a modal
+    // reopening every few seconds is not what makes them current.
+    staleTime: 5 * 60 * 1000,
+  });
+}
 
 /** Loads the tenant provider catalog. */
 export function useProviders() {

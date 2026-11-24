@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, vi } from "bun:test";
 import {
   createClientVersionResolver,
   isSemverish,
 } from "../../../src/providers/operations/client-version-resolver";
+import { startIdentityVersionRefresh } from "../../../src/providers/operations/client-versions";
 
 /** Fake fetch that answers each URL from a map; records the urls it saw. */
 function fakeFetch(responses: Record<string, string>): typeof fetch & { readonly urls: string[] } {
@@ -86,6 +87,69 @@ describe("createClientVersionResolver", () => {
     await resolver.ensure(fakeFetch({}));
     expect(resolver.get()).toBe("4.1.18");
   });
+
+  test("re-probes after the TTL window instead of latching forever", async () => {
+    // The regression this pins: `ensure` used to latch on its first success, so
+    // the boot warm froze every preset at the version the registry happened to
+    // return at start-up. A client shipping a new release kept being advertised
+    // at the old number until the gateway restarted.
+    vi.useFakeTimers();
+    try {
+      let published = "1.0.0";
+      const urls: string[] = [];
+      const fetcher = (async (url: string) => {
+        urls.push(url);
+        return new Response(JSON.stringify({ version: published }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch;
+
+      const resolver = createClientVersionResolver({
+        key: "test-ttl-refresh",
+        fallback: "0.0.1",
+        sources: [{ url: "https://example.invalid/latest" }],
+        ttlMs: 1_000,
+      });
+
+      await resolver.ensure(fetcher);
+      expect(resolver.get()).toBe("1.0.0");
+
+      published = "1.1.0";
+      // Inside the window: no second fetch, the cached value stands.
+      vi.advanceTimersByTime(500);
+      await resolver.ensure(fetcher);
+      expect(urls.length).toBe(1);
+      expect(resolver.get()).toBe("1.0.0");
+
+      vi.advanceTimersByTime(1_000);
+      await resolver.ensure(fetcher);
+      expect(urls.length).toBe(2);
+      expect(resolver.get()).toBe("1.1.0");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a failed probe still stamps the window so dispatch does not retry it", async () => {
+    const urls: string[] = [];
+    const fetcher = (async (url: string) => {
+      urls.push(url);
+      return new Response("boom", { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const resolver = createClientVersionResolver({
+      key: "test-ttl-failure",
+      fallback: "2.0.0",
+      sources: [{ url: "https://example.invalid/latest" }],
+      ttlMs: 60_000,
+    });
+
+    await resolver.ensure(fetcher);
+    await resolver.ensure(fetcher);
+    expect(resolver.get()).toBe("2.0.0");
+    expect(urls.length).toBe(1);
+  });
 });
 
 describe("isSemverish", () => {
@@ -95,5 +159,39 @@ describe("isSemverish", () => {
     expect(isSemverish("latest")).toBe(false);
     expect(isSemverish("")).toBe(false);
     expect(isSemverish(undefined)).toBe(false);
+  });
+});
+
+describe("startIdentityVersionRefresh", () => {
+  test("re-warms the cache on each tick and stops cleanly", async () => {
+    // The bug this pins: nothing re-read the resolvers after the boot warm, so
+    // a preset whose client shipped a new release kept advertising the number
+    // captured at start-up. A ticking refresh is the only thing that moves it.
+    vi.useFakeTimers();
+    try {
+      const urls: string[] = [];
+      const fetcher = (async (url: string) => {
+        urls.push(url);
+        return new Response(JSON.stringify({ version: "3.0.0" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch;
+
+      const stop = startIdentityVersionRefresh(1_000, fetcher);
+      expect(urls.length).toBe(0);
+
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+      expect(urls.length).toBeGreaterThan(0);
+
+      const afterFirst = urls.length;
+      stop();
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+      expect(urls.length).toBe(afterFirst);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

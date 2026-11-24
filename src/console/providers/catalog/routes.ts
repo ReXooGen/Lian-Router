@@ -7,7 +7,16 @@ import {
   ACCOUNT_MAX_INFLIGHT_BOUNDS,
   ACCOUNT_STATUSES,
   CREDENTIAL_KINDS,
+  PROVIDER_READ_SCOPES,
 } from "./contracts";
+import { requireTenantAnyScope } from "../../shared/errors";
+import {
+  getClaudeCliVersion,
+  getCodexVersion,
+  getHermesVersion,
+  getOmpAgentVersion,
+} from "../../../providers/operations/client-versions";
+import { GATEWAY_USER_AGENT } from "../../../providers/operations/gateway-user-agent";
 import { createModelCatalogOperations } from "./model-operations";
 import {
   createProviderCatalogOperations,
@@ -180,6 +189,28 @@ export function createProviderCatalogRoutes(config: ProviderCatalogConfig): Elys
         );
 },
     )
+    .get("/identity-versions", async ({ request }) => {
+      // Gated with the same resolver and scope as every read in this file: the
+      // console router authenticates by inspecting the decision a handler
+      // records, so a handler that resolves nothing is a handler the gate never
+      // sees. The scope is checked directly rather than by reusing a list
+      // operation — those touch the store, and this route needs no rows.
+      //
+      // The dropdown labels come from these values so an operator choosing
+      // "Claude Code CLI" sees the number that will actually be sent, instead of
+      // a `<version>` placeholder that hides whether discovery is working at
+      // all. Declared before `/:providerId` for the same reason
+      // `connection-test` is: a literal segment must never be captured as a
+      // provider id.
+      requireTenantAnyScope(config.accessResolver(request), PROVIDER_READ_SCOPES);
+      return {
+        codex: `codex_cli_rs/${getCodexVersion()}`,
+        claude: `claude-cli/${getClaudeCliVersion()} (external, cli)`,
+        hermes: `hermes-agent/${getHermesVersion()}`,
+        omp: `omp/${getOmpAgentVersion()}`,
+        gateway: GATEWAY_USER_AGENT,
+      };
+    })
     .get("/:providerId", async ({ request, params }) => {
       return await factory.getProviderDetail(config.accessResolver(request), params.providerId);
 })

@@ -55,6 +55,13 @@ export const queryKeys = {
   },
   providers: {
     all: ["console", "providers"] as const,
+    /**
+     * Deliberately outside the `providers` prefix. `detail(id)` builds
+     * `["console","providers",id]`, so any provider whose id happened to be
+     * "identity-versions" would share a cache entry with this route's data and
+     * render a version map where a provider row belongs.
+     */
+    identityVersions: ["console", "identity-versions"] as const,
     detail: (providerId: string) => ["console", "providers", providerId] as const,
     models: (providerId: string | undefined) =>
       ["console", "providers", providerId, "models"] as const,

@@ -34,7 +34,22 @@ async function clineSdkVersion(response: Response): Promise<string | null> {
   return isSemverish(candidate) ? candidate.trim() : null;
 }
 
-async function kimiVersion(response: Response): Promise<string | null> {
+/**
+ * Newest tag from a GitHub `releases.atom` feed.
+ *
+ * The API's `/releases/latest` costs a rate-limit token and answers 403 once the
+ * unauthenticated budget is gone, which on a shared egress IP is routine. The
+ * feed is the same data as XML, costs nothing, and is what the release page
+ * itself renders. Entries are ordered newest-first, so the first well-formed
+ * `vX.Y.Z` tag wins.
+ */
+async function githubReleaseVersion(response: Response): Promise<string | null> {
+  const xml = await response.text();
+  const match = /<title>\s*v?(\d+\.\d+\.\d+)\s*<\/title>/.exec(xml);
+  return match?.[1] ?? null;
+}
+
+async function pypiVersion(response: Response): Promise<string | null> {
   const data = (await response.json()) as { info?: { version?: unknown } };
   return isSemverish(data.info?.version) ? data.info.version.trim() : null;
 }
@@ -55,7 +70,7 @@ async function workbuddyDesktopVersion(response: Response): Promise<string | nul
 export const VERSION_SOURCES = {
   qoder: {
     key: "qoder",
-    fallback: "1.1.62",
+    fallback: "1.1.96",
     sources: [
       {
         url: "https://registry.npmjs.org/@qoder-ai/qodercli/latest",
@@ -68,18 +83,18 @@ export const VERSION_SOURCES = {
     // The free-tier gate answers `426 UpgradeRequired` for any `user-agent`
     // below 1.18.0, so a registry publishing an older artifact must never be
     // stamped on a dispatch. The pinned fallback is itself above the floor.
-    fallback: "1.18.32",
+    fallback: "1.19.6",
     minVersion: "1.18.0",
     sources: [{ url: "https://registry.npmjs.org/opencode-ai/latest" }],
   },
   commandcode: {
     key: "commandcode",
-    fallback: "1.64.0",
+    fallback: "1.93.2",
     sources: [{ url: "https://registry.npmjs.org/command-code/latest" }],
   },
   grok: {
     key: "grok",
-    fallback: "1.0.41",
+    fallback: "1.0.92",
     sources: [
       { url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/stable" },
       { url: "https://registry.npmjs.org/@xai-official/grok/latest" },
@@ -87,7 +102,7 @@ export const VERSION_SOURCES = {
   },
   clineClient: {
     key: "cline-client",
-    fallback: "4.1.20",
+    fallback: "4.1.27",
     minVersion: "4.1.20",
     sources: [
       {
@@ -98,26 +113,33 @@ export const VERSION_SOURCES = {
   },
   clineSdk: {
     key: "cline-sdk",
-    fallback: "0.0.85",
+    fallback: "0.2.1",
     sources: [{ url: "https://registry.npmjs.org/@cline/sdk/latest", extract: clineSdkVersion }],
   },
   codex: {
     key: "codex",
-    fallback: "0.156.1",
+    fallback: "0.172.0",
     sources: [{ url: "https://registry.npmjs.org/@openai/codex/latest" }],
   },
-  // OMP agent (`omp` CLI, oh-my-pi). The CLI's own face is
-  // `omp/<version>`, and its release line is tracked by the
-  // `@oh-my-pi/pi-coding-agent` npm package whose versions match the
-  // GitHub release tags (18.x line) one-for-one.
+  // OMP agent (`omp` CLI, oh-my-pi). The CLI's own face is `omp/<version>`, and
+  // the client stamps its own release into it — `omp --version` reports 19.x
+  // while the npm package `@oh-my-pi/pi-coding-agent` stayed on the 18.x line,
+  // so reading npm advertised a client one major version behind every install
+  // in the wild. Release tags live on GitHub; the atom feed is read instead of
+  // the API because the API costs quota.
   ompAgent: {
     key: "omp-agent",
-    fallback: "18.16.0",
-    sources: [{ url: "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest" }],
+    fallback: "19.1.1",
+    sources: [
+      {
+        url: "https://github.com/can1357/oh-my-pi/releases.atom",
+        extract: githubReleaseVersion,
+      },
+    ],
   },
   workbuddyClient: {
     key: "workbuddy-client",
-    fallback: "5.6.2.39458645",
+    fallback: "5.11.4.44121853",
     sources: [
       {
         url: "https://www.workbuddy.ai/v2/update?platform=workbuddy-win32-x64-user",
@@ -131,7 +153,7 @@ export const VERSION_SOURCES = {
   },
   workbuddyCli: {
     key: "workbuddy",
-    fallback: "2.157.0",
+    fallback: "2.186.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -140,11 +162,11 @@ export const VERSION_SOURCES = {
   kimiCli: {
     key: "kimi-cli",
     fallback: "1.52.0",
-    sources: [{ url: "https://pypi.org/pypi/kimi-cli/json", extract: kimiVersion }],
+    sources: [{ url: "https://pypi.org/pypi/kimi-cli/json", extract: pypiVersion }],
   },
   codebuddy: {
     key: "codebuddy",
-    fallback: "2.157.0",
+    fallback: "2.186.0",
     sources: [
       { url: "https://registry.npmjs.org/@tencent-ai/codebuddy-code/latest" },
       { url: "https://registry.npmmirror.com/@tencent-ai/codebuddy-code/latest" },
@@ -155,8 +177,20 @@ export const VERSION_SOURCES = {
     // Current `@anthropic-ai/claude-code` release, so the billing
     // `cc_version=` suffix and the `claude-cli/` User-Agent stay on what
     // upstream ships.
-    fallback: "2.1.280",
+    fallback: "2.1.331",
     sources: [{ url: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest" }],
+  },
+  hermes: {
+    key: "hermes-agent",
+    // `hermes-agent` on PyPI, published by Nous Research. Hermes stamps its own
+    // release into the `hermes-agent/<version>` User-Agent and into the portal
+    // tag `client=hermes-client-v<version>`, and it sources both from
+    // `hermes_cli.__version__` at runtime — so the number a real install sends
+    // moves with every release and a pinned literal here starts lying
+    // immediately. PyPI project JSON is the publisher's own record of that
+    // string, which makes it the honest discovery source.
+    fallback: "0.19.0",
+    sources: [{ url: "https://pypi.org/pypi/hermes-agent/json", extract: pypiVersion }],
   },
   claudeSdk: {
     key: "claude-sdk",
@@ -166,7 +200,7 @@ export const VERSION_SOURCES = {
     // npm's standalone SDK is a different release line and is deliberately not
     // discovered: it would advertise a version Claude Code never bundled. Bump
     // alongside the CLI.
-    fallback: "0.112.1",
+    fallback: "0.128.0",
     sources: [],
   },
 } as const;
@@ -186,6 +220,7 @@ const resolvers = {
   codebuddy: createClientVersionResolver(VERSION_SOURCES.codebuddy),
   claudeCli: createClientVersionResolver(VERSION_SOURCES.claudeCli),
   claudeSdk: createClientVersionResolver(VERSION_SOURCES.claudeSdk),
+  hermes: createClientVersionResolver(VERSION_SOURCES.hermes),
 } satisfies Record<keyof typeof VERSION_SOURCES, ClientVersionResolver>;
 
 export function getQoderVersion(): string {
@@ -289,6 +324,22 @@ export function _resetWorkBuddyClientVersionCache(version: string | null = null)
 
 export function getCodexVersion(): string {
   return resolvers.codex.get();
+}
+
+export function getHermesVersion(): string {
+  return resolvers.hermes.get();
+}
+
+export async function resolveHermesVersion(
+  fetcher?: typeof fetch,
+  signal?: AbortSignal,
+): Promise<string> {
+  await resolvers.hermes.ensure(fetcher, signal);
+  return getHermesVersion();
+}
+
+export function _resetHermesVersion(version: string | null = null): void {
+  resolvers.hermes.reset(version);
 }
 
 export function getOmpAgentVersion(): string {
@@ -405,4 +456,63 @@ export async function resolveClaudeSdkVersion(fetcher?: typeof fetch, signal?: A
 export function _resetClaudeVersionCache(version: string | null = null): void {
   resolvers.claudeCli.reset(version);
   resolvers.claudeSdk.reset(version);
+}
+
+/**
+ * Every resolver whose value a User-Agent identity preset advertises.
+ *
+ * Listed by preset name rather than by resolver key because the keys and the
+ * preset vocabulary differ (`ompAgent` vs `omp`), and the route that renders the
+ * dropdown labels speaks the preset vocabulary.
+ */
+const IDENTITY_VERSION_RESOLVERS = [
+  ["codex", () => resolvers.codex],
+  ["claude-cli", () => resolvers.claudeCli],
+  ["hermes-agent", () => resolvers.hermes],
+  ["omp", () => resolvers.ompAgent],
+] as const;
+
+/**
+ * Fills the discovery cache for every identity preset, in parallel.
+ *
+ * Called once at boot, before the listener accepts traffic. Not awaited by the
+ * request path and never throws: discovery is best-effort and the pinned
+ * fallback is a working answer, so a registry outage or a network-less deploy
+ * must not delay or fail the boot.
+ *
+ * The resolvers re-check once per TTL window after this, so a client shipping a
+ * new release is picked up without a restart.
+ */
+export async function warmIdentityVersions(fetcher: typeof fetch = globalThis.fetch): Promise<void> {
+  await Promise.allSettled(
+    IDENTITY_VERSION_RESOLVERS.map(([, resolver]) => resolver().ensure(fetcher)),
+  );
+}
+
+/** How often the background refresh re-reads every resolver. */
+const IDENTITY_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+
+/**
+ * Keeps the identity-version cache warm for the lifetime of the process.
+ *
+ * Without this the cache only moves when a dispatch happens to await a resolver
+ * — and the User-Agent presets resolve synchronously, so on a gateway whose
+ * custom providers sit idle the advertised version would stay at whatever the
+ * boot warm found until the next restart. An hourly-ish timer is the difference
+ * between "tracks the client it claims to be" and "tracks it once per deploy".
+ *
+ * `unref` so a pending refresh never holds the process open during shutdown.
+ * Returns a stop function for tests and for an orderly teardown.
+ */
+export function startIdentityVersionRefresh(
+  intervalMs: number = IDENTITY_REFRESH_INTERVAL_MS,
+  fetcher: typeof fetch = globalThis.fetch,
+): () => void {
+  const timer = setInterval(() => {
+    void warmIdentityVersions(fetcher).catch(() => {});
+  }, intervalMs);
+  if (typeof (timer as { unref?: () => void }).unref === "function") {
+    (timer as { unref: () => void }).unref();
+  }
+  return () => clearInterval(timer);
 }
