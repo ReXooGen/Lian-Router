@@ -162,3 +162,30 @@ test("accepts presentation-only fields it shape-validates", () => {
     iconUrl: `data:image/png;base64,${"A".repeat(64)}`,
   } as never);
 });
+
+/**
+ * The runtime-reader whitelist is the second gate a profile passes: a field the
+ * shape validator accepts must also be admitted here, or every console save
+ * carrying it answers 400 "has no runtime reader". `userAgent` cleared the first
+ * gate and failed the second, which is why the identity select saved nothing and
+ * reported an error the operator could not act on.
+ */
+describe("validateCompatibilityProfile — runtime-reader whitelist", () => {
+  test("admits an identity preset", () => {
+    expect(() =>
+      validateCompatibilityProfile({ userAgent: "omp" } satisfies CompatibilityProfile),
+    ).not.toThrow();
+  });
+
+  test("admits a literal identity", () => {
+    expect(() =>
+      validateCompatibilityProfile({ userAgent: "my-agent/1.2.3" } satisfies CompatibilityProfile),
+    ).not.toThrow();
+  });
+
+  test("still rejects a field with no reader at all", () => {
+    expect(() =>
+      validateCompatibilityProfile({ notARealField: "x" } as unknown as CompatibilityProfile),
+    ).toThrow(/has no runtime reader/);
+  });
+});

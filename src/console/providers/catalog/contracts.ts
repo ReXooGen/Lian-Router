@@ -331,6 +331,12 @@ export function validateCompatibilityProfile(profile: CompatibilityProfile): voi
     // Explicit gateway-identity opt-in for BYOK rows (mirrors
     // `ApiKeyProviderSpec.gatewayUserAgent` for bundled specs).
     gateway_user_agent: true,
+    // Read by `provider-catalog-service`'s `buildExtraHeaders`: an explicit
+    // preset or literal outranks both the gateway identity and CLI cloaking.
+    // Shape-validated above (preset name or a bounded literal); it was missing
+    // here, so the dashboard's identity select validated, saved nothing, and
+    // answered 400 "has no runtime reader" on every attempt.
+    userAgent: true,
     // Presentation-only fields the dashboard persists with the row. Both are
     // shape-validated above; neither reaches dispatch, but the edit dialog
     // round-trips them inside `compatibilityProfile`, so the whitelist must

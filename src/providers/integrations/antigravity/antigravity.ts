@@ -114,6 +114,27 @@ export const ANTIGRAVITY_MODELS: readonly ModelDefinition[] = [
   antigravityModel("gemini-3.8-flash-high", 1_048_576, 65_536, true),
   // GPT-OSS
   antigravityModel("gpt-oss-120b", 131_072, 32_768, true),
+  // Gemini 4 families (hydrogen / carbon / argon / neon). Each effort tier is a
+  // separate upstream deployment; `xhigh` exists only on hydrogen and neon,
+  // matching the roster 9router publishes and the ids upstream accepts. The
+  // console collapses the tiers onto one row per family.
+  antigravityModel("gemini-4-hydrogen", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-hydrogen-xhigh", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-hydrogen-high", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-hydrogen-medium", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-hydrogen-low", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-carbon", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-carbon-high", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-carbon-medium", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-carbon-low", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-argon", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-argon-medium", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-argon-low", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-neon", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-neon-xhigh", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-neon-high", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-neon-medium", 1_048_576, 65_536, true),
+  antigravityModel("gemini-4-neon-low", 1_048_576, 65_536, true),
   // Current-generation ids the published roster lists as their own names.
   // Each maps to a live deployment through `antigravityWireModelId`; the
   // `-high`/`-medium`/`-low` rows are separate upstream ids, not aliases of
@@ -122,10 +143,12 @@ export const ANTIGRAVITY_MODELS: readonly ModelDefinition[] = [
   antigravityModel("gemini-3.1-pro-high", 1_048_576, 65_535, true),
   antigravityModel("gemini-pro-agent", 1_048_576, 65_535, true),
   antigravityModel("gemini-3.1-pro-low", 1_048_576, 65_535, true),
+  antigravityModel("claude-sonnet-5-5-max", 1_000_000, 64_000, true),
   antigravityModel("claude-sonnet-5-5", 1_000_000, 64_000, true),
   antigravityModel("claude-sonnet-5-5-high", 1_000_000, 64_000, true),
   antigravityModel("claude-sonnet-5-5-medium", 1_000_000, 64_000, true),
   antigravityModel("claude-sonnet-5-5-low", 1_000_000, 64_000, true),
+  antigravityModel("claude-opus-5-5-max", 1_000_000, 64_000, true),
   antigravityModel("claude-opus-5-5", 1_000_000, 64_000, true),
   antigravityModel("claude-opus-5-5-high", 1_000_000, 64_000, true),
   antigravityModel("claude-opus-5-5-medium", 1_000_000, 64_000, true),
@@ -726,7 +749,11 @@ function buildAntigravityEnvelope(
     requestId: `agent/${state.agentId}/${Date.now()}/${state.trajectoryId}/${step}`,
     model: wireModelId,
     userAgent: "antigravity",
-    requestType: "agent",
+    // No `requestType` on the chat path. The official Antigravity client omits
+    // it, and sending `"agent"` makes Google bucket the request and answer a
+    // detail-free 429 RESOURCE_EXHAUSTED even with quota available (9router
+    // deletes it for exactly this reason). Image and search buckets keep their
+    // own value; only the agent path drops it.
     request: requestPayload,
   };
   if (projectId) {

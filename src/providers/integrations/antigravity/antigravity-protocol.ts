@@ -181,6 +181,23 @@ const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<
   "claude-opus-5-5-high(high)": { maxOutputTokens: 64000 },
   "claude-opus-5-5-medium(medium)": { maxOutputTokens: 64000 },
   "claude-opus-5-5-low(low)": { maxOutputTokens: 64000 },
+  "claude-sonnet-5-5-max(max)": { maxOutputTokens: 64000 },
+  "claude-opus-5-5-max(max)": { maxOutputTokens: 64000 },
+  // Gemini 4 effort-routed wire ids.
+  "gemini-4-hydrogen-xhigh(xhigh)": { maxOutputTokens: 65536 },
+  "gemini-4-hydrogen-high(high)": { maxOutputTokens: 65536 },
+  "gemini-4-hydrogen-medium(medium)": { maxOutputTokens: 65536 },
+  "gemini-4-hydrogen-low(low)": { maxOutputTokens: 65536 },
+  "gemini-4-carbon-high(high)": { maxOutputTokens: 65536 },
+  "gemini-4-carbon-medium(medium)": { maxOutputTokens: 65536 },
+  "gemini-4-carbon-low(low)": { maxOutputTokens: 65536 },
+  "gemini-4-argon-high(high)": { maxOutputTokens: 65536 },
+  "gemini-4-argon-medium(medium)": { maxOutputTokens: 65536 },
+  "gemini-4-argon-low(low)": { maxOutputTokens: 65536 },
+  "gemini-4-neon-xhigh(xhigh)": { maxOutputTokens: 65536 },
+  "gemini-4-neon-high(high)": { maxOutputTokens: 65536 },
+  "gemini-4-neon-medium(medium)": { maxOutputTokens: 65536 },
+  "gemini-4-neon-low(low)": { maxOutputTokens: 65536 },
   // Gemini effort-routed wire ids (real deployment names).
   "gemini-3.5-flash-extra-low": {
     modelEnum: "MODEL_PLACEHOLDER_M187",
@@ -209,7 +226,6 @@ const ANTIGRAVITY_MODEL_WIRE_PROFILES: Readonly<
     modelEnum: "MODEL_PLACEHOLDER_M36",
     maxOutputTokens: 65535,
   },
-  "gemini-4-argon-high(high)": { maxOutputTokens: 65536 },
   "gemini-pro-agent": {
     modelEnum: "MODEL_PLACEHOLDER_M16",
     maxOutputTokens: 65535,
@@ -244,14 +260,41 @@ export function antigravityWireModelId(modelId: string): string {
   if (modelId === "gemini-3.1-pro-low") return "gemini-3.1-pro-low(low)";
   // Claude 5.5 on Antigravity: the bare id rides the high tier, and each
   // effort tier is a separate deployment.
-  if (modelId === "claude-sonnet-5-5") return "claude-sonnet-5-5-high(high)";
+  // The bare family id rides the MEDIUM tier, which is what 9router resolves and
+  // what its own test pins (`claude-sonnet-5-5` -> `claude-sonnet-5-5-medium(medium)`).
+  // It rode `-high` here, so a client asking for the family default silently got
+  // the most expensive tier.
+  if (modelId === "claude-sonnet-5-5") return "claude-sonnet-5-5-medium(medium)";
+  if (modelId === "claude-sonnet-5-5-max") return "claude-sonnet-5-5-max(max)";
   if (modelId === "claude-sonnet-5-5-high") return "claude-sonnet-5-5-high(high)";
   if (modelId === "claude-sonnet-5-5-medium") return "claude-sonnet-5-5-medium(medium)";
   if (modelId === "claude-sonnet-5-5-low") return "claude-sonnet-5-5-low(low)";
-  if (modelId === "claude-opus-5-5") return "claude-opus-5-5-high(high)";
+  if (modelId === "claude-opus-5-5") return "claude-opus-5-5-medium(medium)";
+  if (modelId === "claude-opus-5-5-max") return "claude-opus-5-5-max(max)";
   if (modelId === "claude-opus-5-5-high") return "claude-opus-5-5-high(high)";
   if (modelId === "claude-opus-5-5-medium") return "claude-opus-5-5-medium(medium)";
   if (modelId === "claude-opus-5-5-low") return "claude-opus-5-5-low(low)";
+  // Gemini 4 families (hydrogen / carbon / argon / neon) from the 9router
+  // registry: each tier is a separate `(<effort>)` deployment, and the bare
+  // family id resolves to the high tier there. `xhigh` exists only on hydrogen
+  // and neon, matching upstream's published roster.
+  if (modelId === "gemini-4-hydrogen") return "gemini-4-hydrogen-high(high)";
+  if (modelId === "gemini-4-hydrogen-xhigh") return "gemini-4-hydrogen-xhigh(xhigh)";
+  if (modelId === "gemini-4-hydrogen-high") return "gemini-4-hydrogen-high(high)";
+  if (modelId === "gemini-4-hydrogen-medium") return "gemini-4-hydrogen-medium(medium)";
+  if (modelId === "gemini-4-hydrogen-low") return "gemini-4-hydrogen-low(low)";
+  if (modelId === "gemini-4-carbon") return "gemini-4-carbon-high(high)";
+  if (modelId === "gemini-4-carbon-high") return "gemini-4-carbon-high(high)";
+  if (modelId === "gemini-4-carbon-medium") return "gemini-4-carbon-medium(medium)";
+  if (modelId === "gemini-4-carbon-low") return "gemini-4-carbon-low(low)";
+  if (modelId === "gemini-4-argon") return "gemini-4-argon-high(high)";
+  if (modelId === "gemini-4-argon-medium") return "gemini-4-argon-medium(medium)";
+  if (modelId === "gemini-4-argon-low") return "gemini-4-argon-low(low)";
+  if (modelId === "gemini-4-neon") return "gemini-4-neon-high(high)";
+  if (modelId === "gemini-4-neon-xhigh") return "gemini-4-neon-xhigh(xhigh)";
+  if (modelId === "gemini-4-neon-high") return "gemini-4-neon-high(high)";
+  if (modelId === "gemini-4-neon-medium") return "gemini-4-neon-medium(medium)";
+  if (modelId === "gemini-4-neon-low") return "gemini-4-neon-low(low)";
   // Gemini 3.6/3.7 flash: effort routed through the `-tiered(<effort>)` deployment
   // (captured from the 9Router production catalog; matches what the Antigravity
   // IDE sends when the user picks a thinking budget). Logical bare id defaults
@@ -296,6 +339,9 @@ const ANTIGRAVITY_DISCOVERY_DENYLIST: Readonly<Record<string, true>> = {
  * dispatch time. Unmapped ids are already logical ids and pass through.
  */
 function collapseAntigravityVariant(modelId: string): string {
+  // Gemini 4 effort tiers collapse onto their bare family id so the console
+  // lists one row per family; the tier itself is preserved by the wire mapping.
+  modelId = modelId.replace(/^gemini-4-(hydrogen|carbon|argon|neon)-(xhigh|high|medium|low)$/, "gemini-4-$1");
   if (modelId === "claude-opus-4-6-thinking") return "claude-opus-4-6";
   if (modelId === "gemini-pro-agent") return "gemini-3.1-pro";
   if (modelId === "gemini-3-flash-agent") return "gemini-3.5-flash";
