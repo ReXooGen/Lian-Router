@@ -137,6 +137,21 @@ export const VERSION_SOURCES = {
       },
     ],
   },
+  zcode: {
+    key: "zcode-cli",
+    // The ZCode desktop client release, published by zai-org. Only the
+    // *campaign* faces read this; the inference lane is version-locked to a
+    // captured system prompt and must not follow the feed on its own (see
+    // `zcode/identity.ts`). Release tags live on GitHub, and the atom feed is
+    // read instead of the API because the API costs rate-limit quota.
+    fallback: "4.0.0",
+    sources: [
+      {
+        url: "https://github.com/zai-org/ZCode/releases.atom",
+        extract: githubReleaseVersion,
+      },
+    ],
+  },
   workbuddyClient: {
     key: "workbuddy-client",
     fallback: "5.11.4.44121853",
@@ -214,6 +229,7 @@ const resolvers = {
   clineSdk: createClientVersionResolver(VERSION_SOURCES.clineSdk),
   codex: createClientVersionResolver(VERSION_SOURCES.codex),
   ompAgent: createClientVersionResolver(VERSION_SOURCES.ompAgent),
+  zcode: createClientVersionResolver(VERSION_SOURCES.zcode),
   workbuddyClient: createClientVersionResolver(VERSION_SOURCES.workbuddyClient),
   workbuddyCli: createClientVersionResolver(VERSION_SOURCES.workbuddyCli),
   kimiCli: createClientVersionResolver(VERSION_SOURCES.kimiCli),
@@ -324,6 +340,29 @@ export function _resetWorkBuddyClientVersionCache(version: string | null = null)
 
 export function getCodexVersion(): string {
   return resolvers.codex.get();
+}
+
+/**
+ * Current ZCode desktop release.
+ *
+ * Consumed by the campaign/control faces only. The inference lane is pinned to
+ * a captured system prompt and reads its own constant; letting this value flow
+ * there would advertise a client whose prompt we do not speak.
+ */
+export function getZcodeVersion(): string {
+  return resolvers.zcode.get();
+}
+
+export async function resolveZcodeVersion(
+  fetcher?: typeof fetch,
+  signal?: AbortSignal,
+): Promise<string> {
+  await resolvers.zcode.ensure(fetcher, signal);
+  return getZcodeVersion();
+}
+
+export function _resetZcodeVersion(version: string | null = null): void {
+  resolvers.zcode.reset(version);
 }
 
 export function getHermesVersion(): string {
@@ -470,6 +509,7 @@ const IDENTITY_VERSION_RESOLVERS = [
   ["claude-cli", () => resolvers.claudeCli],
   ["hermes-agent", () => resolvers.hermes],
   ["omp", () => resolvers.ompAgent],
+  ["zcode", () => resolvers.zcode],
 ] as const;
 
 /**

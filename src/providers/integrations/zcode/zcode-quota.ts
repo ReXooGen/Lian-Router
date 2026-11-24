@@ -29,7 +29,7 @@ import {
 } from "../../quota/quota-contracts";
 import { zcodeDeviceId } from "./spec";
 import { zcodePlanToken } from "./zcode-oauth";
-import { ZCODE_ANTHROPIC_VERSION, ZCODE_CAMPAIGN_APP_VERSION } from "./identity";
+import { ZCODE_ANTHROPIC_VERSION, zcodeCampaignAppVersion } from "./identity";
 
 const ZCODE_ORIGIN = "https://zcode.z.ai";
 const BALANCE_PATH = "/api/v1/zcode-plan/billing/balance";
@@ -64,10 +64,10 @@ function controlHeaders(jwt: string): Record<string, string> {
     authorization: `Bearer ${jwt}`,
     accept: "application/json",
     "http-referer": "https://zcode.z.ai",
-    "user-agent": `ZCode/${ZCODE_CAMPAIGN_APP_VERSION}`,
+    "user-agent": `ZCode/${zcodeCampaignAppVersion()}`,
     "x-title": "Z Code@electron",
     "x-release-channel": "production",
-    "x-zcode-app-version": ZCODE_CAMPAIGN_APP_VERSION,
+    "x-zcode-app-version": zcodeCampaignAppVersion(),
     "x-platform": `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`,
     "x-os-category":
       process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux",
@@ -263,7 +263,7 @@ export async function fetchZcodeQuota(
   try {
     const body = record(
       await getJsonWithRateLimitRetry(
-        `${ZCODE_ORIGIN}${BALANCE_PATH}?app_version=${encodeURIComponent(ZCODE_CAMPAIGN_APP_VERSION)}&platform=${encodeURIComponent(`${process.platform}-${process.arch}`)}`,
+        `${ZCODE_ORIGIN}${BALANCE_PATH}?app_version=${encodeURIComponent(zcodeCampaignAppVersion())}&platform=${encodeURIComponent(`${process.platform}-${process.arch}`)}`,
         controlHeaders(jwt),
         fetcher,
       ),

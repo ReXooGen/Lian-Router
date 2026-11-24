@@ -21,7 +21,7 @@ import type { FetchLike } from "../../quota/quota-contracts";
 import { getJsonWithRateLimitRetry, number, record, text } from "../../quota/quota-contracts";
 import { zcodeDeviceId } from "./spec";
 import { zcodePlanToken } from "./zcode-oauth";
-import { ZCODE_ANTHROPIC_VERSION, ZCODE_CAMPAIGN_APP_VERSION } from "./identity";
+import { ZCODE_ANTHROPIC_VERSION, zcodeCampaignAppVersion } from "./identity";
 
 const ZCODE_ORIGIN = "https://zcode.z.ai";
 const PREVIEW_PATH = "/api/v1/zcode-plan/billing/preview";
@@ -84,15 +84,16 @@ export interface ZcodeClaimListing {
 }
 
 function controlHeaders(jwt: string, json: boolean): Record<string, string> {
+  const appVersion = zcodeCampaignAppVersion();
   return {
     authorization: `Bearer ${jwt}`,
     accept: "application/json",
     ...(json ? { "content-type": "application/json" } : {}),
     "http-referer": "https://zcode.z.ai",
-    "user-agent": `ZCode/${ZCODE_CAMPAIGN_APP_VERSION}`,
+    "user-agent": `ZCode/${appVersion}`,
     "x-title": "Z Code@electron",
     "x-release-channel": "production",
-    "x-zcode-app-version": ZCODE_CAMPAIGN_APP_VERSION,
+    "x-zcode-app-version": appVersion,
     "x-platform": `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`,
     "x-os-category":
       process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux",
@@ -207,7 +208,7 @@ export async function listZcodeClaims(
   try {
     const preview = record(
       await getJsonWithRateLimitRetry(
-        `${ZCODE_ORIGIN}${PREVIEW_PATH}?app_version=${encodeURIComponent(ZCODE_CAMPAIGN_APP_VERSION)}&platform=${encodeURIComponent(`${process.platform}-${process.arch}`)}`,
+        `${ZCODE_ORIGIN}${PREVIEW_PATH}?app_version=${encodeURIComponent(zcodeCampaignAppVersion())}&platform=${encodeURIComponent(`${process.platform}-${process.arch}`)}`,
         controlHeaders(jwt, false),
         fetcher,
       ),
@@ -264,9 +265,9 @@ export async function fetchZcodeClaimVerificationConfig(
   // The config surface is language-gated: without this it answers the generic
   // bundle and the captcha object comes back absent.
   headers["x-client-language"] = "zh-CN";
-  headers["user-agent"] = `zcode/${ZCODE_CAMPAIGN_APP_VERSION}`;
+  headers["user-agent"] = `zcode/${zcodeCampaignAppVersion()}`;
   const url =
-    `${ZCODE_ORIGIN}${CONFIGS_PATH}?app_version=${encodeURIComponent(ZCODE_CAMPAIGN_APP_VERSION)}` +
+    `${ZCODE_ORIGIN}${CONFIGS_PATH}?app_version=${encodeURIComponent(zcodeCampaignAppVersion())}` +
     `&platform=${encodeURIComponent(`${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`)}`;
   const body = record(await getJsonWithRateLimitRetry(url, headers, fetcher));
   const code = number(body?.["code"]);

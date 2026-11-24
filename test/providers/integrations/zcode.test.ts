@@ -83,6 +83,44 @@ describe("zcode identity blocks", () => {
     expect(blocks[1]?.text).toBe(ZCODE_STABLE_PREFIX);
     expect(blocks[2]?.text).toBe(`\n\n${ZCODE_CLI_PREFIX}`);
   });
+
+  /**
+   * The 4.0.0 contract, asserted by shape rather than by re-reading the
+   * constant back to itself.
+   *
+   * `toThrow(/3012/)`-style tests are useless here because the gate is remote;
+   * what can be checked offline is that the asset still has the shape the
+   * publisher documents. These five facts are the ones that changed between 3.x
+   * and 4.0.0 and the ones a careless edit would silently undo.
+   */
+  test("matches the ZCode 4.0.0 prompt contract", () => {
+    // The docs pin this exact string, quoted, for every 3.17.2+ release.
+    expect(ZCODE_CLI_PREFIX).toBe("You are ZCode, an interactive agent");
+    // 4.0.0 opens the stable body with the judgement-and-goals intro. 3.x
+    // opened with "You are an interactive ZCode agent"; a stale capture is the
+    // failure this catches.
+    expect(ZCODE_STABLE_PREFIX.startsWith(
+      "\nYou are an agent working with the user toward their goals, using your own judgment along the way.",
+    )).toBe(true);
+    // The software-engineering framing is gone from the static body: it moved
+    // to the dynamic block. Its presence here means the 3.x asset is back.
+    expect(ZCODE_STABLE_PREFIX.startsWith("\nYou are an interactive ZCode agent")).toBe(false);
+    // Harness rules survived the rewrite, and every bullet is " - " prefixed.
+    expect(ZCODE_STABLE_PREFIX).toContain("\n# Harness\n - Text you output outside of tool use");
+    // The body ends at the last harness bullet, so the dynamic sections must
+    // not have been folded in.
+    expect(ZCODE_STABLE_PREFIX).not.toContain("# Context management");
+    expect(ZCODE_STABLE_PREFIX.endsWith("it's clickable.")).toBe(true);
+    // Length is a cheap tamper check: 1229 is the published reconstruction.
+    expect(ZCODE_STABLE_PREFIX.length).toBe(1229);
+  });
+
+  test("claims the 4.0.0 client on the inference face", () => {
+    expect(ZCODE_APP_VERSION).toBe("4.0.0");
+    // The SDK suffix must carry the same release as the version header, or the
+    // two faces contradict each other in one request.
+    expect(ZCODE_SDK_USER_AGENT.startsWith("ZCode/4.0.0 ")).toBe(true);
+  });
 });
 
 describe("zcode payload shaping", () => {
