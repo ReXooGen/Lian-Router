@@ -43,7 +43,7 @@ const IDENTITY_PRESETS = [
   { value: "claude", label: "Claude Code CLI" },
   { value: "omp", label: "OMP Agent" },
   { value: "hermes", label: "Hermes Agent" },
-  { value: "gateway", label: "Gateway (LianRouter)" },
+  { value: "gateway", label: "Gateway" },
   { value: "custom", label: "Custom user-agent…" },
   { value: "none", label: "None (runtime default)" },
 ] as const;
