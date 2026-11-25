@@ -183,7 +183,7 @@ export async function attemptDailyGrowthPass(args: {
         report: {
           providerId,
           accountId,
-          state: activity ? "reported" : "error",
+          state: activity ? "reported" : "unavailable",
           error: null,
         },
       };
@@ -207,7 +207,13 @@ export async function attemptDailyGrowthPass(args: {
       report: {
         providerId,
         accountId,
-        state: activity ? "reported" : "error",
+        // The campaign report rides on a route that currently answers
+        // `410000 Invalid access token` for this credential shape (measured on
+        // all seven accounts 2026-11-25). It is best-effort decoration on top of
+        // the grant, so a refusal is reported as unavailable rather than as a
+        // failure — otherwise every sweep pass prints a warning for an account
+        // whose check-in actually worked.
+        state: activity ? "reported" : "unavailable",
         error: activity ? null : "Activity report refused.",
       },
     };

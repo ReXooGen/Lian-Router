@@ -577,6 +577,34 @@ describe("AutoClaw in the daily sweep", () => {
     expect(await redis.get(ledgerKey("2026-11-25", "acc-ac-2"))).toBeNull();
   });
 
+  test("reports a refused campaign report as unavailable, not as a failure", async () => {
+    // The activity route answers 410000 for this credential shape today. It is
+    // decoration on top of the grant, so a refusal must not print a failure
+    // warning on every pass for an account whose check-in worked.
+    const redis = fakeRedis();
+    const fetcher = (async (url: string) => {
+      if (url.startsWith(TASK_PROXY)) {
+        return new Response(JSON.stringify({ code: 0, data: { already_completed: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ code: 410000, msg: "Invalid access token" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const pass = await attemptDailyGrowthPass({
+      redis,
+      providerId: "autoclaw" as const,
+      accountId: "acc-ac-4",
+      resolveCredential: async () => "token",
+      fetcher,
+    });
+    expect(pass?.checkin.state).toBe("already_claimed");
+    expect(pass?.report.state).toBe("unavailable");
+  });
+
   test("releases the day slot when the claim errors, so the next pass retries", async () => {
     const redis = fakeRedis();
     const fetcher = (async (url: string) => {
