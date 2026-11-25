@@ -47,9 +47,9 @@ before the process is serving traffic.
 
 ## Daily check-in ride-along (`daily-checkin.ts`)
 
-Claims the free daily credit grant WorkBuddy/CodeBuddy grant once per calendar
-day, per account. The sweep prints one combined quota + check-in line per
-account, and skips a line identical to that account's previous one. The
+Claims the free daily credit grant WorkBuddy/CodeBuddy and AutoClaw grant once
+per calendar day, per account. The sweep prints one combined quota + check-in
+line per account, and skips a line identical to that account's previous one. The
 following behavior is the contract implemented by `attemptDailyGrowthPass()`
 and its quota-sweep caller:
 
@@ -61,9 +61,14 @@ account after each refresh wave, bounded by `maxCheckinsPerPass` (default 10,
 `0` disables).
 
 1. Eligibility is `supportsDailyCheckin(providerId)` — `workbuddy`, `cb`,
-   `cbcn`. Everything else is skipped without any upstream traffic.
+   `cbcn`, and `autoclaw`. Everything else is skipped without any upstream
+   traffic.
 2. Each account reserves its calendar-day slot with `SET NX EX` on
-   `lianrouter:daily-checkin:<day>:<accountId>`. The sweep runs every 60 s, but
+   `lianrouter:daily-checkin:<day>:<accountId>`. The day comes from
+   `checkinDayKeyFor(providerId)`: buddy providers reset on UTC, AutoClaw on
+   its own local day (measured: a claim landed 04:58 WIB while the UTC marker
+   still read done), and reserving under the wrong key keeps an account marked
+   attempted for hours after its grant went live. The sweep runs every 60 s, but
    the slot guarantees **one attempt per account per day**: winning it means
    doing the work, losing it returns `null` and costs zero requests. A Redis
    failure falls through to the attempt rather than forfeiting the grant, and
@@ -85,10 +90,20 @@ account after each refresh wave, bounded by `maxCheckinsPerPass` (default 10,
    the day slot: the credit grant is the valuable half, and the report retries
    tomorrow instead of spinning every sweep pass today.
 
-   **Only the buddy gateways are eligible.** The route exists on those three and
-   nowhere else, so any other provider is deliberately absent from
+   **Only the buddy gateways and AutoClaw are eligible.** The buddy route exists
+   on those three and nowhere else; AutoClaw's claim lives on its own task proxy
+   (`/autoclaw-proxy/proxy/autoclaw-task-complete`), not on the buddy billing
+   facade. Any other provider is deliberately absent from
    `supportsDailyCheckin` — an eligible flag would spend a day slot and an
    upstream request on a wire that does not exist.
+
+   AutoClaw takes a separate branch inside `attemptDailyGrowthPass`: the
+   campaign activity report first (the engine reads activity, and a period whose
+   reward is still unpaid settles in the same pass), then one claim POST per
+   task in `AUTOCLAW_CHECKIN_TASKS`. The proxy is the only thing that knows which
+   tasks are already settled, so every task is attempted; each answer is
+   idempotent and an `already_completed` task costs no grant. There is no
+   separate status probe on that wire, so the claim pass *is* the status read.
 
    The three buddy gateways share the billing route but not the wire shape, so
    the module adapts per provider: `workbuddy` is a bare base URL (it prepends
@@ -109,9 +124,9 @@ next sweep of the same day retries the account. There is no operator-facing
 reset entry point: re-running the pass is the retry.
 
 **Trade-off:** coverage follows the quota sweep, so an account is only checked
-in once the sweep considers it due (OAuth account with a registered refresher).
-All three eligible providers are OAuth, so in practice every stored
-workbuddy/cb/cbcn account is covered; a purely API-key account of those
+in once the sweep considers it due (an OAuth account with a registered
+refresher). All four eligible providers are OAuth, so in practice every stored
+workbuddy/cb/cbcn/autoclaw account is covered; a purely API-key account of those
 providers would not be. Say the word if you want those covered too and it
 becomes its own target list.
 
