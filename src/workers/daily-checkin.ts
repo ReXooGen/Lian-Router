@@ -27,6 +27,12 @@ import {
   type BuddyActivityReportResult,
   type DailyCheckinResult,
 } from "../providers/integrations/buddy/buddy-checkin";
+import {
+  claimAutoClawCheckin,
+  reportAutoClawActivity,
+  type AutoClawCheckinResult,
+} from "../providers/integrations/autoclaw/autoclaw-credits";
+import { vendorDayKey } from "../providers/integrations/autoclaw/vendor-day-key";
 
 export { DAILY_CHECKIN_PROVIDER_IDS, checkinDayKey };
 export type { BuddyActivityReportResult, DailyCheckinResult };
@@ -57,9 +63,31 @@ async function reserveDaySlot(
   return set !== null;
 }
 
-/** Providers whose billing facade exposes the daily check-in routes. */
+/**
+ * Providers whose billing facade exposes the daily check-in routes.
+ *
+ * AutoClaw is listed separately from `DAILY_CHECKIN_PROVIDER_IDS` because its
+ * claim lives on the task proxy rather than the buddy billing facade, but it
+ * belongs in the sweep for the same reason: the grant is once a day and free,
+ * and an account nobody opens the desktop app for would otherwise never claim
+ * it.
+ */
 export function supportsDailyCheckin(providerId: string): boolean {
-  return (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId);
+  return (
+    providerId === "autoclaw" || (DAILY_CHECKIN_PROVIDER_IDS as readonly string[]).includes(providerId)
+  );
+}
+
+/**
+ * The day key the vendor resets on.
+ *
+ * Buddy providers reset on UTC; AutoClaw resets on its own local day, measured
+ * as UTC+8 (a claim landed 04:58 WIB while the UTC marker still read done).
+ * Reserving the slot under the wrong key would keep an account marked as
+ * attempted for hours after its grant went live again.
+ */
+export function checkinDayKeyFor(providerId: string, now: Date = new Date()): string {
+  return providerId === "autoclaw" ? vendorDayKey(now) : checkinDayKey(now);
 }
 
 export type DailyGrowthPassResult = {
@@ -93,7 +121,7 @@ export async function attemptDailyGrowthPass(args: {
   readonly now?: () => Date;
 }): Promise<DailyGrowthPassResult | null> {
   const { redis, providerId, accountId, resolveCredential } = args;
-  const dayKey = checkinDayKey(args.now?.() ?? new Date());
+  const dayKey = checkinDayKeyFor(providerId, args.now?.() ?? new Date());
 
   let reserved = false;
   try {
@@ -128,6 +156,63 @@ export async function attemptDailyGrowthPass(args: {
   }
 
   let checkin: DailyCheckinResult;
+
+  if (providerId === "autoclaw") {
+    // AutoClaw's claim is the task proxy, not the buddy billing facade, so it
+    // takes its own branch. The campaign report runs first for the same reason
+    // the console route does it: the engine reads activity, and a period whose
+    // reward is still unpaid can settle in this same pass.
+    const activity = await reportAutoClawActivity(credential, args.fetcher ?? globalThis.fetch).catch(
+      () => false,
+    );
+    let claimed: AutoClawCheckinResult;
+    try {
+      claimed = await claimAutoClawCheckin(credential, args.fetcher ?? globalThis.fetch);
+    } catch (error) {
+      checkin = {
+        providerId,
+        accountId,
+        state: "error",
+        credit: null,
+        streakDays: null,
+        error: error instanceof Error ? error.message : "Daily check-in failed.",
+      };
+      await redis.del(ledgerKey(dayKey, accountId)).catch(() => undefined);
+      return {
+        checkin,
+        report: {
+          providerId,
+          accountId,
+          state: activity ? "reported" : "error",
+          error: null,
+        },
+      };
+    }
+    // A failed pass must not consume the day slot: the grant is once a day and
+    // free, so a transient transport error has to stay retryable on the next
+    // sweep rather than forfeit it.
+    if (claimed.state === "error") {
+      await redis.del(ledgerKey(dayKey, accountId)).catch(() => undefined);
+    }
+    checkin = {
+      providerId,
+      accountId,
+      state: claimed.state,
+      credit: claimed.state === "claimed" ? claimed.credit : claimed.state === "already_claimed" ? 0 : null,
+      streakDays: null,
+      error: claimed.error,
+    };
+    return {
+      checkin,
+      report: {
+        providerId,
+        accountId,
+        state: activity ? "reported" : "error",
+        error: activity ? null : "Activity report refused.",
+      },
+    };
+  }
+
   try {
     checkin = await fetchDailyCheckin({
       providerId,

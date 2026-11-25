@@ -7,7 +7,6 @@ import { requireTenantScope } from "../shared/errors";
 // AutoClaw's facade resets its daily tasks on the vendor's local day, not UTC:
 // measured 2026-11-15, a claim landed 04:58 WIB while the UTC marker still read
 // done. The autoclaw branches key the ledger on the vendor's day instead.
-import { vendorDayKey } from "../../providers/integrations/autoclaw/vendor-day-key";
 import {
   claimAutoClawCheckin,
   fetchAutoClawExpirySummary,
@@ -33,7 +32,7 @@ import {
 import type { ProviderId } from "../../providers/provider-registry";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
-  checkinDayKey,
+  checkinDayKeyFor,
   ledgerKey,
 } from "../../workers/daily-checkin";
 import {
@@ -105,13 +104,10 @@ async function todayCheckinAttempted(
   providerId?: string,
 ): Promise<boolean> {
   try {
-    // Buddy providers reset on UTC; AutoClaw resets on the vendor's local day
-    // (measured: a claim landed 04:58 WIB while the UTC marker still read done),
-    // so each family reads the marker under its own day key.
-    const dayKey = providerId === "autoclaw"
-      ? ledgerKey(vendorDayKey(), accountId)
-      : ledgerKey(checkinDayKey(), accountId);
-    const marker = await redis.get(dayKey);
+    // The day key is the vendor's own, resolved in one place: buddy resets on
+    // UTC while AutoClaw resets on its local day, and a mismatch here would
+    // read a marker the sweep never wrote.
+    const marker = await redis.get(ledgerKey(checkinDayKeyFor(providerId ?? ""), accountId));
     return marker !== null;
   } catch {
     return false;
@@ -622,10 +618,10 @@ export function registerAccountQuotaTenantRoutes(
           // "checked in today" without a second upstream round trip. A failed
           // pass is not recorded: the day slot must stay open for a retry.
           if (outcome.state === "claimed" || outcome.state === "already_claimed") {
-            // Keyed on the vendor's day: AutoClaw resets on its local midnight,
-            // so the marker expires when the vendor resets, not when UTC does.
+            // Keyed on the vendor's own day, through the same helper the sweep
+            // reserves with — a second spelling of this key is a second source.
             await redis
-              .set(ledgerKey(vendorDayKey(), account.id), "1", "EX", 3 * 24 * 60 * 60)
+              .set(ledgerKey(checkinDayKeyFor("autoclaw"), account.id), "1", "EX", 3 * 24 * 60 * 60)
               .catch(() => undefined);
           }
           if (outcome.state === "error") {
@@ -734,7 +730,8 @@ export function registerAccountQuotaTenantRoutes(
       // growth action per day" budget honest across both buttons.
       let alreadyReported = false;
       try {
-        alreadyReported = (await redis.get(ledgerKey(checkinDayKey(), account.id))) !== null;
+        alreadyReported =
+          (await redis.get(ledgerKey(checkinDayKeyFor(account.providerId), account.id))) !== null;
       } catch {
         alreadyReported = false;
       }
@@ -1132,7 +1129,7 @@ export function registerAccountQuotaTenantRoutes(
         // Vendor-day key: the marker expires when the vendor's daily tasks
         // reset (its local midnight), not when the UTC day rolls (07:00 WIB) —
         // otherwise the button reads disabled hours after the real reset.
-        const checkedInToday = (await redis.get(ledgerKey(vendorDayKey(), account.id))) !== null;
+        const checkedInToday = (await redis.get(ledgerKey(checkinDayKeyFor("autoclaw"), account.id))) !== null;
         return { ok: true, wallet, checkedInToday };
       } catch (err) {
         set.status = 502;

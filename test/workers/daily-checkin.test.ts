@@ -30,6 +30,9 @@ function fakeRedis(): RedisClient {
       for (const key of keys) if (store.delete(key)) removed += 1;
       return removed;
     },
+    async get(key: string): Promise<string | null> {
+      return store.get(key) ?? null;
+    },
   } as unknown as RedisClient;
 }
 
@@ -56,10 +59,11 @@ const CB = "https://www.codebuddy.ai/v2/billing/meter";
 const CBCN = "https://copilot.tencent.com/v2/billing/meter";
 
 describe("supportsDailyCheckin", () => {
-  test("covers the WorkBuddy/CodeBuddy billing providers only", () => {
+  test("covers the WorkBuddy/CodeBuddy billing providers and AutoClaw", () => {
     expect(supportsDailyCheckin("workbuddy")).toBe(true);
     expect(supportsDailyCheckin("cb")).toBe(true);
     expect(supportsDailyCheckin("cbcn")).toBe(true);
+    expect(supportsDailyCheckin("autoclaw")).toBe(true);
     expect(supportsDailyCheckin("openai")).toBe(false);
   });
 });
@@ -498,12 +502,110 @@ describe("fetchBuddyActivityReport", () => {
 });
 
 describe("check-in provider eligibility", () => {
-  test("covers the buddy family and excludes everything else", () => {
-    // The route only exists on the buddy gateways; claiming another provider
-    // eligible would spend a day slot on a wire that does not exist.
+  test("covers the buddy family and AutoClaw, excludes everything else", () => {
+    // The route only exists on the buddy gateways and AutoClaw's task proxy;
+    // claiming another provider eligible would spend a day slot on a wire that
+    // does not exist.
     expect(supportsDailyCheckin("workbuddy")).toBe(true);
     expect(supportsDailyCheckin("cb")).toBe(true);
     expect(supportsDailyCheckin("cbcn")).toBe(true);
+    expect(supportsDailyCheckin("autoclaw")).toBe(true);
     expect(supportsDailyCheckin("openai")).toBe(false);
+  });
+});
+
+describe("AutoClaw in the daily sweep", () => {
+  const TASK_PROXY = "https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw-task-complete";
+
+  /** Records every claim post, answering `already_completed` for all tasks. */
+  function autoClawFetch(claimPayload: (taskId: string) => unknown) {
+    const posted: string[] = [];
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      if (url.startsWith(TASK_PROXY)) {
+        const parsed = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        posted.push(String(parsed["task_id"]));
+        return new Response(JSON.stringify(claimPayload(String(parsed["task_id"]))), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    return { fetcher, posted };
+  }
+
+  test("runs through the task proxy and reports the day as claimed", async () => {
+    const redis = fakeRedis();
+    const { fetcher, posted } = autoClawFetch(() => ({
+      code: 0,
+      data: { already_completed: true },
+    }));
+    const pass = await attemptDailyGrowthPass({
+      redis,
+      providerId: "autoclaw" as const,
+      accountId: "acc-ac-1",
+      resolveCredential: async () => "token",
+      fetcher,
+    });
+    expect(pass).not.toBeNull();
+    // Every task is attempted — the proxy is the only place that knows which
+    // ones are already settled, and each costs one idempotent request.
+    expect(posted.length).toBeGreaterThan(0);
+    expect(pass?.checkin.state).toBe("already_claimed");
+    expect(pass?.checkin.credit).toBe(0);
+  });
+
+  test("reserves the day slot under the vendor's day, not UTC", async () => {
+    const redis = fakeRedis();
+    const { fetcher } = autoClawFetch(() => ({ code: 0, data: { already_completed: true } }));
+    // 04:58 WIB on the 26th is still the 25th in UTC. AutoClaw resets on its
+    // own day, so the slot must be keyed on the 26th or the account stays
+    // marked as attempted for hours after its grant went live.
+    const localMorning = new Date("2026-11-25T21:58:00.000Z");
+    await attemptDailyGrowthPass({
+      redis,
+      providerId: "autoclaw" as const,
+      accountId: "acc-ac-2",
+      resolveCredential: async () => "token",
+      fetcher,
+      now: () => localMorning,
+    });
+    expect(await redis.get(ledgerKey("2026-11-26", "acc-ac-2"))).not.toBeNull();
+    expect(await redis.get(ledgerKey("2026-11-25", "acc-ac-2"))).toBeNull();
+  });
+
+  test("releases the day slot when the claim errors, so the next pass retries", async () => {
+    const redis = fakeRedis();
+    const fetcher = (async (url: string) => {
+      if (url.startsWith(TASK_PROXY)) {
+        return new Response(JSON.stringify({ code: 410000, msg: "Please log in again" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ code: 0, data: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const pass = await attemptDailyGrowthPass({
+      redis,
+      providerId: "autoclaw" as const,
+      accountId: "acc-ac-3",
+      resolveCredential: async () => "token",
+      fetcher,
+    });
+    expect(pass?.checkin.state).toBe("error");
+    // The grant is once a day and free: a transport failure must not forfeit it.
+    const dayKey = pass === null ? "" : new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Jakarta",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    expect(await redis.get(ledgerKey(dayKey, "acc-ac-3"))).toBeNull();
   });
 });
