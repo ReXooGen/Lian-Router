@@ -505,6 +505,96 @@ async function createTestAccount(providerId = "openai"): Promise<string> {
     expect(res.status).toBe(404);
     activeAccess = mockAccess;
   });
+
+  test("observed credits 400s on a provider whose credits are not relayed", async () => {
+    const accountId = await createTestAccount("openai");
+    const res = await app.handle(
+      new Request(`http://localhost/accounts/${accountId}/credits/observed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ totalPoints: 1 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("observed_unsupported");
+  });
+
+  test("observed credits 404s on an unknown account", async () => {
+    const res = await app.handle(
+      new Request(`http://localhost/accounts/${randomUUID()}/credits/observed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ totalPoints: 1 }),
+      }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("a relayed reading is what the credits route answers, and it outlives a dead vendor", async () => {
+    const accountId = await createTestAccount("autoclaw");
+    const store = new Map<string, string>();
+    const fakeRedis = {
+      async get(key: string): Promise<string | null> {
+        return store.get(key) ?? null;
+      },
+      async set(key: string, value: string, ..._args: (string | number)[]): Promise<string> {
+        store.set(key, value);
+        return "OK";
+      },
+      async del(...keys: string[]): Promise<number> {
+        let removed = 0;
+        for (const key of keys) if (store.delete(key)) removed += 1;
+        return removed;
+      },
+    };
+    const relayApp = createAccountQuotaRoutes({
+      db,
+      accessResolver: () => mockAccess,
+      // A stored key that the vendor now refuses: the relayed reading must still
+      // answer, because that is the whole point of accepting one.
+      resolveCredential: () => {
+        throw new Error("Credential invalid or expired.");
+      },
+      providerRegistry: createDefaultProviderRegistry(),
+      redis: fakeRedis as never,
+    });
+
+    const accepted = await relayApp.handle(
+      new Request(`http://localhost/accounts/${accountId}/credits/observed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          totalPoints: 6659,
+          checkinDate: "2026-11-25",
+          claimStatus: "claimed",
+          claimedAmount: 300,
+          streakDays: 2,
+        }),
+      }),
+    );
+    expect(accepted.status).toBe(200);
+
+    const read = await relayApp.handle(
+      new Request(`http://localhost/accounts/${accountId}/credits`),
+    );
+    expect(read.status).toBe(200);
+    const body = (await read.json()) as {
+      ok: boolean;
+      wallet: { totalBalance: number };
+      checkedInToday: boolean;
+      observed?: { source: string; streakDays: number | null };
+      vendorError?: string;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.wallet.totalBalance).toBe(6659);
+    expect(body.checkedInToday).toBe(true);
+    expect(body.observed?.source).toBe("desktop-relay");
+    expect(body.observed?.streakDays).toBe(2);
+    // The vendor failure is reported, not hidden — the caller has to be able to
+    // tell a relayed number from a live one.
+    expect(body.vendorError).toBeTruthy();
+  });
 });
 dbDescribe("Global account administration", () => {
   const globalAccess: AccessDecision = {

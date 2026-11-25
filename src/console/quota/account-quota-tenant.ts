@@ -146,6 +146,57 @@ const QUOTA_REFRESH_MAX_IDS = 100;
  */
 const QUOTA_STALE_AFTER_MS = 240_000;
 
+/** Where a relay-stored desktop reading lives, one per account. */
+function observedCreditsKey(accountId: string): string {
+  return `lianrouter:autoclaw:observed:${accountId}`;
+}
+
+/**
+ * How long an observed reading stays authoritative.
+ *
+ * The desktop app refreshes its own card on open and after a claim, so a relay
+ * that posts every minute keeps this warm. Ten minutes is comfortably longer
+ * than that beat and short enough that a relay which died over lunch cannot
+ * leave the card showing a balance the account has since spent down.
+ */
+const OBSERVED_CREDITS_TTL_SECONDS = 10 * 60;
+
+/** Shape the relay writes and the credits read consumes. */
+interface ObservedCredits {
+  readonly observedAt: string;
+  readonly totalPoints: number;
+  readonly dailyPoints: number | null;
+  readonly checkinDate: string | null;
+  readonly claimStatus: string | null;
+  readonly claimedAmount: number | null;
+  readonly streakDays: number | null;
+}
+
+/** One account's recent desktop reading, or `null` when there is none or it is unreadable. */
+async function readObservedCredits(
+  redis: AccountQuotaRoutesDeps["redis"],
+  accountId: string,
+): Promise<ObservedCredits | null> {
+  try {
+    const raw = await redis.get(observedCreditsKey(accountId));
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const total = parsed["totalPoints"];
+    if (typeof total !== "number" || !Number.isFinite(total)) return null;
+    return {
+      observedAt: String(parsed["observedAt"] ?? ""),
+      totalPoints: total,
+      dailyPoints: typeof parsed["dailyPoints"] === "number" ? parsed["dailyPoints"] : null,
+      checkinDate: typeof parsed["checkinDate"] === "string" ? parsed["checkinDate"] : null,
+      claimStatus: typeof parsed["claimStatus"] === "string" ? parsed["claimStatus"] : null,
+      claimedAmount: typeof parsed["claimedAmount"] === "number" ? parsed["claimedAmount"] : null,
+      streakDays: typeof parsed["streakDays"] === "number" ? parsed["streakDays"] : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Registers the tenant-scoped account/quota routes onto `app`. Every route here
  * authorises through `requireTenantScope`, so the caller only ever touches its
@@ -1076,6 +1127,108 @@ export function registerAccountQuotaTenantRoutes(
      * this read keeps working even after the client version ages out of the
      * gateway's accepted range.
      */
+    /**
+     * AutoClaw: accept a balance the desktop client itself just read.
+     *
+     * The check-in event surface (`/asset-operation/api/v1/checkin/*`) refuses
+     * a credential minted by this gateway — measured across the app signature
+     * family, the zai token lane, the desktop device headers, and every
+     * first-party origin. The wallet route still answers, so the balance is
+     * readable directly; what is not readable is the *event* state, which only
+     * the running client can report.
+     *
+     * Rather than forge that client, this route accepts what it says: a relay
+     * posts the numbers the app's own Credits screen is showing, and the credits
+     * read prefers them while they are fresh. Stale observations are ignored, so
+     * a relay that stops running degrades to the vendor read instead of pinning
+     * a number that has since moved.
+     */
+    .post(
+      "/accounts/:id/credits/observed",
+      {
+        body: t.Object({
+          /** Total points across every wallet, as the app's Credits screen shows. */
+          totalPoints: t.Number(),
+          /** Points in the daily wallet when the app reports it separately. */
+          dailyPoints: t.Optional(t.Number()),
+          /** Vendor day the app's card was showing, `YYYY-MM-DD`. */
+          checkinDate: t.Optional(t.String()),
+          /** `claimed` / `processing` / `unclaimed` from the app's card. */
+          claimStatus: t.Optional(t.String()),
+          /** Points granted by today's check-in, when the app reports them. */
+          claimedAmount: t.Optional(t.Number()),
+          /** Current streak length, when the app reports it. */
+          streakDays: t.Optional(t.Number()),
+        }),
+      },
+      async ({ request, params, body, set }) => {
+        const access = requireTenantScope(accessResolver(request), "dashboard:write");
+        const rows = await db
+          .select({ id: providerAccounts.id, providerId: providerAccounts.providerId })
+          .from(providerAccounts)
+          .where(
+            and(
+              eq(providerAccounts.id, params.id),
+              // Same visibility rule the credits read uses. A migrated account
+              // carries no tenant, and matching only owned rows answered 404 for
+              // the very account the card was rendering — so a relay could never
+              // post to it while the read worked.
+              or(isNull(providerAccounts.tenantId), eq(providerAccounts.tenantId, access.tenantId)),
+            ),
+          )
+          .limit(1);
+        const account = rows[0];
+        if (!account) {
+          set.status = 404;
+          return { error: `Account ${params.id} not found`, code: "not_found" };
+        }
+        if (account.providerId !== "autoclaw") {
+          set.status = 400;
+          return {
+            error: `Observed credits are only accepted for autoclaw accounts`,
+            code: "observed_unsupported",
+          };
+        }
+        const observedAt = new Date();
+        const envelope = {
+          v: 1,
+          observedAt: observedAt.toISOString(),
+          totalPoints: body.totalPoints,
+          dailyPoints: body.dailyPoints ?? null,
+          checkinDate: body.checkinDate ?? null,
+          claimStatus: body.claimStatus ?? null,
+          claimedAmount: body.claimedAmount ?? null,
+          streakDays: body.streakDays ?? null,
+        };
+        try {
+          await redis.set(
+            observedCreditsKey(account.id),
+            JSON.stringify(envelope),
+            "EX",
+            OBSERVED_CREDITS_TTL_SECONDS,
+          );
+        } catch (error) {
+          set.status = 503;
+          return {
+            error: error instanceof Error ? error.message : "Observation store unavailable",
+            code: "observed_store_unavailable",
+          };
+        }
+        // A claim the app reports makes the day marker unnecessary: the sweep
+        // reads that marker to decide whether the account still needs a pass.
+        if (body.claimStatus === "claimed" && typeof body.checkinDate === "string") {
+          await redis
+            .set(
+              ledgerKey(body.checkinDate, account.id),
+              "1",
+              "EX",
+              3 * 24 * 60 * 60,
+            )
+            .catch(() => undefined);
+        }
+        return { ok: true, observedAt: envelope.observedAt };
+      },
+    )
     .get("/accounts/:id/credits", async ({ request, params, set }) => {
       const access = requireTenantScope(accessResolver(request), "dashboard:read");
       // Unowned accounts are visible to every tenant through `/quota/overview`,
@@ -1104,6 +1257,19 @@ export function registerAccountQuotaTenantRoutes(
           code: "credits_unsupported",
         };
       }
+      // A fresh reading relayed from the running desktop client is the better
+      // answer, and on this provider sometimes the only one: the event surface
+      // refuses a credential this gateway mints, so the card's own state is
+      // reachable solely through the app. Reading it first also means the vendor
+      // path becomes an enrichment rather than a prerequisite — a key that has
+      // aged out of the gateway's accepted range still leaves the operator with
+      // the number that is on his screen.
+      const observed = await readObservedCredits(redis, account.id);
+      const checkedInToday =
+        (await redis.get(ledgerKey(checkinDayKeyFor("autoclaw"), account.id))) !== null;
+
+      let walletEmail: string | null = null;
+      let vendorError: string | null = null;
       try {
         const credential = await refreshDeps.resolveCredential(
           account.providerId as ProviderId,
@@ -1122,23 +1288,43 @@ export function registerAccountQuotaTenantRoutes(
           credential,
           signalFetch(timeoutSignal(request.signal, QUOTA_REFRESH_TIMEOUT_MS)),
         );
-        // The claim is idempotent upstream but not free to ask: a read that has
-        // to probe four tasks to learn "already done" would make opening the
-        // card cost four requests. The marker the claim writes answers it here
-        // for one Redis round trip.
-        // Vendor-day key: the marker expires when the vendor's daily tasks
-        // reset (its local midnight), not when the UTC day rolls (07:00 WIB) —
-        // otherwise the button reads disabled hours after the real reset.
-        const checkedInToday = (await redis.get(ledgerKey(checkinDayKeyFor("autoclaw"), account.id))) !== null;
-        return { ok: true, wallet, checkedInToday };
+        walletEmail = wallet.email;
+        if (observed === null) {
+          return { ok: true, wallet, checkedInToday };
+        }
       } catch (err) {
-        set.status = 502;
+        vendorError = err instanceof Error ? err.message : "Credit read failed";
+      }
+
+      if (observed !== null) {
         return {
-          ok: false,
-          error: err instanceof Error ? err.message : "Credit read failed",
-          code: "credits_failed",
+          ok: true,
+          wallet: {
+            totalBalance: observed.totalPoints,
+            dailyPoints: observed.dailyPoints,
+            // The relay does not read the profile route, so email is the
+            // vendor's answer when it answered at all — never a fabricated "".
+            email: walletEmail,
+            updatedAt: observed.observedAt,
+          },
+          checkedInToday: observed.claimStatus === "claimed" ? true : checkedInToday,
+          observed: {
+            source: "desktop-relay",
+            observedAt: observed.observedAt,
+            claimStatus: observed.claimStatus,
+            claimDate: observed.checkinDate,
+            claimedAmount: observed.claimedAmount,
+            streakDays: observed.streakDays,
+          },
+          ...(vendorError === null ? {} : { vendorError }),
         };
       }
+      set.status = 502;
+      return {
+        ok: false,
+        error: vendorError ?? "Credit read failed",
+        code: "credits_failed",
+      };
     })
     /**
      * AutoClaw: the points ledger, newest first.
