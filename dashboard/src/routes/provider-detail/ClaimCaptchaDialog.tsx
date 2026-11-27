@@ -101,7 +101,9 @@ export function ClaimCaptchaDialog({
       prefix: config.prefix,
     });
     const features = "popup=yes,width=460,height=620,resizable=yes,scrollbars=yes";
-    const popup = window.open(`/console/claim-captcha?${query.toString()}`, "zcode-claim-captcha", features);
+    // `/claim-captcha.html` is the real document. A `/console/...` path is not a
+    // route, so the SPA fallback served the console shell inside the popup.
+    const popup = window.open(`/claim-captcha.html?${query.toString()}`, "zcode-claim-captcha", features);
     if (popup === null) {
       // A blocked popup is the one failure the operator can fix themselves, so
       // it gets its own message rather than a generic "challenge failed".
