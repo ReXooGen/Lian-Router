@@ -6,6 +6,7 @@ import { Dialog } from "../../components/ui/dialog";
 import { Inline } from "../../components/ui/inline";
 import { Stack } from "../../components/ui/stack";
 import {
+  useCompleteAutoClawLogin,
   useCompleteOAuthBrowserLogin,
   usePollOAuthDevice,
   useProviderAccounts,
@@ -32,6 +33,33 @@ function extractOAuthCode(raw: string): string {
     // Ignored — falls back to the raw trimmed value below.
   }
   return trimmed;
+}
+
+/**
+ * The `state` a pasted redirect URL carries.
+ *
+ * AutoClaw's exchange verifies the state the vendor minted for this login, and
+ * the pasted URL is the authoritative copy of it: preferring the pasted value
+ * means a redirect pasted from a different browser or after a page reload still
+ * completes, instead of failing on a stale prop.
+ */
+function extractOAuthState(raw: string): string | null {
+  const trimmed = raw.trim();
+  try {
+    const url = new URL(trimmed);
+    const state = url.searchParams.get("state");
+    if (state) return state;
+  } catch {
+    // Not a full URL — fall through.
+  }
+  try {
+    const params = new URLSearchParams(trimmed.startsWith("?") ? trimmed.slice(1) : trimmed);
+    const state = params.get("state");
+    if (state) return state;
+  } catch {
+    // Ignored — the caller falls back to the state the authorize step returned.
+  }
+  return null;
 }
 
 export function OAuthBrowserDialog({
@@ -83,13 +111,22 @@ export function OAuthBrowserDialog({
     const added = ids.find((id) => !baselineAccountIdsRef.current!.has(id));
     if (added === undefined) return;
     completionDetectedRef.current = true;
-    popup.close();
+    try {
+      popup.close();
+    } catch {
+      // Cross-origin by now; the account is stored either way.
+    }
     toast.success("Account connected", "OAuth login completed successfully");
     onClose(true);
   }, [accountsQuery.data, popup, onClose]);
 
   const cancel = () => {
-    popup.close();
+    try {
+      popup.close();
+    } catch {
+      // The popup is cross-origin once it reaches the vendor's login page; a
+      // refused close leaves a tab open but must not block the dialog.
+    }
     onClose(false);
   };
 
@@ -110,11 +147,45 @@ export function OAuthBrowserDialog({
   const handleConnect = () => {
     const code = extractOAuthCode(callbackValue);
     if (!code) return;
+    // AutoClaw cannot use the generic callback route: that route redeems the
+    // code against a state this process generated, while the gateway verifies
+    // the state it minted itself and answers `631001` to anything else. Its own
+    // `complete` step is the only exchange that accepts a pasted code, so the
+    // manual path branches here instead of failing on every paste.
+    const pastedState = extractOAuthState(callbackValue);
+    const useState = pastedState ?? state;
+    if (providerId === "autoclaw") {
+      completeAutoClaw.mutate(
+        { code, state: useState },
+        {
+          onSuccess: () => {
+            try {
+              popup.close();
+            } catch {
+              // The login window is cross-origin by now; a refused close only
+              // leaves a tab behind, and the account is already stored.
+            }
+            toast.success("Account connected", "AutoClaw login completed successfully");
+            onClose(true);
+          },
+          onError: (err) =>
+            toast.error(
+              "AutoClaw login failed",
+              (err as { message?: string }).message ?? "Invalid or expired authorization code",
+            ),
+        },
+      );
+      return;
+    }
     complete.mutate(
-      { providerId, code, state },
+      { providerId, code, state: useState },
       {
         onSuccess: () => {
-          popup.close();
+          try {
+            popup.close();
+          } catch {
+            // Same as above: a cross-origin popup may refuse the close.
+          }
           toast.success("Account connected", "OAuth login completed successfully");
           onClose(true);
         },
@@ -126,6 +197,7 @@ export function OAuthBrowserDialog({
       },
     );
   };
+  const connecting = complete.isPending || completeAutoClaw.isPending;
 
   return (
     <Dialog
@@ -156,7 +228,11 @@ export function OAuthBrowserDialog({
             className="animate-spin"
             style={{ color: "var(--accent)", flexShrink: 0 }}
           />
-          <span className="oauth-status-text">Waiting for popup authorization…</span>
+          <span className="oauth-status-text">
+            {providerId === "autoclaw"
+              ? "Waiting for the login to finish in the other window…"
+              : "Waiting for popup authorization…"}
+          </span>
         </div>
 
         <div className="oauth-step">
@@ -195,15 +271,16 @@ export function OAuthBrowserDialog({
         <div className="oauth-step">
           <div className="oauth-step-title">Step 2: Paste the redirect URL here</div>
           <p className="oauth-hint">
-            If the redirect lands on an unreachable address, copy that page&apos;s full URL from
-            your browser and paste it below — this works from any machine, not just localhost.
+            {providerId === "autoclaw"
+              ? "Z.ai always sends the browser back to localhost:18432, which only answers on the machine running this gateway. After you approve the login, the page will fail to load — copy that failed page's full URL and paste it below. The code in it is what completes the login."
+              : "If the redirect lands on an unreachable address, copy that page's full URL from your browser and paste it below — this works from any machine, not just localhost."}
           </p>
           <Inline gap="8px" align="flex-start">
             <textarea
               className="oauth-textarea"
               value={callbackValue}
               onChange={(event) => setCallbackValue(event.target.value)}
-              placeholder="http://127.0.0.1:59653/callback?code=…&state=…  (or just the code)"
+              placeholder="http://localhost:18432/auth/callback-zai?code=…&state=…  (or just the code)"
               rows={2}
               spellCheck={false}
               style={{ flex: 1 }}

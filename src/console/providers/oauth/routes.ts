@@ -824,10 +824,15 @@ export function createOAuthLoginRoutes(config: OAuthLoginConfig): Elysia {
           // pasted from a different browser still lands on the right tenant;
           // a state that was never seen here falls back to the session.
           const pending = await config.oauthFlowStore.consumePending(body.state);
+          // The exchange must present the same `navigate_uri` the URL was minted
+          // with — the gateway compares it against the state's own claims. The
+          // pending row is the record of that value, so it is read here instead
+          // of re-deriving the constant: a deployment whose callback ever moves
+          // would otherwise mint one value and redeem another.
           const client = new AutoClawOAuthClient({
             signer: AUTOCLAW_SIGNER,
             deviceId: autoClawDeviceId(),
-            navigateUri: autoClawCallbackUri(),
+            navigateUri: pending?.redirectUri ?? autoClawCallbackUri(),
           });
           const exchanged = await client.exchangeLogin({ code: body.code, state: body.state }).catch(
             (error: unknown) => {
