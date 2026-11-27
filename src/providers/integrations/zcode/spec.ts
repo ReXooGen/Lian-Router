@@ -201,7 +201,7 @@ export const ZCODE_SPEC: ApiKeyProviderSpec = {
 };
 
 /**
- * The two GLM models the start-plan grants name.
+ * The GLM models the start-plan grants name.
  *
  * Limits and vision are declared here rather than inherited. The base catalog
  * keys these ids under `zai`, so a `zcode` lookup missed and every row fell to
@@ -215,8 +215,25 @@ export const ZCODE_SPEC: ApiKeyProviderSpec = {
  * lists images), so only the flash row claims it. Claiming it on both would
  * strip the image at preflight for one model and hand it to a model that
  * cannot read it on the other.
+ *
+ * `glm-5.4` is the plan's current headline row and the desktop client marks it
+ * Vision. The lane accepts it — a bogus id is refused with `3006 model not
+ * allowed` while `glm-5.4` reaches the quota gate, and an image-bearing body is
+ * not rejected at validation either — so it is declared with the same 1M
+ * window and image input.
  */
 export const ZCODE_MODELS: readonly ModelDefinition[] = [
+  defineModel({
+    id: "glm-5.4",
+    providerId: ZCODE_PROVIDER_ID,
+    wireFamily: "messages",
+    endpoint: ZCODE_MESSAGES_PATH,
+    ctx: 1_000_000,
+    out: 131_072,
+    vision: true,
+    reasoning: true,
+    toolCall: true,
+  }),
   defineModel({
     id: "glm-5.3",
     providerId: ZCODE_PROVIDER_ID,

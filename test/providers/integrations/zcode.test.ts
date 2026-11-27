@@ -289,10 +289,11 @@ describe("zcode adapter contract", () => {
     expect(ZCODE_SPEC.credential_forwarding).toBe("never");
   });
 
-  test("the catalog is the two models the plan grants name", () => {
+  test("the catalog is the models the plan grants name", () => {
     expect(ZCODE_MODELS.map((model) => model.modelId).sort()).toEqual([
       "glm-5.3",
       "glm-5.3-flash",
+      "glm-5.4",
     ]);
     for (const model of ZCODE_MODELS) {
       expect(model.wireFamily).toBe("messages");
@@ -317,12 +318,14 @@ describe("zcode adapter contract", () => {
   /**
    * Vision is per row. Sent the same 512×512 image, `glm-5.3-flash` named the
    * shapes and colours while `glm-5.3` reported a blank page, so only the flash
-   * row publishes an image input.
+   * row and the newer `glm-5.4` publish an image input.
    */
-  test("declares image input on the flash row only", () => {
+  test("declares image input on the rows that accept it", () => {
     const flash = ZCODE_MODELS.find((model) => model.modelId === "glm-5.3-flash");
     const full = ZCODE_MODELS.find((model) => model.modelId === "glm-5.3");
+    const newest = ZCODE_MODELS.find((model) => model.modelId === "glm-5.4");
     expect(flash?.modalities.input).toContain("image");
+    expect(newest?.modalities.input).toContain("image");
     expect(full?.modalities.input).not.toContain("image");
   });
 });
