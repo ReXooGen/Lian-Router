@@ -33,6 +33,8 @@ src/console/
   settings/               per-tenant runtime preferences
   prompt-injection/       global / per-key / per-model injected personas (prompt or chat script)
   quota/                  provider-account quota views + refresh orchestration
+  notifications/          real provider reward feed: read-only probes, per-account snapshots,
+                          confirmed check-in evidence, and tenant-filtered notification DTOs
   domains/                api-keys, studio, live/logs, stats, audit, performance, sse
   generation/             image/video generation: model catalog from output modalities,
                           async task submission/polling, and a bounded media proxy
@@ -53,6 +55,34 @@ src/console/
   update/                 launcher-mediated self-update (`/update*`): reads the launcher's
                           run/control.json and proxies its loopback control plane
 ```
+
+## Provider reward notifications
+
+`GET /console/api/notifications` requires `dashboard:read`. It lists enabled,
+non-disabled AutoClaw, CodeBuddy CN (`cbcn`), and ZCode accounts visible to the
+caller. Platform admins see all eligible accounts; tenants see owned and shared
+accounts only. Responses never contain credentials or raw upstream errors.
+
+The first read returns `pending: true` with explicit unknown status and schedules
+background probes, with three accounts in flight at most. Account snapshots are
+shared across tabs: check-in reads are cached for one minute, ZCode listings for
+five minutes. No notification read claims a reward. CodeBuddy uses the status
+endpoint only; ZCode lists current, distinct campaigns and excludes expired,
+future, and locally redeemed plans.
+
+Confirmed manual/sweep Buddy check-ins and current-day AutoClaw desktop relay
+claims save separate three-day evidence. The daily sweep's reservation marker
+is never interpreted as success. AutoClaw's retired task-proxy result is not
+event check-in evidence: due status needs a current (at most ten-minute-old)
+desktop observation for the vendor day; a confirmed completed observation lasts
+for that day. Missing, stale, processing, and rejected status stays unverified.
+
+The dashboard bell polls while active, displays unread counts, links to the
+provider/account, and stores capped read IDs per signed-in user on that browser.
+A due-to-completed transition has a distinct ID, while repeated polls of the
+same account/day or campaign do not create duplicates. Check-in and plan-claim
+mutations invalidate the feed. These are in-console notifications, without
+browser push permission or external messages.
 
 ## Conventions
 

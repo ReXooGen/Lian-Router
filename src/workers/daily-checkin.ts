@@ -18,6 +18,7 @@
 import type { RedisClient } from "../persistence/redis";
 import type { ProviderId } from "../providers/provider-registry";
 import { log } from "../observability/logger";
+import { recordCheckinEvidence } from "../console/notifications/store";
 import { buddyAccountUid } from "../providers/integrations/buddy/buddy-oauth-shared";
 import {
   DAILY_CHECKIN_PROVIDER_IDS,
@@ -245,6 +246,15 @@ export async function attemptDailyGrowthPass(args: {
       checkin,
       report: { providerId, accountId, state: "error", error: "Skipped (check-in failed)." },
     };
+  }
+  if (checkin.state === "claimed" || checkin.state === "already_claimed") {
+    await recordCheckinEvidence(redis, providerId, accountId, {
+      state: "completed",
+      dayKey,
+      observedAt: (args.now?.() ?? new Date()).toISOString(),
+      credit: checkin.credit,
+      streakDays: checkin.streakDays,
+    });
   }
 
   // The growth event scores by uid, and only a JWT carries one. An opaque API

@@ -331,10 +331,11 @@ export function useTriggerAccountCheckin(accountId: string) {
         },
       );
     },
-    onSuccess: async () => {
+    onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
       ]);
     },
   });
@@ -355,6 +356,7 @@ export function useBulkAccountCheckin() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
       ]);
     },
   });
@@ -419,10 +421,11 @@ export function useTriggerGrowthPass(accountId: string) {
         report,
       };
     },
-    onSuccess: async () => {
+    onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
       ]);
     },
   });
@@ -641,6 +644,7 @@ export function useTriggerAutoClawCheckin(accountId: string) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.quota.all }),
         queryClient.invalidateQueries({ queryKey: queryKeys.providers.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
       ]);
     },
   });

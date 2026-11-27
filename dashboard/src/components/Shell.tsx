@@ -25,7 +25,6 @@ import {
   Syringe,
   Terminal,
   Timer,
-  X,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
@@ -50,6 +49,7 @@ import { useQuotaOverview } from "../lib/hooks/quota";
 import { quotaBarTone } from "../lib/quota-formatters";
 import { ProviderIcon } from "./ProviderIcon";
 import { UpdateModal } from "./UpdateModal";
+import { NotificationsPopover } from "./NotificationsPopover";
 import type { SessionUser, UpdateStatus } from "../lib/contracts";
 import { formatUptime } from "../lib/format";
 
@@ -265,162 +265,6 @@ function ThemeToggle() {
   );
 }
 
-function NotificationsPopover({ isHealthy }: { isHealthy: boolean }) {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        contentRef.current &&
-        !contentRef.current.contains(target) &&
-        triggerRef.current &&
-        !triggerRef.current.contains(target)
-      ) {
-        setOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div style={{ position: "relative" }}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="topbar-icon-button"
-        aria-label="Notifications"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Bell size={17} />
-      </button>
-      {open
-        ? createPortal(
-            <div
-              ref={contentRef}
-              role="dialog"
-              aria-label="Notifications"
-              className="popout-enter glass"
-              style={{
-                position: "fixed",
-                zIndex: 60,
-                top: "64px",
-                right: "16px",
-                width: "min(340px, calc(100vw - 32px))",
-                borderRadius: "20px",
-                padding: "16px",
-                boxShadow: "var(--shadow-popout)",
-                border: "1px solid var(--inner-border)",
-                background: "var(--popover-bg)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: "12px",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    fontWeight: 700,
-                    fontSize: "14px",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: "26px",
-                      height: "26px",
-                      borderRadius: "999px",
-                      background: "var(--accent-soft)",
-                      color: "var(--accent)",
-                      display: "grid",
-                      placeItems: "center",
-                    }}
-                  >
-                    <Bell size={13} />
-                  </span>
-                  <span>Notifications</span>
-                </div>
-                <button
-                  type="button"
-                  aria-label="Close notifications"
-                  onClick={() => setOpen(false)}
-                  style={{ fontSize: "12px", color: "var(--text-tertiary)", background: "transparent", border: "none", cursor: "pointer", padding: "4px" }}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                <div
-                  style={{
-                    padding: "12px",
-                    borderRadius: "14px",
-                    border: "1px solid var(--inner-border)",
-                    background: "var(--surface-2)",
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: "10px",
-                  }}
-                >
-                  <div>
-                    <p style={{ fontWeight: 600, fontSize: "12.5px" }}>
-                      {isHealthy ? "All systems operational" : "Gateway degraded"}
-                    </p>
-                    <p style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                      {isHealthy ? "Postgres & Redis admission connected." : "Check connection logs."}
-                    </p>
-                  </div>
-                </div>
-                <div
-                  style={{
-                    padding: "12px",
-                    borderRadius: "14px",
-                    border: "1px solid var(--accent-soft)",
-                    background: "var(--accent-soft)",
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: "10px",
-                  }}
-                >
-                  <Rocket
-                    size={16}
-                    style={{ color: "var(--accent)", marginTop: "2px", flexShrink: 0 }}
-                  />
-                  <div>
-                    <p style={{ fontWeight: 600, fontSize: "12.5px", color: "var(--accent)" }}>
-                      {DASHBOARD_RELEASE_LABEL}
-                    </p>
-                    <p style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                      High-performance AI Gateway & Protocol Orchestrator.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-    </div>
-  );
-}
 
 function CommandPalette({ open, close }: { readonly open: boolean; readonly close: () => void }) {
   const navigate = useNavigate();
@@ -890,7 +734,6 @@ export function DashboardShell({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
-  const healthQuery = useSafeSystemHealth();
   const drawerPresence = usePresence(drawerOpen);
   const pull = usePullToRefresh(() => queryClient.invalidateQueries());
   const hasQueryClient = useHasQueryClient();
@@ -907,7 +750,6 @@ export function DashboardShell({
       };
   const updateBadgeLabel = versionLabel(updateStatus, DASHBOARD_RELEASE_LABEL);
 
-  const isHealthy = healthQuery.data?.status === "healthy";
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1095,7 +937,19 @@ export function DashboardShell({
                 </kbd>
               </button>
               <ThemeToggle />
-              <NotificationsPopover isHealthy={Boolean(isHealthy)} />
+              {hasQueryClient ? (
+                <NotificationsPopover key={user.id} userId={user.id} />
+              ) : (
+                <button
+                  type="button"
+                  className="topbar-icon-button"
+                  aria-label="Notifications"
+                  title="Notifications need the console's data layer."
+                  disabled
+                >
+                  <Bell size={17} />
+                </button>
+              )}
             </div>
           </header>
 

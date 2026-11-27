@@ -377,6 +377,88 @@ function envelopeData(payload: unknown): Record<string, unknown> | null {
   return asRecord(asRecord(data["Response"])?.["Data"]);
 }
 
+export type DailyCheckinStatusState = "due" | "completed" | "unavailable" | "error";
+
+export interface DailyCheckinStatusResult {
+  readonly providerId: string;
+  readonly accountId: string;
+  readonly state: DailyCheckinStatusState;
+  readonly streakDays: number | null;
+  readonly error: string | null;
+}
+
+/**
+ * Reads one account's daily check-in activity without ever attempting a claim.
+ *
+ * `today_checked_in` is intentionally strict: only explicit booleans are
+ * actionable. The provider may omit `active` for older activity responses,
+ * but an explicit false (or malformed value) must never be treated as due.
+ */
+export async function fetchDailyCheckinStatus(args: {
+  readonly providerId: string;
+  readonly accountId: string;
+  readonly credential: string;
+  readonly fetcher: typeof fetch;
+}): Promise<DailyCheckinStatusResult> {
+  const { providerId, accountId, credential, fetcher } = args;
+  const base = { providerId, accountId, streakDays: null, error: null };
+
+  if (!credential) {
+    return { ...base, state: "error", error: "Account has no stored credential." };
+  }
+
+  let status: unknown;
+  try {
+    const headers = {
+      ...(await checkinHeaders(providerId)),
+      Authorization: `Bearer ${credential}`,
+    };
+    const response = await fetcher(statusUrl(providerId), {
+      method: "POST",
+      headers,
+      body: "{}",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { ...base, state: "error", error: "Credential invalid or expired." };
+    }
+    if (!response.ok) {
+      return { ...base, state: "error", error: `Check-in status API error (${response.status}).` };
+    }
+    status = await response.json().catch(() => null);
+  } catch {
+    // Provider errors can echo request metadata. Never surface the thrown
+    // message because it may contain the caller's credential.
+    return { ...base, state: "error", error: "Check-in status request failed." };
+  }
+
+  const statusCode = envelopeCode(status);
+  if (statusCode !== null && statusCode !== 0) {
+    return { ...base, state: "error", error: `Check-in status error (code ${statusCode}).` };
+  }
+
+  const data = envelopeData(status);
+  if (!data) return { ...base, state: "unavailable", error: "Check-in activity unavailable." };
+
+  const active = data["active"];
+  if (active !== undefined && typeof active !== "boolean") {
+    return { ...base, state: "unavailable", error: "Check-in activity unavailable." };
+  }
+  if (active === false) {
+    return { ...base, state: "unavailable", error: "No check-in activity running." };
+  }
+
+  const streakDays = asNumber(data["streak_days"]);
+  const todayCheckedIn = data["today_checked_in"];
+  if (todayCheckedIn === true) {
+    return { ...base, state: "completed", streakDays };
+  }
+  if (todayCheckedIn === false) {
+    return { ...base, state: "due", streakDays };
+  }
+  return { ...base, state: "unavailable", error: "Check-in activity unavailable." };
+}
+ 
 /**
  * Performs one account's daily check-in.
  *

@@ -4,6 +4,7 @@ import { registerAccountQuotaGlobalRoutes } from "./account-quota-global";
 import { registerAccountQuotaTenantRoutes } from "./account-quota-tenant";
 import { createQuotaRefreshDeps, type AccountQuotaRoutesDeps } from "./account-quota-shared";
 import { resetBackgroundQuotaRefreshesForTests } from "./account-quota-view";
+import { registerProviderNotificationRoutes } from "../notifications/routes";
 
 export { resetBackgroundQuotaRefreshesForTests };
 export type { AccountQuotaRoutesDeps };
@@ -22,5 +23,6 @@ export function createAccountQuotaRoutes(deps: AccountQuotaRoutesDeps): Elysia {
   app.error(consoleErrorHandler("Quota operation failed"));
   registerAccountQuotaTenantRoutes(app, deps, refreshDeps);
   registerAccountQuotaGlobalRoutes(app, deps, refreshDeps);
+  registerProviderNotificationRoutes(app, deps);
   return app;
 }

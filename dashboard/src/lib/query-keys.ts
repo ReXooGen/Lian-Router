@@ -8,6 +8,10 @@ export const queryKeys = {
   session: {
     current: ["console", "session"] as const,
   },
+  notifications: {
+    all: ["console", "notifications"] as const,
+    feed: (userId: string) => ["console", "notifications", userId] as const,
+  },
   system: {
     health: ["console", "system", "health"] as const,
     usage: ["console", "system", "usage"] as const,

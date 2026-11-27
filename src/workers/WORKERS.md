@@ -89,6 +89,10 @@ account after each refresh wave, bounded by `maxCheckinsPerPass` (default 10,
    reporting under another account's uid. A report-side failure never releases
    the day slot: the credit grant is the valuable half, and the report retries
    tomorrow instead of spinning every sweep pass today.
+   Confirmed Buddy `claimed`/`already_claimed` outcomes also write separate
+   account/day notification evidence. The slot marker is only a reservation and
+   is never used as proof of success by the notification feed. AutoClaw's task
+   proxy does not write event-check-in evidence; its desktop relay owns that.
 
    **Only the buddy gateways and AutoClaw are eligible.** The buddy route exists
    on those three and nowhere else; AutoClaw's claim lives on its own task proxy

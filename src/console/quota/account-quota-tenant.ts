@@ -62,6 +62,7 @@ import {
   type AccountQuotaRoutesDeps,
   type AccountStatus,
 } from "./account-quota-shared";
+import { notificationCacheKey, recordCheckinEvidence, recordClaimedPlan } from "../notifications/store";
 
 /** Daily check-in only exists on the buddy billing facade; everything else 400s with intent. */
 /**
@@ -741,6 +742,15 @@ export function registerAccountQuotaTenantRoutes(
           code: "checkin_failed",
         };
       }
+      if (result.state === "claimed" || result.state === "already_claimed") {
+        await recordCheckinEvidence(redis, account.providerId, account.id, {
+          state: "completed",
+          dayKey: checkinDayKeyFor(account.providerId),
+          observedAt: new Date().toISOString(),
+          credit: result.credit,
+          streakDays: result.streakDays,
+        });
+      }
       return {
         ok: true,
         status: 200,
@@ -1064,6 +1074,7 @@ export function registerAccountQuotaTenantRoutes(
           { param: captchaParam, region: captchaRegion },
         );
         if (outcome.kind === "claimed") {
+          await recordClaimedPlan(redis, account.id, outcome.planId, outcome.endsAt);
           await invalidateQuotaCache(access.tenantId, account.id, redis);
           await snapshotInvalidator?.invalidate();
           if (auditRecorder) {
@@ -1225,6 +1236,16 @@ export function registerAccountQuotaTenantRoutes(
               3 * 24 * 60 * 60,
             )
             .catch(() => undefined);
+        }
+        await redis.del(notificationCacheKey(account.id)).catch(() => undefined);
+        if (body.claimStatus === "claimed" && body.checkinDate === checkinDayKeyFor("autoclaw")) {
+          await recordCheckinEvidence(redis, "autoclaw", account.id, {
+            state: "completed",
+            dayKey: body.checkinDate,
+            observedAt: envelope.observedAt,
+            credit: body.claimedAmount ?? null,
+            streakDays: body.streakDays ?? null,
+          });
         }
         return { ok: true, observedAt: envelope.observedAt };
       },

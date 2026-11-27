@@ -878,5 +878,8 @@ export function useClaimProviderPlan() {
       }
       toast.error("Claim rejected", `${variables.planId}: ${getErrorMessage(error)}`);
     },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+    },
   });
 }

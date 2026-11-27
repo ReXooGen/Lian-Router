@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { consoleRequest } from "../lib/api";
 import { ProviderIcon } from "../components/ProviderIcon";
 import { EditProviderModal } from "./Providers";
@@ -59,6 +59,8 @@ import { ClaimPlansCard, supportsPlanClaims } from "./provider-detail/ClaimPlans
 export default function ProviderDetail(): ReactNode {
   const { providerId } = useParams<{ providerId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const notificationAccountId = searchParams.get("account");
   const id = providerId ?? "";
   const providersQuery = useProviders();
   const modelsQuery = useProviderModels(id);
@@ -108,6 +110,8 @@ export default function ProviderDetail(): ReactNode {
 
   const provider = (providersQuery.data ?? []).find((item) => item.providerId === id);
   const accounts = accountsQuery.data ?? [];
+  const notificationAccount = accounts.find((account) => account.id === notificationAccountId);
+  const visibleAccounts = notificationAccount ? [notificationAccount] : accounts;
   const models = modelsQuery.data ?? [];
   // and sort alphabetically so enable/disable doesn't jump the layout.
   const deduped = (() => {
@@ -424,6 +428,12 @@ export default function ProviderDetail(): ReactNode {
       {/* Routing Strategy */}
       <RoutingStrategyCard providerId={id} />
 
+      {notificationAccount ? (
+        <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "12px 16px", border: "1px solid var(--inner-border)", borderRadius: "var(--radius-control)", background: "var(--surface-2)" }}>
+          <span>Notification account: <strong>{notificationAccount.label}</strong></span>
+          <Button variant="secondary" size="sm" onClick={() => setSearchParams((previous) => { const next = new URLSearchParams(previous); next.delete("account"); return next; })}>Show all accounts</Button>
+        </div>
+      ) : null}
       {/* Accounts */}
       {provider.requiresAccount === false ? (
         <Card>
@@ -516,7 +526,7 @@ export default function ProviderDetail(): ReactNode {
             ) : (
               <AccountsList
                 providerId={id}
-                accounts={accounts}
+                accounts={visibleAccounts}
                 onDelete={(acc) => setDeleteTarget(acc)}
                 showGrokProbe={id === "grok"}
                 grokProbePending={probeAllAccounts.isPending}
@@ -531,7 +541,7 @@ export default function ProviderDetail(): ReactNode {
       {/* Credits — points and the daily check-in, above the claim campaigns */}
       {supportsCreditBalance(id) && provider.requiresAccount !== false ? (
         <CreditBalanceCard
-          accounts={accounts.map((account) => ({
+          accounts={visibleAccounts.map((account) => ({
             id: account.id,
             label: account.label,
             status: account.status,
@@ -542,8 +552,9 @@ export default function ProviderDetail(): ReactNode {
       {/* Claim plan — per-account campaigns, above the model catalog */}
       {supportsPlanClaims(id) && provider.requiresAccount !== false ? (
         <ClaimPlansCard
+          key={notificationAccount?.id ?? id}
           providerId={id}
-          accounts={accounts.map((account) => ({
+          accounts={visibleAccounts.map((account) => ({
             id: account.id,
             label: account.label,
             status: account.status,
