@@ -78,6 +78,7 @@ export function OAuthBrowserDialog({
   const [copied, setCopied] = useState(false);
   const [callbackValue, setCallbackValue] = useState("");
   const complete = useCompleteOAuthBrowserLogin();
+  const completeAutoClaw = useCompleteAutoClawLogin();
   const scheduleCopyReset = useTrackedTimeout();
   const queryClient = useQueryClient();
   // The popup navigates through the hosted `/oauth/callback` route, so the
@@ -207,16 +208,16 @@ export function OAuthBrowserDialog({
       width={420}
       footer={
         <>
-          <Button variant="secondary" size="sm" onClick={cancel} disabled={complete.isPending}>
+          <Button variant="secondary" size="sm" onClick={cancel} disabled={connecting}>
             Cancel
           </Button>
           <Button
             variant="primary"
             size="sm"
-            disabled={complete.isPending || callbackValue.trim().length === 0}
+            disabled={connecting || callbackValue.trim().length === 0}
             onClick={handleConnect}
           >
-            {complete.isPending ? "Connecting…" : "Connect"}
+            {connecting ? "Connecting…" : "Connect"}
           </Button>
         </>
       }
