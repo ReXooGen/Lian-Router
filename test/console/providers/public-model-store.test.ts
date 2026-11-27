@@ -189,6 +189,33 @@ dbDescribe("PublicModelCatalogStore — alias/combo metadata", () => {
     // Only the modality every member shares survives; the large model is
     // text-only, so the image capability must not be advertised.
     expect(entry?.capabilities).toEqual({ input: ["text"], output: ["text"] });
+    // Discovery clients read the row's own `input`, not the gateway's
+    // `capabilities` envelope — omp's `openai-models-list` accepts `input`,
+    // `input_modalities`, or `architecture.input_modalities`, and falls back to
+    // `["text"]` when none is present. A vision route advertised only under
+    // `capabilities` therefore reached the composer as text-only.
+    expect(entry?.input).toEqual(["text"]);
+    expect(entry?.output).toEqual(["text"]);
+  });
+
+  test("a vision row advertises image input at the row's top level", async () => {
+    const store = new PublicModelCatalogStore(db);
+    // The pool's single image-capable member, addressed directly rather than
+    // through the text-only combo, so the expected answer is unambiguous.
+    const listed = await store.listPublicModels(tenantId, {
+      api_key_id: randomUUID(),
+      tenant_id: tenantId,
+      provider_allowlist: [],
+      model_allowlist: [`${poolProvider}/${smallModel}`],
+      model_denylist: null,
+    });
+    const entry = listed.find((m) => m.id === `${poolProvider}/${smallModel}`);
+    expect(entry).toBeDefined();
+    // omp's `openai-models-list` reads `input` off the row; without it the
+    // composer refuses images even though `capabilities.input` says `image`.
+    expect(entry?.input).toEqual(["text", "image"]);
+    expect(entry?.output).toEqual(["text"]);
+    expect(entry?.capabilities).toEqual({ input: ["text", "image"], output: ["text"] });
   });
 
   test("a combo whose member is another combo resolves through to catalog rows", async () => {

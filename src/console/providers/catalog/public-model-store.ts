@@ -20,7 +20,38 @@ export interface AllowedModelEntry {
   owned_by: string;
   context_length?: number;
   max_completion_tokens?: number;
+  /**
+   * Input/output modalities at the row's top level.
+   *
+   * `capabilities` is this gateway's own envelope; an OpenAI-compatible client
+   * reading `/v1/models` looks for the modality list on the row itself
+   * (`input`, or `input_modalities`). omp does exactly that and falls back to
+   * `["text"]` when neither is present, so a vision route reached it as
+   * text-only and its composer refused images. Both spellings ship: the flat
+   * one for discovery, `capabilities` for callers already reading it.
+   */
+  input?: string[];
+  output?: string[];
   capabilities?: unknown;
+}
+
+/**
+ * Projects the catalog's modality record onto the row's top-level fields.
+ *
+ * Returns only well-formed lists: a malformed value is dropped rather than
+ * forwarded, because a client that sees a non-array here reports the model as
+ * text-only instead of falling through to its own reference.
+ */
+function modalityFields(modalities: unknown): { input?: string[]; output?: string[] } {
+  if (typeof modalities !== "object" || modalities === null) return {};
+  const record = modalities as Record<string, unknown>;
+  const pick = (value: unknown): string[] | undefined =>
+    Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string")
+      ? (value as string[])
+      : undefined;
+  const input = pick(record["input"]);
+  const output = pick(record["output"]);
+  return { ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}) };
 }
 
 function matchesModelPrefix(
@@ -270,6 +301,7 @@ export class PublicModelCatalogStore {
         ...(m.outputLimit != null ? { max_completion_tokens: m.outputLimit } : {}),
         ...(m.modalities || m.reasoning || m.toolCall
           ? {
+              ...modalityFields(m.modalities),
               capabilities: {
                 ...(m.modalities ?? {}),
                 ...(m.reasoning ? { reasoning: true } : {}),
@@ -314,7 +346,7 @@ export class PublicModelCatalogStore {
           owned_by: "lianrouter",
           context_length: target.contextLimit ?? DEFAULT_CONTEXT_LIMIT,
           max_completion_tokens: target.outputLimit ?? DEFAULT_OUTPUT_LIMIT,
-          ...(target.modalities ? { capabilities: target.modalities } : {}),
+          ...(target.modalities ? { ...modalityFields(target.modalities), capabilities: target.modalities } : {}),
         });
       }
 
@@ -329,7 +361,7 @@ export class PublicModelCatalogStore {
           owned_by: "lianrouter",
           context_length: target.contextLimit ?? DEFAULT_CONTEXT_LIMIT,
           max_completion_tokens: target.outputLimit ?? DEFAULT_OUTPUT_LIMIT,
-          ...(target.modalities ? { capabilities: target.modalities } : {}),
+          ...(target.modalities ? { ...modalityFields(target.modalities), capabilities: target.modalities } : {}),
         });
       }
     }
@@ -431,7 +463,7 @@ export class PublicModelCatalogStore {
           owned_by: row.providerId,
           ...(row.contextLimit != null ? { context_length: row.contextLimit } : {}),
           ...(row.outputLimit != null ? { max_completion_tokens: row.outputLimit } : {}),
-          ...(row.modalities ? { capabilities: row.modalities } : {}),
+          ...(row.modalities ? { ...modalityFields(row.modalities), capabilities: row.modalities } : {}),
         };
       }
       return undefined;
