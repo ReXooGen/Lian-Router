@@ -145,6 +145,20 @@ export async function fetchOpenAICompatibleModels(
         declaredCaps.some((v) => v.trim().toLowerCase() === "tools") ||
         paramsLower.some((v) => v === "tools" || v === "tool_call" || v === "function_calling");
       const responsesWire = isResponsesNativeModelId(id);
+      // A model the upstream's `/models` row does not describe still has a
+      // published shape. Falling back to `false` for every capability made a
+      // capable model look crippled: `xingchi/gpt-6.1-sol` answered real tool
+      // calls, reasoning and image input while the catalog advertised none of
+      // them, because that reseller's `/models` row carries only an id.
+      //
+      // The base catalog is the honest second opinion here, and it is safe for
+      // capability even though it is unsafe for limits: 32 rows agree that this
+      // model reasons and calls tools. It is read per capability, so a row that
+      // declares nothing still inherits nothing.
+      const capability = fallback;
+      const reasoning = supportsReasoning || capability?.reasoning === true;
+      const toolCall = supportsTools || capability?.toolCall === true;
+      const imageInput = supportsImageInput || capability?.modalities.input.includes("image") === true;
       byId.set(id, {
         modelId: id,
         wireFamily: responsesWire ? "responses" : "chat",
@@ -152,11 +166,11 @@ export async function fetchOpenAICompatibleModels(
         contextLimit: contextWindow,
         outputLimit: outputTokens,
         modalities: {
-          input: supportsImageInput ? ["text", "image"] : ["text"],
+          input: imageInput ? ["text", "image"] : ["text"],
           output,
         },
-        reasoning: supportsReasoning,
-        toolCall: supportsTools,
+        reasoning,
+        toolCall,
         webSearch: false,
         cost,
       });
