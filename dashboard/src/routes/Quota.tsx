@@ -308,7 +308,7 @@ function QuotaCard({
     (refresh.error ? getErrorMessage(refresh.error, "Unable to refresh this account") : null) ??
     quota?.error ??
     account.health?.sanitizedMessage;
-  const friendly = friendlyQuotaError(rawError);
+  const friendly = friendlyQuotaError(rawError, account.credentialHint);
   const isUnsupported = friendly === "Quota tracking is not supported for this provider";
   const cardError = isUnsupported ? null : friendly;
   const identity = accountIdentity(account.credentialHint, account.name);

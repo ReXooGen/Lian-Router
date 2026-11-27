@@ -54,15 +54,25 @@ export function formatQuotaRefresh(value: string | null): string {
     : "";
 }
 
-export function friendlyQuotaError(raw: string | null | undefined): string | null {
+export function friendlyQuotaError(raw: string | null | undefined, credentialKind?: string | null): string | null {
   if (!raw) return null;
   const lower = raw.toLowerCase();
+  // A stored API key cannot be refreshed and has no login session, so telling
+  // the operator to "re-login or refresh token" sends them to a flow this
+  // account does not have. The remedy for a rejected key is replacing it.
+  const isApiKey = credentialKind === "api_key";
   if (
     lower.includes("invalidated") ||
     lower.includes("reauthorization") ||
     lower.includes("refresh token revoked")
   )
     return "OAuth account invalidated — re-login required";
+  // A malformed quota body is a parse fault, not an account state. Every
+  // rejection the collector raises opens with "Quota endpoint …", so this has
+  // to be decided before the generic `quota` branch below, or a broken response
+  // reads as an exhausted account.
+  if (lower.includes("invalid json") || lower.includes("invalid response body"))
+    return "Provider returned an unreadable quota response — retry shortly";
   // An account the vendor answered for, with no plan attached yet, is a state
   // and not a fault: it is what a fresh login looks like before a campaign is
   // claimed. Red provider-error copy made it read like a broken credential.
@@ -89,10 +99,26 @@ export function friendlyQuotaError(raw: string | null | undefined): string | nul
     return "Quota exhausted — wait for the reset window";
   if (lower.includes("http 500") || lower.includes("internal server error"))
     return "Provider temporarily unavailable — retry in a moment";
-  if (lower.includes("http 401") || lower.includes("unauthorized") || lower.includes("invalid"))
-    return "Credential expired — re-login or refresh token";
+  // An `api_key` row is not always a static key: the buddy family stores an
+  // offline-session token there, and a 401 from those means the vendor ended
+  // that session. Saying "refresh token" points at a flow that does not exist
+  // for this credential kind, so the copy names both real remedies instead.
+  if (
+    lower.includes("http 401") ||
+    lower.includes("unauthorized") ||
+    lower.includes("invalid_grant") ||
+    lower.includes("invalid token") ||
+    lower.includes("invalid_token") ||
+    lower.includes("invalid credential") ||
+    lower.includes("invalid or expired")
+  )
+    return isApiKey
+      ? "Credential rejected — sign in again for this account"
+      : "Credential expired — re-login or refresh token";
   if (lower.includes("http 403") || lower.includes("forbidden"))
-    return "Access denied — check account permissions";
+    return isApiKey
+      ? "Account lacks access — check the account's plan and permissions"
+      : "Access denied — check account permissions";
   if (lower.includes("http 402") || lower.includes("payment"))
     return "Payment required — top up account balance";
   if (lower.includes("connect") || lower.includes("network") || lower.includes("timeout"))

@@ -58,6 +58,33 @@ describe("quota display formatters", () => {
     );
   });
 
+  /**
+   * A buddy-family `api_key` row holds an offline-session token, so a 401 means
+   * the vendor ended that session. The OAuth wording ("refresh token") names a
+   * flow the account does not have, and the previous copy told the operator to
+   * replace a key they never entered.
+   */
+  test("points an api_key rejection at signing in again, not at refreshing a token", () => {
+    const raw = "CodeBuddy CN credential invalid or expired.";
+    expect(friendlyQuotaError(raw, "api_key")).toBe(
+      "Credential rejected — sign in again for this account",
+    );
+    expect(friendlyQuotaError(raw, "oauth")).toBe(
+      "Credential expired — re-login or refresh token",
+    );
+  });
+
+  /**
+   * The credential branch used to match the bare word `invalid`, so a malformed
+   * quota body ("returned invalid JSON") was reported as an expired credential.
+   * That sends the operator to re-authenticate an account that is fine.
+   */
+  test("does not read a malformed quota body as a rejected credential", () => {
+    expect(friendlyQuotaError("CodeBuddy CN quota response returned invalid JSON")).toBe(
+      "Provider returned an unreadable quota response — retry shortly",
+    );
+  });
+
   test("assigns bar tones based on remaining percent thresholds", () => {
     expect(quotaBarTone(10).bar).toBe("var(--red)");
     expect(quotaBarTone(40).bar).toBe("var(--orange)");
