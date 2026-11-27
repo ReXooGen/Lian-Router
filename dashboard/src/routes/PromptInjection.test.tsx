@@ -46,6 +46,8 @@ const draft: PromptInjectionInput = {
   enabled: true,
   excludedClientIps: [],
   excludedApiKeyIds: [],
+  excludedProviders: [],
+  excludedModels: [],
 };
 
 const noop = (): void => undefined;

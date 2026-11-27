@@ -52,6 +52,10 @@ export interface PromptInjectionEntryResponse {
   readonly excludedClientIps?: readonly string[];
   /** API key ids this injection never applies to; a template id skips its children. */
   readonly excludedApiKeyIds?: readonly string[];
+  /** Provider ids this injection never applies to. */
+  readonly excludedProviders?: readonly string[];
+  /** Model names this injection never applies to, in any spelling the request may carry. */
+  readonly excludedModels?: readonly string[];
   readonly updatedAt: string;
 }
 
@@ -188,6 +192,19 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
     "excludedApiKeyIds",
     (value) => value.trim(),
   );
+  // Provider ids and model names are compared verbatim at dispatch, so the
+  // only normalization that is safe here is trimming: lowercasing a model name
+  // would silently stop matching a catalogue that spells it with capitals.
+  const excludedProviders = normalizeExclusionList(
+    record["excludedProviders"],
+    "excludedProviders",
+    (value) => value.trim(),
+  );
+  const excludedModels = normalizeExclusionList(
+    record["excludedModels"],
+    "excludedModels",
+    (value) => value.trim(),
+  );
 
   if (mode === "prompt") {
     const content = record["content"];
@@ -206,6 +223,8 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
       enabled,
       excludedClientIps,
       excludedApiKeyIds,
+      excludedProviders,
+      excludedModels,
     };
   }
 
@@ -238,6 +257,8 @@ export function normalizePromptInjectionInput(raw: unknown): PromptInjectionInpu
     enabled,
     excludedClientIps,
     excludedApiKeyIds,
+    excludedProviders,
+    excludedModels,
   };
 }
 
@@ -260,6 +281,8 @@ export function toPromptInjectionEntry(row: PromptInjection): PromptInjectionEnt
     enabled: row.enabled,
     excludedClientIps: row.excludedClientIps,
     excludedApiKeyIds: row.excludedApiKeyIds,
+    excludedProviders: row.excludedProviders,
+    excludedModels: row.excludedModels,
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -289,7 +312,11 @@ export function toPromptInjectionCatalog(
 /** The exact stack one request would receive, for the page's preview pane. */
 export function toPromptInjectionPreview(
   rows: readonly PromptInjection[],
-  context: { readonly apiKeyId?: string | undefined; readonly model?: string | undefined },
+  context: {
+    readonly apiKeyId?: string | undefined;
+    readonly model?: string | undefined;
+    readonly provider?: string | undefined;
+  },
 ): readonly PromptInjectionPreviewEntry[] {
   const modelNames = [
     context.model,
@@ -299,6 +326,10 @@ export function toPromptInjectionPreview(
   ].filter((name): name is string => typeof name === "string" && name.length > 0);
   return selectPromptInjections(rows, {
     ...(context.apiKeyId === undefined ? {} : { apiKeyId: context.apiKeyId }),
+    // The preview names one provider on purpose: the page asks "what would
+    // this request get", and routing has not chosen a candidate yet. Dispatch
+    // passes every candidate instead, which is the superset.
+    ...(context.provider === undefined ? {} : { providerIds: [context.provider] }),
     modelNames: [...new Set(modelNames)],
   }).map((entry) => ({
     scope: entry.scope,

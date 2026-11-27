@@ -65,6 +65,8 @@ const EMPTY_DRAFT: PromptInjectionInput = {
   enabled: true,
   excludedClientIps: [],
   excludedApiKeyIds: [],
+  excludedProviders: [],
+  excludedModels: [],
 };
 
 /**
@@ -210,6 +212,8 @@ function toDraft(entry: PromptInjectionEntry): PromptInjectionInput {
     enabled: entry.enabled,
     excludedClientIps: entry.excludedClientIps ?? [],
     excludedApiKeyIds: entry.excludedApiKeyIds ?? [],
+    excludedProviders: entry.excludedProviders ?? [],
+    excludedModels: entry.excludedModels ?? [],
   };
 }
 
@@ -779,6 +783,10 @@ export default function PromptInjection(): ReactNode {
   const [settingsRow, setSettingsRow] = useState<PromptInjectionCatalogEntry | null>(null);
   const [settingsIps, setSettingsIps] = useState<readonly string[]>([]);
   const [settingsKeyIds, setSettingsKeyIds] = useState<readonly string[]>([]);
+  const [settingsProviders, setSettingsProviders] = useState<readonly string[]>([]);
+  const [settingsModels, setSettingsModels] = useState<readonly string[]>([]);
+  const [providerDraft, setProviderDraft] = useState("");
+  const [modelDraft, setModelDraft] = useState("");
   const [ipDraft, setIpDraft] = useState("");
   const [loadedKey, setLoadedKey] = useState("");
   // Operator-owned template library: named drafts saved in this browser.
@@ -1107,7 +1115,11 @@ export default function PromptInjection(): ReactNode {
     setSettingsRow(row);
     setSettingsIps(row.excludedClientIps ?? []);
     setSettingsKeyIds(row.excludedApiKeyIds ?? []);
+    setSettingsProviders(row.excludedProviders ?? []);
+    setSettingsModels(row.excludedModels ?? []);
     setIpDraft("");
+    setProviderDraft("");
+    setModelDraft("");
   };
 
   const addExcludedIp = (): void => {
@@ -1120,6 +1132,34 @@ export default function PromptInjection(): ReactNode {
   const toggleExcludedKey = (id: string): void => {
     setSettingsKeyIds((current) =>
       current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
+  };
+
+  /** Adds a typed provider id; dispatch matches it verbatim, so only trim. */
+  const addExcludedProvider = (): void => {
+    const value = providerDraft.trim();
+    if (value.length === 0) return;
+    setSettingsProviders((current) => (current.includes(value) ? current : [...current, value]));
+    setProviderDraft("");
+  };
+
+  const toggleExcludedProvider = (id: string): void => {
+    setSettingsProviders((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
+  };
+
+  /** Adds a typed model name; `provider/model` and a bare id are both legal. */
+  const addExcludedModel = (): void => {
+    const value = modelDraft.trim();
+    if (value.length === 0) return;
+    setSettingsModels((current) => (current.includes(value) ? current : [...current, value]));
+    setModelDraft("");
+  };
+
+  const toggleExcludedModel = (name: string): void => {
+    setSettingsModels((current) =>
+      current.includes(name) ? current.filter((value) => value !== name) : [...current, name],
     );
   };
 
@@ -1144,6 +1184,8 @@ export default function PromptInjection(): ReactNode {
       enabled: row.enabled,
       excludedClientIps: settingsIps,
       excludedApiKeyIds: settingsKeyIds,
+      excludedProviders: settingsProviders,
+      excludedModels: settingsModels,
     };
     const payload: SavePromptInjectionRequest =
       row.scope === "global"
@@ -1158,6 +1200,8 @@ export default function PromptInjection(): ReactNode {
           ...current,
           excludedClientIps: settingsIps,
           excludedApiKeyIds: settingsKeyIds,
+          excludedProviders: settingsProviders,
+          excludedModels: settingsModels,
         }));
       }
       setSettingsRow(null);
@@ -1166,6 +1210,36 @@ export default function PromptInjection(): ReactNode {
       toast.error(error instanceof Error ? error.message : "Failed to save injection settings");
     }
   };
+
+  /**
+   * Provider and model choices for the exclusion lists, taken from the same
+   * catalogue the model picker renders — so an operator can only exclude
+   * something this gateway actually routes to. Stored values that are no
+   * longer in the catalogue stay visible, because dropping one on save would
+   * silently re-enable an injection the operator had switched off.
+   */
+  const exclusionProviderOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const entry of modelCatalog.items) {
+      if (!seen.has(entry.providerId)) seen.set(entry.providerId, entry.providerLabel || entry.providerId);
+    }
+    for (const id of settingsProviders) {
+      if (!seen.has(id)) seen.set(id, id);
+    }
+    return [...seen.entries()]
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [modelCatalog.items, settingsProviders]);
+
+  const exclusionModelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const entry of modelCatalog.items) {
+      seen.add(entry.qualified);
+      seen.add(entry.modelId);
+    }
+    for (const name of settingsModels) seen.add(name);
+    return [...seen].sort((a, b) => a.localeCompare(b));
+  }, [modelCatalog.items, settingsModels]);
 
   const exclusionKeyOptions = useMemo(() => {
     const options = (keys.data ?? []).map((key) => ({
@@ -2274,8 +2348,9 @@ export default function PromptInjection(): ReactNode {
         <Stack gap="16px">
           <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
             Exclusions stop this injection from applying to a request. Every other request still
-            receives it; the list is checked against the authenticated client IP and API key at
-            dispatch time. Excluding a share template also skips the child keys it issued.
+            receives it; the lists are checked at dispatch time against the authenticated client
+            IP, the API key, the providers that could serve the request, and every name the model
+            is called by. Excluding a share template also skips the child keys it issued.
           </p>
           <div>
             <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "6px" }}>
@@ -2390,6 +2465,184 @@ export default function PromptInjection(): ReactNode {
                   </label>
                 ))
               )}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "6px" }}>
+              Skip these providers
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                <Input
+                  id="pi-exclude-provider"
+                  label="Provider id"
+                  placeholder="autoclaw"
+                  value={providerDraft}
+                  onChange={(event) => setProviderDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addExcludedProvider();
+                    }
+                  }}
+                />
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={providerDraft.trim().length === 0}
+                onClick={addExcludedProvider}
+              >
+                Add provider
+              </Button>
+            </div>
+            <div
+              style={{
+                maxHeight: "180px",
+                overflowY: "auto",
+                border: "1px solid var(--inner-border)",
+                borderRadius: "10px",
+                padding: "4px 10px",
+                marginTop: "8px",
+              }}
+            >
+              {exclusionProviderOptions.length === 0 ? (
+                <p style={{ margin: "8px 0", fontSize: "11px", color: "var(--text-tertiary)" }}>
+                  No providers yet.
+                </p>
+              ) : (
+                exclusionProviderOptions.map((option) => (
+                  <label
+                    key={option.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "7px 0",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={settingsProviders.includes(option.id)}
+                      onChange={() => toggleExcludedProvider(option.id)}
+                    />
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {option.label}
+                      {option.label === option.id ? "" : ` · ${option.id}`}
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+            <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-tertiary)" }}>
+              Checked against every provider that could serve the request, so a failover cannot
+              slip the injection into an excluded one.
+            </p>
+          </div>
+          <div>
+            <div style={{ fontSize: "12px", fontWeight: 700, marginBottom: "6px" }}>
+              Skip these models
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                <Input
+                  id="pi-exclude-model"
+                  label="Model name"
+                  placeholder="zcode/glm-5.3"
+                  value={modelDraft}
+                  onChange={(event) => setModelDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addExcludedModel();
+                    }
+                  }}
+                />
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={modelDraft.trim().length === 0}
+                onClick={addExcludedModel}
+              >
+                Add model
+              </Button>
+            </div>
+            {settingsModels.length > 0 ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                {settingsModels.map((name) => (
+                  <span
+                    key={name}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "4px 8px",
+                      border: "1px solid var(--inner-border)",
+                      borderRadius: "9999px",
+                      background: "var(--surface-muted)",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: "11px",
+                    }}
+                  >
+                    {name}
+                    <button
+                      type="button"
+                      aria-label={`Stop excluding ${name}`}
+                      onClick={() => toggleExcludedModel(name)}
+                      style={{
+                        display: "inline-flex",
+                        padding: 0,
+                        border: 0,
+                        background: "transparent",
+                        color: "var(--text-tertiary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-tertiary)" }}>
+                No model excluded.
+              </p>
+            )}
+            <div
+              style={{
+                maxHeight: "180px",
+                overflowY: "auto",
+                border: "1px solid var(--inner-border)",
+                borderRadius: "10px",
+                padding: "4px 10px",
+                marginTop: "8px",
+              }}
+            >
+              {exclusionModelOptions.slice(0, 200).map((name) => (
+                <label
+                  key={name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "7px 0",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={settingsModels.includes(name)}
+                    onChange={() => toggleExcludedModel(name)}
+                  />
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)" }}>
+                    {name}
+                  </span>
+                </label>
+              ))}
             </div>
           </div>
         </Stack>

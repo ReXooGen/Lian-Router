@@ -32,10 +32,12 @@ export function createPromptInjectionRoutes(config: PromptInjectionRoutesConfig)
         if (params.has("preview")) {
           const keyId = params.get("keyId") ?? undefined;
           const model = params.get("model") ?? undefined;
+          const provider = params.get("provider") ?? undefined;
           return {
             stack: toPromptInjectionPreview(rows, {
               ...(keyId ? { apiKeyId: keyId } : {}),
               ...(model ? { model } : {}),
+              ...(provider ? { provider } : {}),
             }),
           };
         }

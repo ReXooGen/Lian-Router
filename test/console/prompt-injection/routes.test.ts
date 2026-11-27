@@ -51,6 +51,8 @@ function memoryStore(): PromptInjectionStorePort {
         enabled: input.enabled,
         excludedClientIps: input.excludedClientIps ?? [],
         excludedApiKeyIds: input.excludedApiKeyIds ?? [],
+        excludedProviders: input.excludedProviders ?? [],
+        excludedModels: input.excludedModels ?? [],
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -140,6 +142,52 @@ describe("prompt injection routes", () => {
     const catalog = await (await routes.handle(new Request("http://localhost/prompt-injection"))).json();
     expect(catalog.global.excludedClientIps).toEqual(["203.0.113.7", "198.51.100.9"]);
     expect(catalog.global.excludedApiKeyIds).toEqual(["key-1", "key-2"]);
+  });
+
+  test("stores provider and model exclusions and returns them in the catalog", async () => {
+    const { routes } = app(readWrite);
+    await routes.handle(
+      jsonRequest("PUT", {
+        global: {
+          mode: "prompt",
+          content: "persona",
+          excludedProviders: ["autoclaw", " autoclaw ", "zcode"],
+          excludedModels: ["zcode/glm-5.3", "glm-5.3", "zcode/glm-5.3"],
+        },
+      }),
+    );
+    const catalog = await (
+      await routes.handle(new Request("http://localhost/prompt-injection"))
+    ).json();
+    // Trimmed and de-duplicated, but never case-folded: dispatch compares these
+    // against catalogue spellings verbatim.
+    expect(catalog.global.excludedProviders).toEqual(["autoclaw", "zcode"]);
+    expect(catalog.global.excludedModels).toEqual(["zcode/glm-5.3", "glm-5.3"]);
+  });
+
+  test("a preview honours the provider it is asked about", async () => {
+    const { routes } = app(readWrite);
+    await routes.handle(
+      jsonRequest("PUT", {
+        global: {
+          mode: "prompt",
+          content: "persona",
+          excludedProviders: ["autoclaw"],
+        },
+      }),
+    );
+    const skipped = await (
+      await routes.handle(
+        new Request("http://localhost/prompt-injection?preview=1&provider=autoclaw&model=glm-5.3"),
+      )
+    ).json();
+    expect(skipped.stack).toEqual([]);
+    const kept = await (
+      await routes.handle(
+        new Request("http://localhost/prompt-injection?preview=1&provider=cbcn&model=glm-5.3"),
+      )
+    ).json();
+    expect(kept.stack.length).toBe(1);
   });
 
   test("rejects a non-array exclusion list", async () => {

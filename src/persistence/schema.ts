@@ -977,16 +977,25 @@ export const promptInjections = pgTable(
     position: text("position").$type<PromptInjectionPosition>().notNull().default("append"),
     enabled: boolean("enabled").notNull().default(true),
     /**
-     * Requests this entry must not touch. Both lists are exclusions, not
+     * Requests this entry must not touch. All four lists are exclusions, not
      * allowlists: an empty list excludes nobody, so a newly saved entry
      * behaves exactly as it did before these columns existed.
      *
      * `excludedClientIps` holds normalized client addresses (IPv4, or IPv6
      * with the `::ffff:` mapped prefix stripped); `excludedApiKeyIds` holds
      * API-key row ids, including share children.
+     *
+     * `excludedProviders` holds provider ids and `excludedModels` holds model
+     * names, matched against every name the gateway could bill the request
+     * under: the requested name, `provider/model`, the bare model id, and each
+     * route candidate's own provider and model. A name on either list skips
+     * the entry for that request, which is what "do not inject into this
+     * provider, or into this model" means when the same persona is global.
      */
     excludedClientIps: jsonb("excluded_client_ips").$type<readonly string[]>().notNull().default([]),
     excludedApiKeyIds: jsonb("excluded_api_key_ids").$type<readonly string[]>().notNull().default([]),
+    excludedProviders: jsonb("excluded_providers").$type<readonly string[]>().notNull().default([]),
+    excludedModels: jsonb("excluded_models").$type<readonly string[]>().notNull().default([]),
     ...timestampColumns(),
   },
   (table) => [

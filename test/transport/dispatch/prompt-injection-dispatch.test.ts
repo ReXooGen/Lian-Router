@@ -46,6 +46,8 @@ function injection(overrides: Partial<PromptInjection>): PromptInjection {
     enabled: true,
     excludedClientIps: [],
     excludedApiKeyIds: [],
+    excludedProviders: [],
+    excludedModels: [],
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -240,5 +242,40 @@ describe("handleProviderProxyRequest — prompt injection", () => {
       stored: [injection({ content: "GLOBAL", excludedClientIps: ["203.0.113.7"] })],
     });
     expect(systemTexts(captured)).toEqual([]);
+  });
+
+  test("a provider exclusion is resolved from the candidate, not the request", async () => {
+    // The client asked for "fast"; the provider is a routing decision. Only the
+    // candidate list carries it, so this test fails unless dispatch forwards
+    // the candidate provider ids to the resolver.
+    invalidatePromptInjectionCache();
+    const skipped = await dispatchWith({
+      authorization,
+      stored: [injection({ content: "GLOBAL", excludedProviders: ["anthropic"] })],
+    });
+    expect(systemTexts(skipped.captured)).toEqual([]);
+
+    invalidatePromptInjectionCache();
+    const kept = await dispatchWith({
+      authorization,
+      stored: [injection({ content: "GLOBAL", excludedProviders: ["autoclaw"] })],
+    });
+    expect(systemTexts(kept.captured)).toEqual(["GLOBAL"]);
+  });
+
+  test("a model exclusion reaches dispatch under the resolved model id", async () => {
+    invalidatePromptInjectionCache();
+    const skipped = await dispatchWith({
+      authorization,
+      stored: [injection({ content: "GLOBAL", excludedModels: ["claude-sonnet-4-5"] })],
+    });
+    expect(systemTexts(skipped.captured)).toEqual([]);
+
+    invalidatePromptInjectionCache();
+    const kept = await dispatchWith({
+      authorization,
+      stored: [injection({ content: "GLOBAL", excludedModels: ["glm-5.3"] })],
+    });
+    expect(systemTexts(kept.captured)).toEqual(["GLOBAL"]);
   });
 });

@@ -23,6 +23,8 @@ function injection(overrides: Partial<PromptInjection>): PromptInjection {
     enabled: true,
     excludedClientIps: [],
     excludedApiKeyIds: [],
+    excludedProviders: [],
+    excludedModels: [],
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -197,5 +199,67 @@ describe("prompt injection application", () => {
   test("does not inject when the stack is empty", () => {
     const base = request();
     expect(withPromptInjections(base, [])).toBe(base);
+  });
+});
+
+describe("provider and model exclusions", () => {
+  test("an excluded provider skips the entry for a request routed to it", () => {
+    const entries = [injection({ content: "global", excludedProviders: ["autoclaw"] })];
+    expect(
+      selectPromptInjections(entries, { providerIds: ["autoclaw"], modelNames: ["glm-5.3"] }),
+    ).toEqual([]);
+    expect(
+      selectPromptInjections(entries, { providerIds: ["cbcn"], modelNames: ["glm-5.3"] }).length,
+    ).toBe(1);
+  });
+
+  test("a provider exclusion holds across every candidate, not just the first", () => {
+    // The stack is applied before failover, so an entry excluded for a provider
+    // that could still serve the request must not apply at all.
+    const entries = [
+      injection({ scope: "key", target: "key-1", content: "keyed", excludedProviders: ["workbuddy"] }),
+    ];
+    const selected = selectPromptInjections(entries, {
+      apiKeyId: "key-1",
+      providerIds: ["cbcn", "workbuddy"],
+      modelNames: [],
+    });
+    expect(selected).toEqual([]);
+  });
+
+  test("a model exclusion matches the bare id as well as the qualified name", () => {
+    const entries = [injection({ content: "global", excludedModels: ["glm-5.3-flash"] })];
+    // The request may arrive under any of these spellings; all resolve to the
+    // same model, so all must be skipped.
+    for (const name of ["zcode/glm-5.3-flash", "glm-5.3-flash"]) {
+      expect(selectPromptInjections(entries, { modelNames: [name] })).toEqual([]);
+    }
+    expect(selectPromptInjections(entries, { modelNames: ["glm-5.3"] }).length).toBe(1);
+  });
+
+  test("a qualified model exclusion also catches the bare-id request", () => {
+    const entries = [injection({ content: "global", excludedModels: ["zcode/glm-5.3-flash"] })];
+    expect(
+      selectPromptInjections(entries, {
+        modelNames: ["glm-5.3-flash", "zcode/glm-5.3-flash", "glm-5.3-flash"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("empty provider and model lists exclude nobody", () => {
+    const entries = [injection({ content: "global", excludedProviders: [], excludedModels: [] })];
+    expect(
+      selectPromptInjections(entries, { providerIds: ["autoclaw"], modelNames: ["x"] }).length,
+    ).toBe(1);
+  });
+
+  test("a request without provider ids still honours a model exclusion", () => {
+    const entries = [injection({ content: "global", excludedModels: ["glm-5.3"] })];
+    expect(
+      selectPromptInjections(entries, { modelNames: ["glm-5.3"] }),
+    ).toEqual([]);
+    expect(
+      selectPromptInjections(entries, { providerIds: ["autoclaw"], modelNames: ["other"] }).length,
+    ).toBe(1);
   });
 });

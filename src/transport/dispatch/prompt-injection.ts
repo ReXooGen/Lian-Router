@@ -154,6 +154,16 @@ export async function applyPromptInjections(
       ...(context.parentApiKeyId === undefined ? {} : { parentApiKeyId: context.parentApiKeyId }),
       ...(context.clientIp === undefined ? {} : { clientIp: context.clientIp }),
       modelNames: injectionModelNames(request, candidates),
+      // Every candidate, not just the first: the stack is applied before any
+      // attempt and survives failover, so an excluded provider must not
+      // receive this persona merely because the primary candidate was busy.
+      providerIds: [
+        ...new Set(
+          candidates
+            .map((candidate) => candidate.provider_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      ],
     });
     return withPromptInjections(request, injections);
   } catch {

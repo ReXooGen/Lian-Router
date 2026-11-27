@@ -39,6 +39,10 @@ export interface PromptInjectionInput {
   readonly excludedClientIps?: readonly string[];
   /** API key ids this injection never applies to; a template id skips its children. */
   readonly excludedApiKeyIds?: readonly string[];
+  /** Provider ids this injection never applies to (bare id, e.g. `autoclaw`). */
+  readonly excludedProviders?: readonly string[];
+  /** Model names this injection never applies to, in any spelling the request may carry. */
+  readonly excludedModels?: readonly string[];
 }
 
 export interface PromptInjectionResolutionContext {
@@ -54,6 +58,14 @@ export interface PromptInjectionResolutionContext {
    * `model` entry among them wins.
    */
   readonly modelNames: readonly string[];
+  /**
+   * Provider ids the request could be served by: every eligible route
+   * candidate, most likely first. A provider on this list is skipped by an
+   * entry that excludes it — the exclusion has to hold for the request, not
+   * only for the candidate that happened to be picked, because failover moves
+   * between candidates after the stack is already applied.
+   */
+  readonly providerIds?: readonly string[];
 }
 
 const CACHE_TTL_MS = 3_000;
@@ -95,6 +107,33 @@ export function selectPromptInjections(
       entry.excludedApiKeyIds.includes(context.parentApiKeyId)
     ) {
       return true;
+    }
+    // Provider and model exclusions are checked against every name the request
+    // could be billed under, not just the first. A `provider/model` exclusion
+    // has to catch a request that asked for the bare model id too, and a
+    // provider exclusion has to hold across failover candidates — otherwise
+    // the persona would apply or vanish depending on routing, which is exactly
+    // the inconsistency this list exists to prevent.
+    if (
+      entry.excludedProviders.length > 0 &&
+      (context.providerIds ?? []).some((id) => entry.excludedProviders.includes(id))
+    ) {
+      return true;
+    }
+    if (entry.excludedModels.length > 0) {
+      const bare = (name: string): string =>
+        name.includes("/") ? name.slice(name.lastIndexOf("/") + 1) : name;
+      // A bare model id in the exclusion means "this model, whichever provider
+      // serves it", so it is compared against the bare form of every name the
+      // request carries. A qualified `provider/model` entry is a deliberate pin
+      // and only matches that exact spelling — otherwise excluding
+      // `zcode/glm-5.3` would silently also skip `zai/glm-5.3`.
+      const hit = entry.excludedModels.some((excluded) =>
+        excluded.includes("/")
+          ? context.modelNames.includes(excluded)
+          : context.modelNames.some((name) => bare(name) === excluded),
+      );
+      if (hit) return true;
     }
     if (context.clientIp === undefined || context.clientIp.trim().length === 0) return false;
     return entry.excludedClientIps.includes(normalizeExcludedClientIp(context.clientIp));
@@ -188,6 +227,8 @@ export class DrizzlePromptInjectionStore {
         enabled: input.enabled,
         excludedClientIps: input.excludedClientIps ?? [],
         excludedApiKeyIds: input.excludedApiKeyIds ?? [],
+        excludedProviders: input.excludedProviders ?? [],
+        excludedModels: input.excludedModels ?? [],
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -207,6 +248,8 @@ export class DrizzlePromptInjectionStore {
           enabled: input.enabled,
           excludedClientIps: input.excludedClientIps ?? [],
           excludedApiKeyIds: input.excludedApiKeyIds ?? [],
+          excludedProviders: input.excludedProviders ?? [],
+          excludedModels: input.excludedModels ?? [],
           updatedAt: now,
         },
       })

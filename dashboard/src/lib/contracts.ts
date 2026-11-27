@@ -188,6 +188,10 @@ export interface PromptInjectionEntry {
   readonly excludedClientIps?: readonly string[];
   /** API key ids this injection never applies to; a template id skips its children. */
   readonly excludedApiKeyIds?: readonly string[];
+  /** Provider ids this injection never applies to. */
+  readonly excludedProviders?: readonly string[];
+  /** Model names this injection never applies to, in any spelling the request may carry. */
+  readonly excludedModels?: readonly string[];
   readonly updatedAt: string;
 }
 
@@ -216,6 +220,10 @@ export interface PromptInjectionInput {
   readonly excludedClientIps?: readonly string[];
   /** API key ids this injection never applies to; a template id skips its children. */
   readonly excludedApiKeyIds: readonly string[];
+  /** Provider ids this injection never applies to. */
+  readonly excludedProviders: readonly string[];
+  /** Model names this injection never applies to, in any spelling the request may carry. */
+  readonly excludedModels: readonly string[];
 }
 
 // ── Automation: CodeBuddy growth-activity report ─────────────────────────────
