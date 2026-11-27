@@ -69,6 +69,44 @@ describe("bare-id ambiguity", () => {
     expect(modelsDevCatalog.resolve("", "no-such-model-xyz")).toBeUndefined();
     expect(modelsDevCatalog.resolve("openai", "no-such-model-xyz")).toBeUndefined();
   });
+
+  /**
+   * Resellers differ from the publisher and from each other in ways that say
+   * nothing about the model: a mark-up, a `pdf` input their own front end
+   * converts, an input list in another order. None of that is a contradiction,
+   * and requiring exact agreement across all of it discarded a context window
+   * every row reported identically — which then fell through to the caller's
+   * invented default.
+   */
+  test("a reseller mark-up and a wider modality list are not disagreement", () => {
+    // 32 rows carry this id: all say 1,050,000 / 128,000, the publisher's own
+    // figures; they split on price ($2/$10 vs $2.2/$11 vs $2.6/$13) and on
+    // whether `pdf` is listed as an input.
+    const bare = modelsDevCatalog.resolve("", "gpt-6.1-sol");
+    expect(bare?.contextLimit).toBe(1_050_000);
+    expect(bare?.outputLimit).toBe(128_000);
+    // The modal rate is the publisher's, not a reseller's margin.
+    expect(bare?.cost.input).toBe(2);
+    expect(bare?.cost.output).toBe(10);
+    // Modalities are intersected: every row promises text and image, not all
+    // promise pdf, so the safe claim is the two they share.
+    expect([...(bare?.modalities.input ?? [])].sort()).toEqual(["image", "text"]);
+  });
+
+  test("an unlisted provider inherits the agreed limits instead of a default", () => {
+    // `xingchi` is a reseller the catalog has never heard of. Before the fix
+    // this returned undefined, and discovery wrote 200,000 / 64,192 — figures
+    // no provider publishes for this model.
+    const viaUnlisted = modelsDevCatalog.resolve("xingchi", "gpt-6.1-sol");
+    expect(viaUnlisted?.contextLimit).toBe(1_050_000);
+    expect(viaUnlisted?.outputLimit).toBe(128_000);
+  });
+
+  test("a genuine limit disagreement still fails closed", () => {
+    // The rule that matters is preserved: when rows disagree about the window
+    // itself, no answer is better than a wrong one.
+    expect(modelsDevCatalog.resolve("", "claude-sonnet-4-6")).toBeUndefined();
+  });
 });
 
 describe("provider id mapping", () => {

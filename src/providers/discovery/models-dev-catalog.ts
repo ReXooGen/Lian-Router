@@ -260,9 +260,22 @@ export class ModelsDevCatalog {
   }
 
   /**
-   * The single row for `bareId`, or `undefined` when the catalog disagrees
-   * about it. Two rows that agree on every reported fact are interchangeable,
-   * so the first is returned rather than treating agreement as ambiguity.
+   * The row for `bareId`, or `undefined` when the catalog disagrees about what
+   * a wrong answer would cost the caller.
+   *
+   * What must agree is the *shape* of the model — its context window, its
+   * output ceiling, and the modalities it accepts. Those are facts about the
+   * model, and a gateway that guesses them wrong will truncate real prompts or
+   * reject real images.
+   *
+   * Price is deliberately not part of that check. The base catalog carries one
+   * row per reseller, and resellers mark the same model up by different
+   * amounts (`gpt-6.1-sol` appears at $2/$10, $2.2/$11 and $2.6/$13). Treating a
+   * price difference as ambiguity threw away a context window all 32 rows
+   * agreed on, so an unlisted provider fell through to a fabricated 200K/64K.
+   * The price used is the one the most rows report, which is the upstream rate
+   * before a reseller's margin — and `costFor` still prefers the routed
+   * provider's own row whenever that provider has one.
    */
   private unambiguousBare(bareId: string): ModelsDevModelMetadata | undefined {
     const rows = this.bareMap.get(bareId);
@@ -270,13 +283,60 @@ export class ModelsDevCatalog {
     const first = rows[0];
     if (first === undefined) return undefined;
     if (rows.length === 1) return first;
-    const signature = (m: ModelsDevModelMetadata): string =>
-      JSON.stringify([m.contextLimit, m.outputLimit, m.cost, m.modalities]);
-    const expected = signature(first);
+
+    // Only the two limits must agree. They are the facts a wrong answer makes
+    // expensive: an overstated context window truncates a real prompt, an
+    // overstated output ceiling turns a valid request into an upstream 400.
+    //
+    // Modalities are intersected instead of compared. Resellers differ here for
+    // reasons that say nothing about the model — one lists `pdf` because its
+    // own front end converts PDFs before forwarding, another lists the same
+    // inputs in another order — and requiring an exact match threw away a
+    // context window every row agreed on. The intersection is the set of
+    // inputs every row promises, which is the safe claim to advertise.
     for (const row of rows) {
-      if (signature(row) !== expected) return undefined;
+      if (row.contextLimit !== first.contextLimit) return undefined;
+      if (row.outputLimit !== first.outputLimit) return undefined;
     }
-    return first;
+
+    const shared = (pick: (m: ModelsDevModelMetadata) => readonly string[]): readonly string[] => {
+      const [head, ...rest] = rows.map((row) => new Set(pick(row)));
+      if (head === undefined) return [];
+      return [...head].filter((value) => rest.every((set) => set.has(value))).sort();
+    };
+    const modalities = {
+      input: shared((m) => m.modalities.input),
+      output: shared((m) => m.modalities.output),
+    };
+
+    // Price is not compared either: the base catalog carries one row per
+    // reseller, and they mark the same model up differently (`gpt-6.1-sol`
+    // appears at $2/$10, $2.2/$11 and $2.6/$13). The modal rate is the one most
+    // rows report, which is the upstream rate before a reseller's margin, and
+    // `costFor` still prefers the routed provider's own row when it has one.
+    //
+    // A tie is broken toward the higher rate: reseller free-tier entries exist,
+    // and publishing a paid model as free is worse than publishing it dear.
+    const votes = new Map<string, { cost: ModelsDevModelCost; count: number }>();
+    for (const row of rows) {
+      const key = `${row.cost.input}/${row.cost.output}`;
+      const existing = votes.get(key);
+      if (existing === undefined) votes.set(key, { cost: row.cost, count: 1 });
+      else existing.count += 1;
+    }
+    let bestCost = first.cost;
+    let bestCount = -1;
+    let bestRate = -Infinity;
+    for (const vote of votes.values()) {
+      const rate = (vote.cost.input ?? 0) + (vote.cost.output ?? 0);
+      if (vote.count > bestCount || (vote.count === bestCount && rate > bestRate)) {
+        bestCount = vote.count;
+        bestRate = rate;
+        bestCost = vote.cost;
+      }
+    }
+
+    return { ...first, cost: bestCost, modalities };
   }
 
   /**
