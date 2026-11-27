@@ -10,7 +10,10 @@ export interface CheckinEvidence {
 }
 
 export function notificationCacheKey(accountId: string): string {
-  return `lianrouter:notifications:v1:${accountId}`;
+  // Bump the version whenever the stored shape or its user-visible copy changes:
+  // snapshots outlive restarts, so a stale entry would keep serving old wording
+  // until its own validity window expired.
+  return `lianrouter:notifications:v2:${accountId}`;
 }
 
 function evidenceKey(providerId: string, accountId: string, dayKey: string): string {
