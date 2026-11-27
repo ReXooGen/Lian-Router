@@ -2,7 +2,7 @@ import { Bell, Check, CheckCircle2, CircleHelp, Gift, RefreshCw, X } from "lucid
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
-import type { ProviderNotificationKind } from "../../../src/console/notifications/contracts";
+import type { ProviderNotification, ProviderNotificationKind } from "../../../src/console/notifications/contracts";
 import { useNotificationReadState, useProviderNotifications } from "../lib/hooks/notifications";
 import { useModalFocus } from "../lib/hooks/use-modal-focus";
 import { uniqueNotifications, unreadNotificationCount } from "../lib/notification-state";
@@ -15,17 +15,53 @@ const kindLabels: Record<ProviderNotificationKind, string> = {
   status_unknown: "Status unverified",
 };
 
-function notificationIcon(kind: ProviderNotificationKind): ReactNode {
-  if (kind === "checkin_completed") return <CheckCircle2 size={16} />;
-  if (kind === "status_unknown") return <CircleHelp size={16} />;
-  if (kind === "plan_claimable") return <Gift size={16} />;
-  return <Bell size={16} />;
+const kindRank: Record<ProviderNotificationKind, number> = {
+  checkin_due: 0,
+  plan_claimable: 1,
+  checkin_completed: 2,
+  status_unknown: 3,
+};
+
+function notificationIcon(kind: ProviderNotificationKind, size = 14): ReactNode {
+  if (kind === "checkin_completed") return <CheckCircle2 size={size} />;
+  if (kind === "status_unknown") return <CircleHelp size={size} />;
+  if (kind === "plan_claimable") return <Gift size={size} />;
+  return <Bell size={size} />;
 }
 
 function checkedLabel(checkedAt: string | undefined): string | null {
   if (!checkedAt) return null;
   const date = new Date(checkedAt);
-  return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+interface NotificationGroup {
+  readonly key: string;
+  readonly kind: ProviderNotificationKind;
+  readonly providerId: string;
+  readonly items: readonly ProviderNotification[];
+}
+
+/**
+ * Seven AutoClaw accounts reporting the same unverified state used to render as
+ * seven near-identical cards that pushed everything else out of view. Rows are
+ * grouped by provider and kind: one row per state, accounts listed inside it.
+ * Claimable plans keep their own row because each plan carries its own name.
+ */
+function groupNotifications(items: readonly ProviderNotification[]): NotificationGroup[] {
+  const groups = new Map<string, ProviderNotification[]>();
+  for (const item of items) {
+    const key = item.kind === "plan_claimable"
+      ? `${item.providerId}:${item.kind}:${item.planId ?? item.id}`
+      : `${item.providerId}:${item.kind}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(item);
+    else groups.set(key, [item]);
+  }
+  return Array.from(groups, ([key, groupItems]) => {
+    const first = groupItems[0] as ProviderNotification;
+    return { key, kind: first.kind, providerId: first.providerId, items: groupItems };
+  }).sort((a, b) => kindRank[a.kind] - kindRank[b.kind] || a.providerId.localeCompare(b.providerId));
 }
 
 export function NotificationsPopover({ userId }: { readonly userId: string }): ReactNode {
@@ -37,6 +73,7 @@ export function NotificationsPopover({ userId }: { readonly userId: string }): R
   const items = useMemo(() => uniqueNotifications(query.data?.items ?? []), [query.data?.items]);
   const readSet = useMemo(() => new Set(readIds), [readIds]);
   const unreadCount = unreadNotificationCount(items, readIds);
+  const groups = useMemo(() => groupNotifications(items), [items]);
   const lastChecked = checkedLabel(query.data?.checkedAt);
   useModalFocus({ open, mounted: open, panelRef: contentRef, onClose: () => setOpen(false) });
 
@@ -87,17 +124,32 @@ export function NotificationsPopover({ userId }: { readonly userId: string }): R
           className="popout-enter glass"
           style={{
             position: "fixed", zIndex: 60, top: "64px", right: "16px",
-            width: "min(380px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 80px)",
-            overflowY: "auto", borderRadius: "20px", padding: "16px",
+            width: "min(360px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 80px)",
+            display: "flex", flexDirection: "column", borderRadius: "16px",
             boxShadow: "var(--shadow-popout)", border: "1px solid var(--inner-border)",
-            background: "var(--popover-bg)",
+            background: "var(--popover-bg)", overflow: "hidden",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-            <h2 style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 700, fontSize: "14px" }}>
-              <Bell size={16} style={{ color: "var(--accent)" }} /> Notifications
+          <header
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+              padding: "12px 14px", borderBottom: "1px solid var(--inner-border)",
+            }}
+          >
+            <h2 style={{ display: "flex", alignItems: "center", gap: "7px", fontWeight: 650, fontSize: "13px" }}>
+              Notifications
+              {unreadCount > 0 ? (
+                <span
+                  style={{
+                    fontSize: "10px", fontWeight: 600, padding: "1px 6px", borderRadius: "999px",
+                    background: "var(--accent-soft)", color: "var(--accent)",
+                  }}
+                >
+                  {unreadCount} new
+                </span>
+              ) : null}
             </h2>
-            <div style={{ display: "flex", gap: "4px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
               <button
                 type="button"
                 className="topbar-icon-button"
@@ -117,9 +169,16 @@ export function NotificationsPopover({ userId }: { readonly userId: string }): R
                 <X size={14} />
               </button>
             </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", margin: "8px 0 12px", fontSize: "11px" }}>
-            <span style={{ color: "var(--text-secondary)" }}>{unreadCount} unread</span>
+          </header>
+
+          <div
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px",
+              padding: "8px 14px", borderBottom: "1px solid var(--inner-border)",
+              fontSize: "11px", color: "var(--text-tertiary)",
+            }}
+          >
+            <span>{lastChecked ? `Checked ${lastChecked}` : "Not checked yet"}</span>
             <button
               type="button"
               className="topbar-button"
@@ -130,70 +189,130 @@ export function NotificationsPopover({ userId }: { readonly userId: string }): R
               <Check size={12} /> Mark all read
             </button>
           </div>
-          {query.isError ? (
-            <p role="alert" style={{ fontSize: "12px", marginBottom: "12px", color: "var(--text-secondary)" }}>
-              Could not refresh notifications. {query.data ? "Showing the last saved snapshot. " : ""}
-              {query.error.message || "Try refreshing again."}
-            </p>
-          ) : null}
-          <div role="status" aria-live="polite" style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
-            {query.isPending && !query.isError ? <p style={{ marginBottom: "12px" }}>Loading provider notifications…</p> : null}
-            {query.data?.pending ? <p style={{ marginBottom: "12px" }}>Checking provider status… Results are not yet fully verified.</p> : null}
-            {query.isFetching && query.data && !query.data.pending ? <p style={{ marginBottom: "12px" }}>Refreshing notifications…</p> : null}
-          </div>
-          {items.length === 0 && query.data ? (
-            <p style={{ padding: "16px 0", fontSize: "12px", color: "var(--text-secondary)" }}>
-              {query.data.pending ? "No notifications yet. Provider checks are still in progress." : "No provider notifications at the last check."}
-            </p>
-          ) : null}
-          <ul style={{ display: "flex", flexDirection: "column", gap: "10px", listStyle: "none", padding: 0, margin: 0 }}>
-            {items.map((item) => {
-              const unread = !readSet.has(item.id);
+
+          <div style={{ overflowY: "auto", padding: "10px 14px 14px" }}>
+            {query.isError ? (
+              <p role="alert" style={{ fontSize: "11.5px", margin: "4px 0 10px", color: "var(--text-secondary)" }}>
+                Could not refresh. {query.data ? "Showing the last snapshot. " : ""}
+                {query.error.message || "Try again."}
+              </p>
+            ) : null}
+            <div role="status" aria-live="polite" style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>
+              {query.isPending && !query.isError ? <p style={{ margin: "2px 0 10px" }}>Loading…</p> : null}
+              {query.data?.pending ? <p style={{ margin: "2px 0 10px" }}>Checking providers…</p> : null}
+            </div>
+
+            {items.length === 0 && query.data ? (
+              <p style={{ padding: "18px 0", fontSize: "12px", color: "var(--text-secondary)" }}>
+                {query.data.pending ? "No results yet — provider checks are running." : "Nothing needs attention."}
+              </p>
+            ) : null}
+
+            {groups.map((group) => {
+              const unreadItems = group.items.filter((item) => !readSet.has(item.id));
+              const first = group.items[0] as ProviderNotification;
+              const provider = providerDisplayName(group.providerId);
+              const accountLabel = group.items.length === 1
+                ? first.accountLabel
+                : `${group.items.length} accounts`;
               return (
-                <li
-                  key={item.id}
-                  style={{ border: "1px solid var(--inner-border)", borderRadius: "14px", padding: "12px", background: unread ? "var(--accent-soft)" : "var(--surface-2)" }}
-                >
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
-                    <span aria-hidden="true" style={{ color: item.kind === "status_unknown" ? "var(--text-secondary)" : "var(--accent)", marginTop: "2px", flexShrink: 0 }}>
-                      {notificationIcon(item.kind)}
+                <section key={group.key} style={{ padding: "10px 0", borderBottom: "1px solid var(--inner-border)" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        marginTop: "1px", flexShrink: 0,
+                        color: group.kind === "status_unknown" ? "var(--text-tertiary)" : "var(--accent)",
+                      }}
+                    >
+                      {notificationIcon(group.kind)}
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <Link
-                        to={item.href}
-                        onClick={() => { markRead([item.id]); setOpen(false); }}
-                        style={{ display: "block", color: "inherit", textDecoration: "none", overflowWrap: "anywhere" }}
-                      >
-                        <span style={{ display: "block", fontSize: "10px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          {kindLabels[item.kind]}{unread ? " · Unread" : ""}
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "6px", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: "12px", fontWeight: 600 }}>{provider}</span>
+                        <span style={{ fontSize: "10px", color: "var(--text-tertiary)" }}>
+                          {kindLabels[group.kind]} · {accountLabel}
                         </span>
-                        <span style={{ display: "block", fontWeight: 600, fontSize: "12.5px" }}>{item.title}</span>
-                        <span style={{ display: "block", fontSize: "11px", color: "var(--text-secondary)", marginTop: "3px" }}>{item.message}</span>
-                        <span style={{ display: "block", fontSize: "10px", color: "var(--text-tertiary)", marginTop: "6px" }}>
-                          {providerDisplayName(item.providerId)} · {item.accountLabel}
-                        </span>
-                      </Link>
-                      {unread ? (
+                        {unreadItems.length > 0 ? (
+                          <span style={{ fontSize: "10px", fontWeight: 600, color: "var(--accent)" }}>
+                            {unreadItems.length} unread
+                          </span>
+                        ) : null}
+                      </div>
+                      <p style={{ fontSize: "11.5px", color: "var(--text-secondary)", marginTop: "3px", lineHeight: 1.45 }}>
+                        {first.message}
+                      </p>
+                      {group.items.length > 1 ? (
+                        <ul style={{ listStyle: "none", padding: 0, margin: "6px 0 0", display: "grid", gap: "2px" }}>
+                          {group.items.map((item) => (
+                            <li key={item.id} style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                              <Link
+                                to={item.href}
+                                onClick={() => { markRead([item.id]); setOpen(false); }}
+                                style={{
+                                  flex: 1, minWidth: 0, fontSize: "11px", color: "var(--text-secondary)",
+                                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                }}
+                              >
+                                {item.accountLabel}
+                              </Link>
+                              {readSet.has(item.id) ? null : (
+                                <button
+                                  type="button"
+                                  className="topbar-button"
+                                  style={{ fontSize: "10px", padding: "0 4px" }}
+                                  aria-label={`Mark ${item.accountLabel} as read`}
+                                  onClick={() => markRead([item.id])}
+                                >
+                                  Read
+                                </button>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "5px" }}>
+                          <Link
+                            to={first.href}
+                            onClick={() => { markRead([first.id]); setOpen(false); }}
+                            style={{ fontSize: "11px", fontWeight: 600, color: "var(--accent)" }}
+                          >
+                            Open account
+                          </Link>
+                          {readSet.has(first.id) ? null : (
+                            <button
+                              type="button"
+                              className="topbar-button"
+                              style={{ fontSize: "10px" }}
+                              onClick={() => markRead([first.id])}
+                            >
+                              <Check size={11} /> Mark read
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {group.items.length > 1 ? (
                         <button
                           type="button"
                           className="topbar-button"
-                          style={{ marginTop: "8px", fontSize: "10px" }}
-                          aria-label={`Mark ${item.title} for ${item.accountLabel} as read`}
-                          onClick={() => markRead([item.id])}
+                          style={{ fontSize: "10px", marginTop: "6px" }}
+                          onClick={() => markRead(group.items.map((item) => item.id))}
                         >
-                          <Check size={11} /> Mark read
+                          <Check size={11} /> Mark these read
                         </button>
                       ) : null}
                     </div>
                   </div>
-                </li>
+                </section>
               );
             })}
-          </ul>
-          {lastChecked ? <p style={{ marginTop: "12px", fontSize: "10px", color: "var(--text-tertiary)" }}>Last checked: {lastChecked}</p> : null}
-          {storageUnavailable ? (
-            <p role="status" style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-secondary)" }}>Read state is kept for this session only because browser storage is unavailable.</p>
-          ) : null}
+
+            {storageUnavailable ? (
+              <p role="status" style={{ marginTop: "8px", fontSize: "10.5px", color: "var(--text-tertiary)" }}>
+                Read state is session-only: browser storage is unavailable.
+              </p>
+            ) : null}
+          </div>
         </div>,
         document.body,
       ) : null}

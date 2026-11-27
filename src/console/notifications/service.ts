@@ -73,7 +73,7 @@ export class ProviderNotificationService {
   }
 
   private unknown(account: NotificationAccount, at: string, message?: string): ProviderNotification {
-    return this.item(account, "status_unknown", message ?? "The provider status could not be verified. Open the account to retry; no check-in or claim was performed.", at);
+    return this.item(account, "status_unknown", message ?? "Could not verify the provider status. Open the account to retry.", at);
   }
 
   /** Fast read: upstream work is queued and never holds the notification request open. */
@@ -96,7 +96,7 @@ export class ProviderNotificationService {
       pending = true;
       void this.refresh(account);
       return [this.unknown(account, now.toISOString(), account.providerId === "autoclaw"
-        ? "Waiting for a current desktop check-in observation. Open AutoClaw and refresh the relay; task-proxy attempts do not confirm event check-in."
+        ? "Open the AutoClaw desktop app and refresh the relay to confirm today's check-in."
         : "Checking the provider's reward status. No check-in or plan claim is performed by this read.")];
     }));
     const priority = { checkin_due: 0, plan_claimable: 1, status_unknown: 2, checkin_completed: 3 };
@@ -166,10 +166,10 @@ export class ProviderNotificationService {
           seen.add(plan.planId);
           if (await this.deps.redis.get(claimedPlanKey(account.id, plan.planId))) continue;
           if (end !== null) validUntil = Math.min(validUntil, end);
-          plans.push(this.item(account, "plan_claimable", `ZCode advertises ${plan.name} for this account.${plan.endsAt ? ` Available until ${plan.endsAt}.` : ""} Open the account to review eligibility and any captcha before claiming.`, at, { id: plan.planId, name: plan.name }));
+          plans.push(this.item(account, "plan_claimable", `${plan.name} can be claimed${plan.endsAt ? ` until ${plan.endsAt}` : ""}. Review eligibility and any captcha before claiming.`, at, { id: plan.planId, name: plan.name }));
         }
         items = listing.errors.length > 0
-          ? [...plans, this.unknown(account, at, "Some ZCode campaign sources could not be read. Listed plans are known; other eligibility remains unverified.")]
+          ? [...plans, this.unknown(account, at, "Some ZCode campaign sources could not be read.")]
           : plans;
       } else {
         const evidence = await readCheckinEvidence(this.deps.redis, account.providerId, account.id, dayKey);
@@ -185,9 +185,9 @@ export class ProviderNotificationService {
             if (status.state === "completed") {
               await recordCheckinEvidence(this.deps.redis, account.providerId, account.id, { state: "completed", dayKey, observedAt: at, credit: null, streakDays: status.streakDays });
             }
-            items = [this.item(account, status.state === "due" ? "checkin_due" : "checkin_completed", status.state === "due" ? "The provider confirms this account has not checked in today. Open the account to claim the daily reward." : this.completionMessage(null, status.streakDays), at)];
+            items = [this.item(account, status.state === "due" ? "checkin_due" : "checkin_completed", status.state === "due" ? "Not checked in today. Open the account to claim." : this.completionMessage(null, status.streakDays), at)];
           } else {
-            items = [this.unknown(account, at, status.state === "unavailable" ? "No active check-in or an unrecognized status was reported. Eligibility is unverified; no check-in was performed." : undefined)];
+            items = [this.unknown(account, at, status.state === "unavailable" ? "The provider reported no active check-in. Eligibility is unverified." : undefined)];
           }
         }
       }
@@ -199,7 +199,7 @@ export class ProviderNotificationService {
   }
 
   private completionMessage(credit: number | null, streakDays: number | null): string {
-    return `The provider confirmed today's check-in.${credit !== null && credit > 0 ? ` Reward: ${credit} credits.` : ""}${streakDays !== null ? ` Streak: ${streakDays} days.` : ""}`;
+    return `Checked in today.${credit !== null && credit > 0 ? ` Reward: ${credit} credits.` : ""}${streakDays !== null ? ` Streak: ${streakDays} days.` : ""}`;
   }
 
   private async desktopCheckin(account: NotificationAccount, dayKey: string, now: Date): Promise<readonly ProviderNotification[]> {
@@ -219,6 +219,6 @@ export class ProviderNotificationService {
     }
     const evidence = await readCheckinEvidence(this.deps.redis, account.providerId, account.id, dayKey);
     if (evidence?.state === "completed") return [this.item(account, "checkin_completed", this.completionMessage(evidence.credit, evidence.streakDays), evidence.observedAt)];
-    return [this.unknown(account, now.toISOString(), "AutoClaw event check-in needs a current desktop observation. Open the app and refresh the relay; task-proxy completion is not proof of event check-in.")];
+    return [this.unknown(account, now.toISOString(), "Open the AutoClaw desktop app and refresh the relay to confirm today's check-in.")];
   }
 }
