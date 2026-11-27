@@ -147,7 +147,11 @@ export function claimCaptchaContentSecurityPolicy(): string {
     `style-src 'self' 'unsafe-inline' ${widgetOrigins}`,
     "font-src 'self' data: " + widgetOrigins,
     "img-src 'self' data: blob: " + widgetOrigins,
-    `connect-src 'self' ${widgetOrigins}`,
+    // The widget also loads its own `data:` images through `fetch()`, which
+    // `connect-src` governs rather than `img-src`. Without `data:` here the SDK
+    // logs "Fetch API cannot load data:image/png;base64,…" and never mounts, so
+    // the page stayed blank behind a working Verify button.
+    `connect-src 'self' data: ${widgetOrigins}`,
     `frame-src 'self' ${widgetOrigins}`,
     "object-src 'none'",
     "base-uri 'self'",

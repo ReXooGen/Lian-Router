@@ -101,6 +101,9 @@ describe("security header policy", () => {
     // The widget ships a stylesheet and an embedded icon font.
     expect(captcha).toMatch(/style-src[^;]*https:\/\/g\.alicdn\.com/);
     expect(captcha).toMatch(/font-src[^;]*data:/);
+    // The SDK fetches its own `data:` images; `connect-src` governs that fetch,
+    // so `img-src` alone leaves the widget unmounted behind a blank page.
+    expect(captcha).toMatch(/connect-src[^;]*data:/);
     // Same-origin embedding only: nothing else may frame the challenge page.
     expect(captcha).toContain("frame-ancestors 'self'");
 
