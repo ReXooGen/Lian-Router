@@ -375,6 +375,28 @@ describe("Account Error Classifier", () => {
     expect(res.mutatesAccount).toBe(true);
   });
 
+  test("AutoClaw's 'free quota used up' 403 is quota, never a dead credential", () => {
+    // Measured on the live gateway: an exhausted free tier answers 403 with
+    // this sentence and no auth wording at all. The 403 plus account evidence
+    // used to match the auth branch, which disabled every AutoClaw account the
+    // moment one model's free allowance ran out.
+    const res = classifyAccountError(
+      new Error(
+        "Provider credential rejected: GLM-5.4 free quota used up. Subscribe to a membership to continue.",
+      ),
+      {
+        origin: "upstream",
+        scope: "account",
+        credentialEvidence: true,
+        credentialKind: "oauth",
+        statusCode: 403,
+      },
+    );
+    expect(res.category).toBe("quota_exhausted");
+    expect(res.status).not.toBe("disabled");
+    expect(res.mutatesAccount).toBe(true);
+  });
+
   test("CodeBuddy safety-policy 403 (11140) never disables the account", () => {
     const res = classifyAccountError(
       new Error('{"code":11140,"msg":"request illegal","displayMsg":{"en":"The content did not pass the safety review."}}'),

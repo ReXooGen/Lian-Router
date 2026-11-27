@@ -181,6 +181,9 @@ export function classifyAccountError(
     providerCode === "subscription:free-usage-exhausted" ||
     lower.includes("insufficient_quota") ||
     lower.includes("quota_exceeded") ||
+    lower.includes("quota used up") ||
+    lower.includes("quota exhausted") ||
+    lower.includes("quota exceeded") ||
     lower.includes("usage_limit_reached") ||
     lower.includes("usage-exhausted") ||
     lower.includes("usage_exhausted") ||
@@ -191,7 +194,16 @@ export function classifyAccountError(
     lower.includes("balance exhausted") ||
     lower.includes("insufficient balance") ||
     lower.includes("out of credits") ||
-    lower.includes("spending limit");
+    lower.includes("spending limit") ||
+    // AutoClaw/Z.ai refuse an exhausted free tier with "GLM-5.4 free quota
+    // used up. Subscribe to a membership to continue." — a quota verdict that
+    // names no auth condition at all. It used to fall through to the auth
+    // branch because the 403 it arrives on plus account evidence read as a
+    // rejected credential, which disabled every AutoClaw account the moment
+    // one model's free allowance ran out.
+    lower.includes("subscribe to a membership") ||
+    lower.includes("upgrade your plan") ||
+    lower.includes("membership to continue");
   // A deterministic content-policy rejection is NOT credential invalidation.
   // CodeBuddy returns HTTP 403 with provider code 11140 ("request illegal",
   // "did not pass the safety review") — refreshing the token cannot change
