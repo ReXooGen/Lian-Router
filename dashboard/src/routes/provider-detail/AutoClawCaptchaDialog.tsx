@@ -41,8 +41,13 @@ export function AutoClawCaptchaDialog({
   onClose,
 }: {
   readonly open: boolean;
-  /** Called with the solved token; the caller starts the authorize request. */
-  readonly onSolved: (captchaVerifyParam: string) => void;
+  /**
+   * Called with the solved token and the challenge window. The caller mints the
+   * authorize URL and posts it back into that window, which navigates itself to
+   * the login page — assigning `location` from this side does nothing once the
+   * window's `opener` is severed, which is what left a blank tab on screen.
+   */
+  readonly onSolved: (captchaVerifyParam: string, challengeWindow: Window | null) => void;
   readonly onClose: () => void;
 }): ReactNode {
   const configQuery = useAutoClawCaptchaConfig(open);
@@ -63,16 +68,23 @@ export function AutoClawCaptchaDialog({
 
   useEffect(() => {
     if (!open) return;
-    const onMessage = (event: MessageEvent) => {
-      // Same-origin only: the challenge page is served by this dashboard.
-      if (event.origin !== window.location.origin) return;
-      if (!isCaptchaMessage(event.data)) return;
-      const message = event.data;
+    // A solved token must be consumed once even though it can arrive over two
+    // paths (`postMessage` from the opener and the same-origin channel). The
+    // first one wins; the duplicate is dropped here.
+    let consumed = false;
+    const accept = (value: unknown) => {
+      if (consumed) return;
+      if (!isCaptchaMessage(value)) return;
+      const message = value;
       if (typeof message.param === "string" && message.param.length > 0) {
-        setStatus("Challenge solved. Starting the login…");
-        popupRef.current?.close();
+        consumed = true;
+        setStatus("Challenge solved. Opening the login page…");
+        // The window is NOT closed here: it becomes the login window. The caller
+        // posts the authorize URL into it and the page navigates itself, which is
+        // the only navigation that survives a severed `opener`.
+        const challengeWindow = popupRef.current;
         popupRef.current = null;
-        solvedRef.current(message.param);
+        solvedRef.current(message.param, challengeWindow);
         return;
       }
       setFailed(true);
@@ -80,8 +92,21 @@ export function AutoClawCaptchaDialog({
         typeof message.error === "string" ? message.error : "The challenge was not solved.",
       );
     };
+    const onMessage = (event: MessageEvent) => {
+      // Same-origin only: the challenge page is served by this dashboard.
+      if (event.origin !== window.location.origin) return;
+      accept(event.data);
+    };
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
+    // The challenge page also broadcasts, because a popup whose opener was
+    // severed cannot `postMessage` back through it.
+    const channel =
+      typeof BroadcastChannel === "function" ? new BroadcastChannel(CHANNEL) : null;
+    if (channel !== null) channel.onmessage = (event: MessageEvent) => accept(event.data);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      channel?.close();
+    };
   }, [open]);
 
   const openChallenge = useCallback(() => {
@@ -89,7 +114,7 @@ export function AutoClawCaptchaDialog({
     if (config === undefined || !config.enabled) {
       // Gate disabled: nothing to solve, so start the login with an empty token
       // rather than making the operator click a button that cannot do anything.
-      solvedRef.current("");
+      solvedRef.current("", null);
       return;
     }
     setFailed(false);
@@ -99,6 +124,10 @@ export function AutoClawCaptchaDialog({
       region: config.region,
       prefix: config.prefix,
       channel: CHANNEL,
+      // This window becomes the login window: it must survive the solved
+      // challenge instead of closing itself, because it is the only window that
+      // can still navigate once the authorize URL is minted.
+      hold: "1",
       title: "Connect AutoClaw",
     });
     const popup = window.open(

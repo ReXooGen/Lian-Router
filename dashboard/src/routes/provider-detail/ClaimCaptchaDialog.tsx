@@ -73,13 +73,17 @@ export function ClaimCaptchaDialog({
 
   useEffect(() => {
     if (!open) return;
-    const onMessage = (event: MessageEvent) => {
-      // Same-origin only: the page is served by this dashboard, so any other
-      // origin is either a mistake or an attempt to inject a token.
-      if (event.origin !== window.location.origin) return;
-      if (!isCaptchaMessage(event.data)) return;
-      const message = event.data;
+    // The token can arrive twice — once through `postMessage` and once through
+    // the same-origin broadcast the challenge page also sends, because a popup
+    // whose opener was severed cannot post back. A token is spent by the first
+    // claim attempt, so the duplicate is dropped here rather than replayed.
+    let consumed = false;
+    const accept = (value: unknown) => {
+      if (consumed) return;
+      if (!isCaptchaMessage(value)) return;
+      const message = value;
       if (typeof message.param === "string" && message.param.length > 0) {
+        consumed = true;
         setStatus("Challenge solved. Sending it with the claim…");
         solvedRef.current({ param: message.param, region: message.region ?? "" });
         return;
@@ -87,8 +91,20 @@ export function ClaimCaptchaDialog({
       setFailed(true);
       setStatus(typeof message.error === "string" ? message.error : "The challenge was not solved.");
     };
+    const onMessage = (event: MessageEvent) => {
+      // Same-origin only: the page is served by this dashboard, so any other
+      // origin is either a mistake or an attempt to inject a token.
+      if (event.origin !== window.location.origin) return;
+      accept(event.data);
+    };
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
+    const channel =
+      typeof BroadcastChannel === "function" ? new BroadcastChannel("zcode-claim-captcha") : null;
+    if (channel !== null) channel.onmessage = (event: MessageEvent) => accept(event.data);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      channel?.close();
+    };
   }, [open]);
 
   const openChallenge = useCallback(() => {

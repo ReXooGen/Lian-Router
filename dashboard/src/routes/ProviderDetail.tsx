@@ -160,35 +160,49 @@ export default function ProviderDetail(): ReactNode {
    * AutoClaw signs its own OAuth `state`, so the generic browser-code route
    * cannot build its URL — it would hand back a link the exchange rejects. This
    * path asks the AutoClaw route for both the URL and the state the vendor
-   * minted, and keeps the popup handle so the login can be driven from here.
+   * minted, then hands the URL to the challenge window.
+   *
+   * The challenge window navigates itself. The earlier version pre-opened an
+   * `about:blank` tab and assigned `location.href` from here once the authorize
+   * URL arrived — but that step only ran when the solved token reached the
+   * dashboard, and delivery went through `window.opener` alone. Without an opener
+   * the token was dropped, so the placeholder was never navigated and the
+   * operator was left looking at a blank tab. The captcha page now listens for
+   * `autoclaw-oauth-captcha:redirect` and calls `location.assign` itself, which is
+   * what the vendor's own desktop client does.
    */
-  const handleAutoClawOAuth = (captchaVerifyParam?: string) => {
-    // The window has to exist before this call, not after it. Solving the
-    // challenge takes an async round trip, so by the time the authorize URL
-    // arrives the click that started it is long over and `window.open` is no
-    // longer a user gesture — the browser blocks it. `handleOAuthBrowser` opens
-    // a blank tab synchronously and this navigates it.
-    const preOpened = oauthPopupRef.current;
+  const handleAutoClawOAuth = (captchaVerifyParam?: string, challengeWindow?: Window | null) => {
+    const challenge = challengeWindow ?? oauthPopupRef.current;
+    const navigateChallenge = (url: string): boolean => {
+      if (challenge === null || challenge.closed) return false;
+      challenge.postMessage(
+        { type: "autoclaw-oauth-captcha:redirect", url },
+        window.location.origin,
+      );
+      return true;
+    };
     startAutoClawAuthorize.mutate(
       { ...(captchaVerifyParam ? { captchaVerifyParam } : {}), accountLabel: provider?.label ?? "AutoClaw" },
       {
         onSuccess: ({ url, state }) => {
-          const target =
-            preOpened !== null && !preOpened.closed
-              ? preOpened
-              : window.open(url, "lianrouter-oauth", "popup,width=720,height=820");
+          const delivered = navigateChallenge(url);
+          // No challenge window (gate disabled, or it was closed): fall back to a
+          // plain popup opened outside a gesture, which may be blocked — the
+          // caller then gets the explicit "popup blocked" toast instead of a
+          // silent blank tab.
+          const target = delivered
+            ? challenge
+            : window.open(url, "lianrouter-oauth", "popup,width=720,height=820");
           if (!target) {
             toast.error("Popup blocked", "Allow popups to complete OAuth login.");
             return;
           }
-          target.location.href = url;
-          target.opener = null;
-          oauthPopupRef.current = target;
+          if (!delivered) oauthPopupRef.current = target;
           setOauthBrowserSession({ authorizeUrl: url, state, popup: target });
         },
         onError: (err: unknown) => {
-          if (preOpened !== null && !preOpened.closed) preOpened.close();
-          if (oauthPopupRef.current === preOpened) oauthPopupRef.current = null;
+          if (challenge !== null && !challenge.closed) challenge.close();
+          if (oauthPopupRef.current === challenge) oauthPopupRef.current = null;
           const message =
             err && typeof err === "object" && "message" in err && typeof err.message === "string"
               ? err.message
@@ -224,27 +238,17 @@ export default function ProviderDetail(): ReactNode {
     };
     // The authorize step is captcha-gated exactly like the first login, so the
     // widget dialog has to run first; calling the authorize handler directly
-    // answers 400001 before a URL can even be minted. The placeholder popup is
-    // opened here inside the click so the later navigation is not blocked.
-    const blankPopup = window.open("about:blank", "lianrouter-oauth", "popup,width=720,height=820");
-    if (blankPopup) {
-      blankPopup.opener = null;
-      oauthPopupRef.current = blankPopup;
-    }
+    // answers 400001 before a URL can even be minted. No placeholder tab is
+    // opened here — the challenge window itself becomes the login window.
+    oauthPopupRef.current = null;
     setAutoClawCaptchaOpen(true);
   };
   const handleOAuthBrowser = () => {
     if (id === "autoclaw") {
       // The vendor will not mint a URL without a solved challenge, so the flow
-      // starts with the widget — and the destination window must be opened here,
-      // inside the click, because both the captcha and the authorize call happen
-      // after it. `handleAutoClawOAuth` navigates this window once the token is
-      // solved.
-      const blankPopup = window.open("about:blank", "lianrouter-oauth", "popup,width=720,height=820");
-      if (blankPopup) {
-        blankPopup.opener = null;
-        oauthPopupRef.current = blankPopup;
-      }
+      // starts with the widget; its window is the one that later navigates to the
+      // login page, so nothing is opened here.
+      oauthPopupRef.current = null;
       setAutoClawCaptchaOpen(true);
       return;
     }
@@ -727,17 +731,12 @@ export default function ProviderDetail(): ReactNode {
       {autoClawCaptchaOpen && (
         <AutoClawCaptchaDialog
           open={autoClawCaptchaOpen}
-          onSolved={(captchaVerifyParam) => {
+          onSolved={(captchaVerifyParam, challengeWindow) => {
             setAutoClawCaptchaOpen(false);
-            handleAutoClawOAuth(captchaVerifyParam);
+            handleAutoClawOAuth(captchaVerifyParam, challengeWindow);
           }}
           onClose={() => {
             setAutoClawCaptchaOpen(false);
-            // The pre-opened window is only a placeholder; abandoning the flow
-            // must not leave an empty tab behind.
-            const blank = oauthPopupRef.current;
-            if (blank !== null && !blank.closed) blank.close();
-            oauthPopupRef.current = null;
           }}
         />
       )}
